@@ -44,6 +44,18 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestDefaultsCoversMajorModels(t *testing.T) {
+	d := Defaults()
+	for _, m := range []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"} {
+		if !d.Has(m) {
+			t.Errorf("Defaults() missing %s", m)
+		}
+	}
+	if DefaultsDate == "" {
+		t.Error("DefaultsDate must be set")
+	}
+}
+
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
