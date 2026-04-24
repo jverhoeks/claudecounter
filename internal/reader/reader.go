@@ -17,6 +17,7 @@ type Event struct {
 	SessionID string
 	Cwd       string
 	Model     string
+	MessageID string // Anthropic message id, used for dedup across duplicate lines
 	Usage     pricing.Usage
 }
 
@@ -27,6 +28,7 @@ type rawLine struct {
 	SessionID string    `json:"sessionId"`
 	Cwd       string    `json:"cwd"`
 	Message   *struct {
+		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
 			InputTokens              uint64 `json:"input_tokens"`
@@ -54,6 +56,7 @@ func parseLine(line []byte) (Event, bool, error) {
 		SessionID: r.SessionID,
 		Cwd:       r.Cwd,
 		Model:     r.Message.Model,
+		MessageID: r.Message.ID,
 		Usage: pricing.Usage{
 			InputTokens:              u.InputTokens,
 			OutputTokens:             u.OutputTokens,
@@ -66,12 +69,27 @@ func parseLine(line []byte) (Event, bool, error) {
 type Reader struct {
 	mu          sync.Mutex
 	offsets     map[string]int64
+	seenIDs     map[string]struct{}
 	parseErrors int
+	dupes       int
 	out         chan<- Event
 }
 
 func New(out chan<- Event) *Reader {
-	return &Reader{offsets: map[string]int64{}, out: out}
+	return &Reader{
+		offsets: map[string]int64{},
+		seenIDs: map[string]struct{}{},
+		out:     out,
+	}
+}
+
+// Dupes returns the number of lines skipped because their message.id was
+// already seen. Claude Code re-serializes the same assistant response
+// across reasoning iterations, so this count is typically non-trivial.
+func (r *Reader) Dupes() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dupes
 }
 
 func (r *Reader) ParseErrors() int {
@@ -139,9 +157,20 @@ func (r *Reader) OnChange(path string) error {
 			r.mu.Unlock()
 			continue
 		}
-		if ok {
-			r.out <- ev
+		if !ok {
+			continue
 		}
+		if ev.MessageID != "" {
+			r.mu.Lock()
+			if _, seen := r.seenIDs[ev.MessageID]; seen {
+				r.dupes++
+				r.mu.Unlock()
+				continue
+			}
+			r.seenIDs[ev.MessageID] = struct{}{}
+			r.mu.Unlock()
+		}
+		r.out <- ev
 	}
 
 	r.mu.Lock()

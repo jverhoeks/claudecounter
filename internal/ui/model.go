@@ -20,6 +20,7 @@ const (
 type SnapshotMsg struct {
 	Totals      agg.Totals
 	ParseErrors int
+	Dupes       int    // lines skipped as duplicate message.id (expected; not surfaced as a warning)
 	PricingWarn string // empty unless built-in defaults are in use
 }
 

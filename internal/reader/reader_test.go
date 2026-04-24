@@ -154,6 +154,61 @@ func TestOnChange_MalformedLineAdvancesButIsSkipped(t *testing.T) {
 	}
 }
 
+func TestOnChange_DedupesByMessageID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+
+	dup := `{"type":"assistant","message":{"id":"msg_abc","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}` + "\n"
+	unique := `{"type":"assistant","message":{"id":"msg_def","model":"claude-opus-4-7","usage":{"input_tokens":7,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:01Z","sessionId":"s","cwd":"/x"}` + "\n"
+
+	body := dup + dup + dup + unique
+	os.WriteFile(path, []byte(body), 0o644)
+
+	ch := make(chan Event, 8)
+	r := New(ch)
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	close(ch)
+
+	var got []Event
+	for e := range ch {
+		got = append(got, e)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 deduped events, got %d: %+v", len(got), got)
+	}
+	if got[0].MessageID != "msg_abc" || got[1].MessageID != "msg_def" {
+		t.Errorf("unexpected ids: %+v", got)
+	}
+	if r.Dupes() != 2 {
+		t.Errorf("want 2 dupes skipped, got %d", r.Dupes())
+	}
+}
+
+func TestOnChange_MissingMessageIDDoesNotDedupe(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+
+	// Two identical lines with NO message.id — must NOT be deduped.
+	line := `{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}` + "\n"
+	os.WriteFile(path, []byte(line+line), 0o644)
+
+	ch := make(chan Event, 4)
+	r := New(ch)
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	close(ch)
+	n := 0
+	for range ch {
+		n++
+	}
+	if n != 2 {
+		t.Fatalf("want 2 events without id-based dedup, got %d", n)
+	}
+}
+
 func TestInitialScan_SkipsFilesOlderThanNotBefore(t *testing.T) {
 	root := t.TempDir()
 	projA := filepath.Join(root, "projA")

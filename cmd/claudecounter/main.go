@@ -72,6 +72,7 @@ func main() {
 	prog.Send(ui.SnapshotMsg{
 		Totals:      a.Snapshot(),
 		ParseErrors: r.ParseErrors(),
+		Dupes:       r.Dupes(),
 		PricingWarn: pricingWarn,
 	})
 
