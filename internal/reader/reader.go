@@ -50,6 +50,11 @@ func parseLine(line []byte) (Event, bool, error) {
 	if r.Type != "assistant" || r.Message == nil || r.Message.Usage == nil {
 		return Event{}, false, nil
 	}
+	// Skip internal synthetic events Claude Code writes for bookkeeping —
+	// they carry no billable usage and pollute the model list otherwise.
+	if r.Message.Model == "<synthetic>" {
+		return Event{}, false, nil
+	}
 	u := r.Message.Usage
 	return Event{
 		Timestamp: r.Timestamp,
@@ -69,27 +74,15 @@ func parseLine(line []byte) (Event, bool, error) {
 type Reader struct {
 	mu          sync.Mutex
 	offsets     map[string]int64
-	seenIDs     map[string]struct{}
 	parseErrors int
-	dupes       int
 	out         chan<- Event
 }
 
 func New(out chan<- Event) *Reader {
 	return &Reader{
 		offsets: map[string]int64{},
-		seenIDs: map[string]struct{}{},
 		out:     out,
 	}
-}
-
-// Dupes returns the number of lines skipped because their message.id was
-// already seen. Claude Code re-serializes the same assistant response
-// across reasoning iterations, so this count is typically non-trivial.
-func (r *Reader) Dupes() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.dupes
 }
 
 func (r *Reader) ParseErrors() int {
@@ -159,16 +152,6 @@ func (r *Reader) OnChange(path string) error {
 		}
 		if !ok {
 			continue
-		}
-		if ev.MessageID != "" {
-			r.mu.Lock()
-			if _, seen := r.seenIDs[ev.MessageID]; seen {
-				r.dupes++
-				r.mu.Unlock()
-				continue
-			}
-			r.seenIDs[ev.MessageID] = struct{}{}
-			r.mu.Unlock()
 		}
 		r.out <- ev
 	}

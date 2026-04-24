@@ -80,7 +80,7 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	if pricingWarn != "" {
 		fmt.Println(pricingWarn)
 	}
-	printSummary(snap, r.Dupes(), r.ParseErrors())
+	printSummary(snap, a.Dupes(), r.ParseErrors())
 }
 
 func printSummary(snap agg.Totals, dupes, parseErrors int) {
@@ -145,7 +145,7 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
-			Dupes:       r.Dupes(),
+			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
 	}()
@@ -175,7 +175,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
-			Dupes:       r.Dupes(),
+			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
 		dirty = false

@@ -63,6 +63,54 @@ func TestApply_UnknownModelCounted(t *testing.T) {
 	}
 }
 
+func TestApply_SameMessageIDReplacesPrevious(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	// Partial streamed line — lower counts, same msgid.
+	e1 := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 100, 50)
+	e1.MessageID = "msg_abc"
+	a.Apply(e1)
+
+	// Final line — larger counts, same msgid. Must REPLACE the first.
+	e2 := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 1_000_000, 1_000_000)
+	e2.MessageID = "msg_abc"
+	a.Apply(e2)
+
+	snap := a.Snapshot()
+	wantUSD := 15.0 + 75.0 // 1M input * $15 + 1M output * $75
+	if got := snap.Day["claude-opus-4-7"].USD; got != wantUSD {
+		t.Errorf("USD: got %v want %v (first line should have been replaced)", got, wantUSD)
+	}
+	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 1_000_000 {
+		t.Errorf("input tokens not replaced: got %d want 1000000", got)
+	}
+	if snap.Dupes != 1 {
+		t.Errorf("Dupes: got %d want 1", snap.Dupes)
+	}
+}
+
+func TestApply_UnknownModelCountsDistinctMessageIDs(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	// Three lines, same msgid, unknown model — must count as ONE unknown.
+	for i := 0; i < 3; i++ {
+		e := mkEvent(now.UTC().Format(time.RFC3339), "claude-foo-x", 100, 100)
+		e.MessageID = "msg_same"
+		a.Apply(e)
+	}
+	// Different msgid, still unknown — adds a second.
+	e2 := mkEvent(now.UTC().Format(time.RFC3339), "claude-foo-x", 100, 100)
+	e2.MessageID = "msg_other"
+	a.Apply(e2)
+
+	snap := a.Snapshot()
+	if snap.Unknown != 2 {
+		t.Errorf("Unknown: got %d want 2 (distinct message ids)", snap.Unknown)
+	}
+}
+
 func TestSnapshot_ExcludesPreviousMonth(t *testing.T) {
 	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
 	a := NewWithClock(priced(), func() time.Time { return now })

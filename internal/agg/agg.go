@@ -20,7 +20,8 @@ type ModelDay struct {
 type Totals struct {
 	Day     map[string]ModelDay
 	Month   map[string]ModelDay
-	Unknown int
+	Unknown int // distinct message ids seen with no pricing entry
+	Dupes   int // events replaced by a later line for the same message.id
 	AsOf    time.Time
 }
 
@@ -35,12 +36,25 @@ func dayOf(t time.Time) civilDay {
 	return civilDay{lt.Year(), lt.Month(), lt.Day()}
 }
 
+// contrib records the per-message-id contribution that's been added to
+// byDay so we can subtract it when a later line for the same id arrives
+// with updated (growing) usage. Claude Code streams partial writes of
+// the same assistant response, and we need last-seen semantics.
+type contrib struct {
+	day    civilDay
+	model  string
+	usd    float64
+	tokens TokenCounts
+}
+
 type Aggregator struct {
-	mu      sync.Mutex
-	pricing pricing.Table
-	byDay   map[civilDay]map[string]ModelDay
-	unknown int
-	now     func() time.Time
+	mu          sync.Mutex
+	pricing     pricing.Table
+	byDay       map[civilDay]map[string]ModelDay
+	perMsg      map[string]contrib // last contribution per message.id
+	unknownMsgs map[string]struct{}
+	dupes       int
+	now         func() time.Time
 }
 
 func New(p pricing.Table) *Aggregator {
@@ -49,34 +63,90 @@ func New(p pricing.Table) *Aggregator {
 
 func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 	return &Aggregator{
-		pricing: p,
-		byDay:   map[civilDay]map[string]ModelDay{},
-		now:     now,
+		pricing:     p,
+		byDay:       map[civilDay]map[string]ModelDay{},
+		perMsg:      map[string]contrib{},
+		unknownMsgs: map[string]struct{}{},
+		now:         now,
 	}
 }
 
+// Apply records an event's contribution. If the event carries a non-empty
+// MessageID that has been seen before, its prior contribution is
+// subtracted first, so the total reflects last-seen usage.
 func (a *Aggregator) Apply(e reader.Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	day := dayOf(e.Timestamp)
-	bucket, ok := a.byDay[day]
+	newC := contrib{
+		day:   dayOf(e.Timestamp),
+		model: e.Model,
+		tokens: TokenCounts{
+			In:          e.Usage.InputTokens,
+			Out:         e.Usage.OutputTokens,
+			CacheCreate: e.Usage.CacheCreationInputTokens,
+			CacheRead:   e.Usage.CacheReadInputTokens,
+		},
+	}
+	if a.pricing.Has(e.Model) {
+		newC.usd = a.pricing.Cost(e.Model, e.Usage)
+	}
+
+	if e.MessageID != "" {
+		if prev, seen := a.perMsg[e.MessageID]; seen {
+			a.subtract(prev)
+			a.dupes++
+		}
+		a.perMsg[e.MessageID] = newC
+
+		if !a.pricing.Has(e.Model) {
+			a.unknownMsgs[e.MessageID] = struct{}{}
+		}
+	} else if !a.pricing.Has(e.Model) {
+		// Unkeyed event with unknown model — count a synthetic id so
+		// the "unknown" metric still advances.
+		a.unknownMsgs[""+e.Model+e.Timestamp.String()] = struct{}{}
+	}
+
+	a.add(newC)
+}
+
+func (a *Aggregator) add(c contrib) {
+	bucket, ok := a.byDay[c.day]
 	if !ok {
 		bucket = map[string]ModelDay{}
-		a.byDay[day] = bucket
+		a.byDay[c.day] = bucket
 	}
-	md := bucket[e.Model]
-	md.Tokens.In += e.Usage.InputTokens
-	md.Tokens.Out += e.Usage.OutputTokens
-	md.Tokens.CacheCreate += e.Usage.CacheCreationInputTokens
-	md.Tokens.CacheRead += e.Usage.CacheReadInputTokens
+	md := bucket[c.model]
+	md.USD += c.usd
+	md.Tokens.In += c.tokens.In
+	md.Tokens.Out += c.tokens.Out
+	md.Tokens.CacheCreate += c.tokens.CacheCreate
+	md.Tokens.CacheRead += c.tokens.CacheRead
+	bucket[c.model] = md
+}
 
-	if a.pricing.Has(e.Model) {
-		md.USD += a.pricing.Cost(e.Model, e.Usage)
-	} else {
-		a.unknown++
+func (a *Aggregator) subtract(c contrib) {
+	bucket, ok := a.byDay[c.day]
+	if !ok {
+		return
 	}
-	bucket[e.Model] = md
+	md := bucket[c.model]
+	md.USD -= c.usd
+	md.Tokens.In -= c.tokens.In
+	md.Tokens.Out -= c.tokens.Out
+	md.Tokens.CacheCreate -= c.tokens.CacheCreate
+	md.Tokens.CacheRead -= c.tokens.CacheRead
+	bucket[c.model] = md
+}
+
+// Dupes returns the number of times a line was replaced by a later line
+// for the same message.id. Expected to be non-zero on real Claude Code
+// data because assistant responses stream in growing partial writes.
+func (a *Aggregator) Dupes() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.dupes
 }
 
 func (a *Aggregator) Snapshot() Totals {
@@ -89,7 +159,8 @@ func (a *Aggregator) Snapshot() Totals {
 	t := Totals{
 		Day:     map[string]ModelDay{},
 		Month:   map[string]ModelDay{},
-		Unknown: a.unknown,
+		Unknown: len(a.unknownMsgs),
+		Dupes:   a.dupes,
 		AsOf:    now,
 	}
 
