@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -146,5 +147,42 @@ func (r *Reader) OnChange(path string) error {
 	r.mu.Lock()
 	r.offsets[path] = start + int64(consumed)
 	r.mu.Unlock()
+	return nil
+}
+
+// InitialScan walks root/<project>/*.jsonl and reads every file whose
+// mtime is at or after notBefore. After this returns, the reader's
+// offset map reflects the end of every scanned file.
+func (r *Reader) InitialScan(root string, notBefore time.Time) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		subdir := filepath.Join(root, e.Name())
+		files, err := os.ReadDir(subdir)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || filepath.Ext(f.Name()) != ".jsonl" {
+				continue
+			}
+			path := filepath.Join(subdir, f.Name())
+			info, err := f.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().Before(notBefore) {
+				continue
+			}
+			if err := r.OnChange(path); err != nil {
+				continue
+			}
+		}
+	}
 	return nil
 }

@@ -153,3 +153,36 @@ func TestOnChange_MalformedLineAdvancesButIsSkipped(t *testing.T) {
 		t.Fatalf("want 1 parse error, got %d", r.ParseErrors())
 	}
 }
+
+func TestInitialScan_SkipsFilesOlderThanNotBefore(t *testing.T) {
+	root := t.TempDir()
+	projA := filepath.Join(root, "projA")
+	projB := filepath.Join(root, "projB")
+	os.MkdirAll(projA, 0o755)
+	os.MkdirAll(projB, 0o755)
+
+	old := filepath.Join(projA, "old.jsonl")
+	cur := filepath.Join(projB, "cur.jsonl")
+	line := `{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}` + "\n"
+	os.WriteFile(old, []byte(line), 0o644)
+	os.WriteFile(cur, []byte(line), 0o644)
+
+	sixtyDaysAgo := time.Now().Add(-60 * 24 * time.Hour)
+	os.Chtimes(old, sixtyDaysAgo, sixtyDaysAgo)
+
+	ch := make(chan Event, 8)
+	r := New(ch)
+
+	notBefore := time.Now().Add(-30 * 24 * time.Hour)
+	if err := r.InitialScan(root, notBefore); err != nil {
+		t.Fatal(err)
+	}
+	close(ch)
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event (from projB), got %d", len(events))
+	}
+}
