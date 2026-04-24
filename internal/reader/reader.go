@@ -1,7 +1,11 @@
 package reader
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/jjverhoeks/claudecounter/internal/pricing"
@@ -56,4 +60,91 @@ func parseLine(line []byte) (Event, bool, error) {
 			CacheReadInputTokens:     u.CacheReadInputTokens,
 		},
 	}, true, nil
+}
+
+type Reader struct {
+	mu          sync.Mutex
+	offsets     map[string]int64
+	parseErrors int
+	out         chan<- Event
+}
+
+func New(out chan<- Event) *Reader {
+	return &Reader{offsets: map[string]int64{}, out: out}
+}
+
+func (r *Reader) ParseErrors() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.parseErrors
+}
+
+// Forget drops a file from the offset map (used on Remove events).
+func (r *Reader) Forget(path string) {
+	r.mu.Lock()
+	delete(r.offsets, path)
+	r.mu.Unlock()
+}
+
+// OnChange reads any new complete lines in path starting from the
+// previously-recorded offset, emits Events, and updates the offset.
+// It never advances past an incomplete (non-\n-terminated) tail.
+func (r *Reader) OnChange(path string) error {
+	r.mu.Lock()
+	start := r.offsets[path]
+	r.mu.Unlock()
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			r.Forget(path)
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if stat.Size() < start {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+
+	consumed := 0
+	for {
+		idx := bytes.IndexByte(data[consumed:], '\n')
+		if idx < 0 {
+			break
+		}
+		line := data[consumed : consumed+idx]
+		consumed += idx + 1
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		ev, ok, perr := parseLine(line)
+		if perr != nil {
+			r.mu.Lock()
+			r.parseErrors++
+			r.mu.Unlock()
+			continue
+		}
+		if ok {
+			r.out <- ev
+		}
+	}
+
+	r.mu.Lock()
+	r.offsets[path] = start + int64(consumed)
+	r.mu.Unlock()
+	return nil
 }

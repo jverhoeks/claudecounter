@@ -1,6 +1,8 @@
 package reader
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -50,5 +52,104 @@ func TestParseLine_Malformed(t *testing.T) {
 	_, _, err := parseLine([]byte(`{not json`))
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestOnChange_ReadsAppendedLinesOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+
+	first := `{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}` + "\n"
+	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan Event, 8)
+	r := New(ch)
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Fatal("expected event after first OnChange")
+	}
+
+	second := `{"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":2,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:01Z","sessionId":"s","cwd":"/x"}` + "\n"
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(second)
+	f.Close()
+
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-ch:
+		if ev.Model != "claude-sonnet-4-6" {
+			t.Fatalf("expected sonnet, got %q", ev.Model)
+		}
+	default:
+		t.Fatal("expected event after append")
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected extra event: %+v", ev)
+	default:
+	}
+}
+
+func TestOnChange_PartialLineNotAdvanced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+
+	partial := `{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":9,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"`
+	os.WriteFile(path, []byte(partial), 0o644)
+
+	ch := make(chan Event, 4)
+	r := New(ch)
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("no event expected on partial line: %+v", ev)
+	default:
+	}
+
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString("}\n")
+	f.Close()
+
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-ch:
+		if ev.Usage.InputTokens != 9 {
+			t.Fatalf("wrong event: %+v", ev)
+		}
+	default:
+		t.Fatal("expected event once line completes")
+	}
+}
+
+func TestOnChange_MalformedLineAdvancesButIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	body := "{bad line\n" +
+		`{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":7,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}` + "\n"
+	os.WriteFile(path, []byte(body), 0o644)
+
+	ch := make(chan Event, 4)
+	r := New(ch)
+	if err := r.OnChange(path); err != nil {
+		t.Fatal(err)
+	}
+	got := <-ch
+	if got.Usage.InputTokens != 7 {
+		t.Fatalf("expected second line to be delivered: %+v", got)
+	}
+	if r.ParseErrors() != 1 {
+		t.Fatalf("want 1 parse error, got %d", r.ParseErrors())
 	}
 }
