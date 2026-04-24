@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +39,7 @@ func main() {
 	pricingPath := flag.String("pricing", defaultPricingPath(), "path to pricing.toml")
 	root := flag.String("root", defaultRoot(), "claude projects root")
 	refresh := flag.Bool("refresh-pricing", false, "fetch pricing from the web and overwrite pricing.toml")
+	once := flag.Bool("once", false, "scan once, print totals, and exit (no TUI, no watcher)")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -43,7 +48,74 @@ func main() {
 
 	table, pricingWarn := loadPricing(*pricingPath, *refresh)
 
-	evCh := make(chan reader.Event, 256)
+	if *once {
+		runOnce(*root, table, pricingWarn)
+		return
+	}
+	runTUI(*root, table, pricingWarn)
+}
+
+// runOnce scans the projects tree once, prints a plain-text summary, and exits.
+func runOnce(root string, table pricing.Table, pricingWarn string) {
+	evCh := make(chan reader.Event, 1024)
+	r := reader.New(evCh)
+	a := agg.New(table)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for e := range evCh {
+			a.Apply(e)
+		}
+	}()
+
+	notBefore := firstOfMonth(time.Now().Local())
+	if err := r.InitialScan(root, notBefore); err != nil {
+		log.Fatalf("initial scan: %v", err)
+	}
+	close(evCh)
+	<-done
+
+	snap := a.Snapshot()
+	if pricingWarn != "" {
+		fmt.Println(pricingWarn)
+	}
+	printSummary(snap, r.Dupes(), r.ParseErrors())
+}
+
+func printSummary(snap agg.Totals, dupes, parseErrors int) {
+	var dayT, monthT float64
+	for _, v := range snap.Day {
+		dayT += v.USD
+	}
+	for _, v := range snap.Month {
+		monthT += v.USD
+	}
+	fmt.Printf("Today  %s\n", ui.FormatUSD(dayT))
+	fmt.Printf("Month  %s\n", ui.FormatUSD(monthT))
+	fmt.Println(strings.Repeat("─", 48))
+	fmt.Println("By model (this month):")
+	names := make([]string, 0, len(snap.Month))
+	for n := range snap.Month {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return snap.Month[names[i]].USD > snap.Month[names[j]].USD
+	})
+	for _, n := range names {
+		md := snap.Month[n]
+		fmt.Printf("  %-32s %9s   in=%d out=%d cache_write=%d cache_read=%d\n",
+			n, ui.FormatUSD(md.USD),
+			md.Tokens.In, md.Tokens.Out, md.Tokens.CacheCreate, md.Tokens.CacheRead)
+	}
+	fmt.Println(strings.Repeat("─", 48))
+	fmt.Printf("deduped dupes=%d  parse_errors=%d  unknown_model_events=%d\n",
+		dupes, parseErrors, snap.Unknown)
+}
+
+// runTUI starts the interactive dashboard.
+func runTUI(root string, table pricing.Table, pricingWarn string) {
+	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
 
@@ -52,29 +124,31 @@ func main() {
 		log.Fatalf("watcher: %v", err)
 	}
 	defer w.Close()
-	if err := w.AddTree(*root); err != nil {
+	if err := w.AddTree(root); err != nil {
 		log.Fatalf("watcher add: %v", err)
 	}
 
 	m := ui.NewModel()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
-	// Start the event pipeline BEFORE InitialScan — the reader emits
-	// synchronously into evCh, so without a consumer the channel would
-	// fill during backfill and deadlock the scan.
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn)
 
-	notBefore := firstOfMonth(time.Now().Local())
-	if err := r.InitialScan(*root, notBefore); err != nil {
-		log.Fatalf("initial scan: %v", err)
-	}
-
-	prog.Send(ui.SnapshotMsg{
-		Totals:      a.Snapshot(),
-		ParseErrors: r.ParseErrors(),
-		Dupes:       r.Dupes(),
-		PricingWarn: pricingWarn,
-	})
+	// Backfill in the background so the UI appears immediately. The
+	// pipeline goroutine consumes events from evCh as the scan produces
+	// them, and periodic flushes push snapshots so the user sees the
+	// numbers climb during the scan.
+	go func() {
+		notBefore := firstOfMonth(time.Now().Local())
+		if err := r.InitialScan(root, notBefore); err != nil {
+			log.Printf("initial scan: %v", err)
+		}
+		prog.Send(ui.SnapshotMsg{
+			Totals:      a.Snapshot(),
+			ParseErrors: r.ParseErrors(),
+			Dupes:       r.Dupes(),
+			PricingWarn: pricingWarn,
+		})
+	}()
 
 	if _, err := prog.Run(); err != nil {
 		log.Fatal(err)
@@ -88,10 +162,12 @@ func firstOfMonth(t time.Time) time.Time {
 func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 	evCh chan reader.Event, prog *tea.Program, table pricing.Table, pricingWarn string) {
 
-	debounce := time.NewTimer(time.Hour)
-	debounce.Stop()
-	dirty := false
+	// Periodic flush tick keeps the UI moving during heavy bursts
+	// (e.g. the backfill) where an event-only debounce would keep resetting.
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
 
+	dirty := false
 	flush := func() {
 		if !dirty {
 			return
@@ -99,6 +175,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
+			Dupes:       r.Dupes(),
 			PricingWarn: pricingWarn,
 		})
 		dirty = false
@@ -128,8 +205,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 				),
 			})
 			dirty = true
-			debounce.Reset(50 * time.Millisecond)
-		case <-debounce.C:
+		case <-tick.C:
 			flush()
 		}
 	}
@@ -137,23 +213,14 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 
 func shortModelTag(id string) string {
 	switch {
-	case contains(id, "opus"):
+	case strings.Contains(id, "opus"):
 		return "opus"
-	case contains(id, "sonnet"):
+	case strings.Contains(id, "sonnet"):
 		return "sonnet"
-	case contains(id, "haiku"):
+	case strings.Contains(id, "haiku"):
 		return "haiku"
 	}
 	return id
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 // loadPricing resolves the price table in order: refresh flag > load file > fetch > defaults.
@@ -162,6 +229,8 @@ func loadPricing(path string, refresh bool) (pricing.Table, string) {
 	if !refresh {
 		if t, err := pricing.Load(path); err == nil && len(t.Models) > 0 {
 			return t, ""
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("pricing: %s unreadable (%v); falling back", path, err)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
