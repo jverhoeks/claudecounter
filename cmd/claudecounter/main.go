@@ -45,11 +45,7 @@ func main() {
 
 	evCh := make(chan reader.Event, 256)
 	r := reader.New(evCh)
-
-	notBefore := firstOfMonth(time.Now().Local())
-	if err := r.InitialScan(*root, notBefore); err != nil {
-		log.Fatalf("initial scan: %v", err)
-	}
+	a := agg.New(table)
 
 	w, err := watcher.New()
 	if err != nil {
@@ -60,16 +56,18 @@ func main() {
 		log.Fatalf("watcher add: %v", err)
 	}
 
-	a := agg.New(table)
-	drained := drainEvents(evCh)
-	for _, e := range drained {
-		a.Apply(e)
-	}
-
 	m := ui.NewModel()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
+	// Start the event pipeline BEFORE InitialScan — the reader emits
+	// synchronously into evCh, so without a consumer the channel would
+	// fill during backfill and deadlock the scan.
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn)
+
+	notBefore := firstOfMonth(time.Now().Local())
+	if err := r.InitialScan(*root, notBefore); err != nil {
+		log.Fatalf("initial scan: %v", err)
+	}
 
 	prog.Send(ui.SnapshotMsg{
 		Totals:      a.Snapshot(),
@@ -84,18 +82,6 @@ func main() {
 
 func firstOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
-}
-
-func drainEvents(ch chan reader.Event) []reader.Event {
-	var out []reader.Event
-	for {
-		select {
-		case e := <-ch:
-			out = append(out, e)
-		default:
-			return out
-		}
-	}
 }
 
 func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
