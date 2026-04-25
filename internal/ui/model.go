@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 type ViewMode int

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
 )
 
 type Event struct {
@@ -163,8 +163,11 @@ func (r *Reader) OnChange(path string) error {
 		if !ok {
 			continue
 		}
-		ev.Project = projectFromPath(path)
-		ev.IsSubagent = strings.Contains(path, "/subagents/")
+		// Normalise to forward-slash so the project + subagent detection
+		// works the same on Windows as on Unix.
+		slashPath := filepath.ToSlash(path)
+		ev.Project = projectFromPath(slashPath)
+		ev.IsSubagent = strings.Contains(slashPath, "/subagents/")
 		r.out <- ev
 	}
 

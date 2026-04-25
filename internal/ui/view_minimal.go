@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 var (

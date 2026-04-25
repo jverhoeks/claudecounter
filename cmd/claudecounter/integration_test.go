@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
-	"github.com/jjverhoeks/claudecounter/internal/reader"
-	"github.com/jjverhoeks/claudecounter/internal/watcher"
+	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/internal/watcher"
 )
 
 func TestEndToEnd_NewFileAndAppend(t *testing.T) {

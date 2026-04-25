@@ -61,7 +61,7 @@ claudecounter/
 
 Run:
 ```bash
-go mod init github.com/jjverhoeks/claudecounter
+go mod init github.com/jverhoeks/claudecounter
 ```
 
 - [ ] **Step 2: Create .gitignore**
@@ -600,7 +600,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
 )
 
 type Event struct {
@@ -1031,8 +1031,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
-	"github.com/jjverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/reader"
 )
 
 func priced() pricing.Table {
@@ -1121,8 +1121,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
-	"github.com/jjverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/reader"
 )
 
 type TokenCounts struct {
@@ -1595,7 +1595,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 type ViewMode int
@@ -1728,7 +1728,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 var (
@@ -1806,7 +1806,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 func viewSplit(t agg.Totals) string {
@@ -1867,7 +1867,7 @@ package ui
 import (
 	"strings"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
 func viewFull(t agg.Totals, recent []string) string {
@@ -1922,11 +1922,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
-	"github.com/jjverhoeks/claudecounter/internal/reader"
-	"github.com/jjverhoeks/claudecounter/internal/ui"
-	"github.com/jjverhoeks/claudecounter/internal/watcher"
+	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/internal/ui"
+	"github.com/jverhoeks/claudecounter/internal/watcher"
 )
 
 func defaultPricingPath() string {
@@ -2139,10 +2139,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jjverhoeks/claudecounter/internal/agg"
-	"github.com/jjverhoeks/claudecounter/internal/pricing"
-	"github.com/jjverhoeks/claudecounter/internal/reader"
-	"github.com/jjverhoeks/claudecounter/internal/watcher"
+	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/internal/watcher"
 )
 
 func TestEndToEnd_NewFileAndAppend(t *testing.T) {

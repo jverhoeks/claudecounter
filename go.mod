@@ -1,4 +1,4 @@
-module github.com/jjverhoeks/claudecounter
+module github.com/jverhoeks/claudecounter
 
 go 1.25.0
 

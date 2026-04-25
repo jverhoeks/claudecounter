@@ -32,6 +32,25 @@ func TestParseLine_Assistant(t *testing.T) {
 	}
 }
 
+func TestProjectFromPath_BothSeparators(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/Users/x/.claude/projects/-foo-bar/abc.jsonl", "-foo-bar"},
+		{"/Users/x/.claude/projects/-foo-bar/sess/subagents/agent-1.jsonl", "-foo-bar"},
+		// Windows-style normalised by filepath.ToSlash before reaching here:
+		{"C:/Users/x/.claude/projects/-foo-bar/abc.jsonl", "-foo-bar"},
+		{"/no/projects/segment/here.jsonl", "segment"}, // last "/projects/" wins
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := projectFromPath(c.path); got != c.want {
+			t.Errorf("projectFromPath(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
 func TestParseLine_SkipsLinesWithoutUsage(t *testing.T) {
 	// Per ccusage rules we don't filter by type; we DO require message.usage.
 	for _, l := range []string{
