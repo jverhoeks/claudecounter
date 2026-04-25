@@ -71,12 +71,22 @@ func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 	}
 }
 
-// Apply records an event's contribution. If the event carries a non-empty
-// MessageID that has been seen before, its prior contribution is
-// subtracted first, so the total reflects last-seen usage.
+// Apply records an event's contribution. Dedupe rule mirrors ccusage:
+// the unique key is "messageID:requestID"; if either is missing the
+// event is always counted (no dedup); first-seen wins (subsequent
+// duplicates are dropped).
 func (a *Aggregator) Apply(e reader.Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if e.MessageID != "" && e.RequestID != "" {
+		key := e.MessageID + ":" + e.RequestID
+		if _, seen := a.perMsg[key]; seen {
+			a.dupes++
+			return
+		}
+		a.perMsg[key] = contrib{} // mark seen; value unused
+	}
 
 	newC := contrib{
 		day:   dayOf(e.Timestamp),
@@ -90,22 +100,13 @@ func (a *Aggregator) Apply(e reader.Event) {
 	}
 	if a.pricing.Has(e.Model) {
 		newC.usd = a.pricing.Cost(e.Model, e.Usage)
-	}
-
-	if e.MessageID != "" {
-		if prev, seen := a.perMsg[e.MessageID]; seen {
-			a.subtract(prev)
-			a.dupes++
+	} else {
+		// Track distinct unknown models for the warning footer.
+		uid := e.MessageID
+		if uid == "" {
+			uid = e.Model + ":" + e.Timestamp.String()
 		}
-		a.perMsg[e.MessageID] = newC
-
-		if !a.pricing.Has(e.Model) {
-			a.unknownMsgs[e.MessageID] = struct{}{}
-		}
-	} else if !a.pricing.Has(e.Model) {
-		// Unkeyed event with unknown model — count a synthetic id so
-		// the "unknown" metric still advances.
-		a.unknownMsgs[""+e.Model+e.Timestamp.String()] = struct{}{}
+		a.unknownMsgs[uid] = struct{}{}
 	}
 
 	a.add(newC)

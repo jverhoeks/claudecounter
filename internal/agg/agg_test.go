@@ -63,30 +63,65 @@ func TestApply_UnknownModelCounted(t *testing.T) {
 	}
 }
 
-func TestApply_SameMessageIDReplacesPrevious(t *testing.T) {
+func TestApply_FirstSeenWinsByMsgIDAndReqID(t *testing.T) {
 	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
 	a := NewWithClock(priced(), func() time.Time { return now })
 
-	// Partial streamed line — lower counts, same msgid.
+	// First line: keep this one.
 	e1 := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 100, 50)
 	e1.MessageID = "msg_abc"
+	e1.RequestID = "req_x"
 	a.Apply(e1)
 
-	// Final line — larger counts, same msgid. Must REPLACE the first.
+	// Second line: same msgid+reqid → must be SKIPPED (first-seen wins).
 	e2 := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 1_000_000, 1_000_000)
 	e2.MessageID = "msg_abc"
+	e2.RequestID = "req_x"
 	a.Apply(e2)
 
 	snap := a.Snapshot()
-	wantUSD := 15.0 + 75.0 // 1M input * $15 + 1M output * $75
-	if got := snap.Day["claude-opus-4-7"].USD; got != wantUSD {
-		t.Errorf("USD: got %v want %v (first line should have been replaced)", got, wantUSD)
-	}
-	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 1_000_000 {
-		t.Errorf("input tokens not replaced: got %d want 1000000", got)
+	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 100 {
+		t.Errorf("input tokens: got %d want 100 (first-seen)", got)
 	}
 	if snap.Dupes != 1 {
 		t.Errorf("Dupes: got %d want 1", snap.Dupes)
+	}
+}
+
+func TestApply_NoDedupeWhenMsgIDOrReqIDMissing(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	// Two identical events without msgid+reqid — both must count.
+	for i := 0; i < 2; i++ {
+		e := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 1_000_000, 0)
+		// no MessageID or RequestID
+		a.Apply(e)
+	}
+
+	snap := a.Snapshot()
+	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 2_000_000 {
+		t.Errorf("input tokens: got %d want 2,000,000", got)
+	}
+	if snap.Dupes != 0 {
+		t.Errorf("Dupes: got %d want 0 (cannot dedup w/o keys)", snap.Dupes)
+	}
+}
+
+func TestApply_DifferentReqIDsForSameMsgIDBothCount(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	for _, rid := range []string{"req_x", "req_y"} {
+		e := mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 1_000_000, 0)
+		e.MessageID = "msg_same"
+		e.RequestID = rid
+		a.Apply(e)
+	}
+
+	snap := a.Snapshot()
+	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 2_000_000 {
+		t.Errorf("input tokens: got %d want 2,000,000 (msgid:reqid distinct)", got)
 	}
 }
 
@@ -94,15 +129,17 @@ func TestApply_UnknownModelCountsDistinctMessageIDs(t *testing.T) {
 	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
 	a := NewWithClock(priced(), func() time.Time { return now })
 
-	// Three lines, same msgid, unknown model — must count as ONE unknown.
+	// Same msgid+reqid → only first counts; unknown counter advances once.
 	for i := 0; i < 3; i++ {
 		e := mkEvent(now.UTC().Format(time.RFC3339), "claude-foo-x", 100, 100)
 		e.MessageID = "msg_same"
+		e.RequestID = "req_a"
 		a.Apply(e)
 	}
 	// Different msgid, still unknown — adds a second.
 	e2 := mkEvent(now.UTC().Format(time.RFC3339), "claude-foo-x", 100, 100)
 	e2.MessageID = "msg_other"
+	e2.RequestID = "req_b"
 	a.Apply(e2)
 
 	snap := a.Snapshot()

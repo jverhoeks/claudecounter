@@ -17,7 +17,8 @@ type Event struct {
 	SessionID string
 	Cwd       string
 	Model     string
-	MessageID string // Anthropic message id, used for dedup across duplicate lines
+	MessageID string // Anthropic message id
+	RequestID string // Anthropic request id; combined with MessageID for dedupe
 	Usage     pricing.Usage
 }
 
@@ -27,6 +28,7 @@ type rawLine struct {
 	Timestamp time.Time `json:"timestamp"`
 	SessionID string    `json:"sessionId"`
 	Cwd       string    `json:"cwd"`
+	RequestID string    `json:"requestId"`
 	Message   *struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
@@ -39,20 +41,24 @@ type rawLine struct {
 	} `json:"message"`
 }
 
-// parseLine returns (event, ok, err). ok=false means the line is valid JSON
-// but not an assistant-usage event (skip it silently). err != nil means
-// the line is not valid JSON at all.
+// parseLine returns (event, ok, err). ok=false means the line has no
+// usage data we care about (skip silently). err != nil means the line
+// is not valid JSON.
+//
+// Mirrors ccusage's filter: any line with message.usage is included,
+// regardless of `type` or model name. The Claude Code JSONL only ever
+// puts usage on assistant lines today, but matching ccusage's permissive
+// rule keeps us aligned if that changes.
 func parseLine(line []byte) (Event, bool, error) {
 	var r rawLine
 	if err := json.Unmarshal(line, &r); err != nil {
 		return Event{}, false, err
 	}
-	if r.Type != "assistant" || r.Message == nil || r.Message.Usage == nil {
+	if r.Message == nil || r.Message.Usage == nil {
 		return Event{}, false, nil
 	}
-	// Skip internal synthetic events Claude Code writes for bookkeeping —
-	// they carry no billable usage and pollute the model list otherwise.
 	if r.Message.Model == "<synthetic>" {
+		// All-zero bookkeeping events; inflate "unknown" otherwise.
 		return Event{}, false, nil
 	}
 	u := r.Message.Usage
@@ -62,6 +68,7 @@ func parseLine(line []byte) (Event, bool, error) {
 		Cwd:       r.Cwd,
 		Model:     r.Message.Model,
 		MessageID: r.Message.ID,
+		RequestID: r.RequestID,
 		Usage: pricing.Usage{
 			InputTokens:              u.InputTokens,
 			OutputTokens:             u.OutputTokens,

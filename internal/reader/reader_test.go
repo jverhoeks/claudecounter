@@ -32,7 +32,8 @@ func TestParseLine_Assistant(t *testing.T) {
 	}
 }
 
-func TestParseLine_SkipsNonAssistant(t *testing.T) {
+func TestParseLine_SkipsLinesWithoutUsage(t *testing.T) {
+	// Per ccusage rules we don't filter by type; we DO require message.usage.
 	for _, l := range []string{
 		`{"type":"user","message":{"content":"x"}}`,
 		`{"type":"permission-mode"}`,
@@ -151,17 +152,6 @@ func TestOnChange_MalformedLineAdvancesButIsSkipped(t *testing.T) {
 	}
 	if r.ParseErrors() != 1 {
 		t.Fatalf("want 1 parse error, got %d", r.ParseErrors())
-	}
-}
-
-func TestParseLine_SkipsSyntheticModel(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":1,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-04-24T10:00:00Z","sessionId":"s","cwd":"/x"}`)
-	_, ok, err := parseLine(line)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("expected <synthetic> event to be skipped")
 	}
 }
 
