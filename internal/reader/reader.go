@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,13 +14,15 @@ import (
 )
 
 type Event struct {
-	Timestamp time.Time
-	SessionID string
-	Cwd       string
-	Model     string
-	MessageID string // Anthropic message id
-	RequestID string // Anthropic request id; combined with MessageID for dedupe
-	Usage     pricing.Usage
+	Timestamp  time.Time
+	SessionID  string
+	Cwd        string
+	Project    string // canonical project key (encoded segment under projects/)
+	Model      string
+	MessageID  string // Anthropic message id
+	RequestID  string // Anthropic request id; combined with MessageID for dedupe
+	IsSubagent bool   // true when the event came from a subagents/agent-*.jsonl file
+	Usage      pricing.Usage
 }
 
 // rawLine mirrors only the fields we read from a JSONL event.
@@ -160,6 +163,8 @@ func (r *Reader) OnChange(path string) error {
 		if !ok {
 			continue
 		}
+		ev.Project = projectFromPath(path)
+		ev.IsSubagent = strings.Contains(path, "/subagents/")
 		r.out <- ev
 	}
 
@@ -167,6 +172,24 @@ func (r *Reader) OnChange(path string) error {
 	r.offsets[path] = start + int64(consumed)
 	r.mu.Unlock()
 	return nil
+}
+
+// projectFromPath returns the canonical project key from a transcript
+// file path. For ~/.claude/projects/<encoded>/<session>.jsonl or
+// ~/.claude/projects/<encoded>/<session>/subagents/agent-*.jsonl this
+// returns "<encoded>" — i.e. the segment immediately under projects/.
+// The encoded form is the cwd with path separators replaced by '-', so
+// it's stable across worktrees and uniquely identifies a project.
+func projectFromPath(path string) string {
+	idx := strings.Index(path, "/projects/")
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+len("/projects/"):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // InitialScan walks root/**/*.jsonl recursively and reads every file

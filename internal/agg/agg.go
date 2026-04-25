@@ -12,17 +12,56 @@ type TokenCounts struct {
 	In, Out, CacheCreate, CacheRead uint64
 }
 
+func (a TokenCounts) Add(b TokenCounts) TokenCounts {
+	return TokenCounts{
+		In:          a.In + b.In,
+		Out:         a.Out + b.Out,
+		CacheCreate: a.CacheCreate + b.CacheCreate,
+		CacheRead:   a.CacheRead + b.CacheRead,
+	}
+}
+
+func (a TokenCounts) ToUsage() pricing.Usage {
+	return pricing.Usage{
+		InputTokens:              a.In,
+		OutputTokens:             a.Out,
+		CacheCreationInputTokens: a.CacheCreate,
+		CacheReadInputTokens:     a.CacheRead,
+	}
+}
+
+// ModelDay holds aggregated tokens for a (day or month, model) cell
+// plus the cost computed once at snapshot time from those tokens.
+// Storing tokens (uint64) and computing cost only at snapshot avoids
+// per-event float64 accumulation drift over many thousands of events.
 type ModelDay struct {
 	USD    float64
 	Tokens TokenCounts
 }
 
+// ProjectDay holds the per-project breakdown with main vs subagent
+// tokens kept separate so the UI can show their split.
+type ProjectDay struct {
+	Main    TokenCounts
+	Sub     TokenCounts
+	MainUSD float64
+	SubUSD  float64
+}
+
+// USD returns total cost (main + subagent).
+func (p ProjectDay) USD() float64 { return p.MainUSD + p.SubUSD }
+
+// Tokens returns total tokens (main + subagent).
+func (p ProjectDay) Tokens() TokenCounts { return p.Main.Add(p.Sub) }
+
 type Totals struct {
-	Day     map[string]ModelDay
-	Month   map[string]ModelDay
-	Unknown int // distinct message ids seen with no pricing entry
-	Dupes   int // events replaced by a later line for the same message.id
-	AsOf    time.Time
+	Day        map[string]ModelDay   // model -> totals for today
+	Month      map[string]ModelDay   // model -> totals for this month
+	DayProj    map[string]ProjectDay // project -> totals for today
+	MonthProj  map[string]ProjectDay // project -> totals for this month
+	Unknown    int                   // distinct unpriced message ids
+	Dupes      int                   // events skipped as msgid:reqid duplicates
+	AsOf       time.Time
 }
 
 type civilDay struct {
@@ -36,22 +75,20 @@ func dayOf(t time.Time) civilDay {
 	return civilDay{lt.Year(), lt.Month(), lt.Day()}
 }
 
-// contrib records the per-message-id contribution that's been added to
-// byDay so we can subtract it when a later line for the same id arrives
-// with updated (growing) usage. Claude Code streams partial writes of
-// the same assistant response, and we need last-seen semantics.
-type contrib struct {
-	day    civilDay
-	model  string
-	usd    float64
-	tokens TokenCounts
+// cellKey identifies one storage cell: a (day, project, model, isSub)
+// bucket of token counts. Cost is derived from these at snapshot time.
+type cellKey struct {
+	Day     civilDay
+	Project string
+	Model   string
+	IsSub   bool
 }
 
 type Aggregator struct {
 	mu          sync.Mutex
 	pricing     pricing.Table
-	byDay       map[civilDay]map[string]ModelDay
-	perMsg      map[string]contrib // last contribution per message.id
+	cells       map[cellKey]TokenCounts
+	perMsg      map[string]struct{} // msgid:reqid seen-set for dedupe
 	unknownMsgs map[string]struct{}
 	dupes       int
 	now         func() time.Time
@@ -64,8 +101,8 @@ func New(p pricing.Table) *Aggregator {
 func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 	return &Aggregator{
 		pricing:     p,
-		byDay:       map[civilDay]map[string]ModelDay{},
-		perMsg:      map[string]contrib{},
+		cells:       map[cellKey]TokenCounts{},
+		perMsg:      map[string]struct{}{},
 		unknownMsgs: map[string]struct{}{},
 		now:         now,
 	}
@@ -73,8 +110,7 @@ func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 
 // Apply records an event's contribution. Dedupe rule mirrors ccusage:
 // the unique key is "messageID:requestID"; if either is missing the
-// event is always counted (no dedup); first-seen wins (subsequent
-// duplicates are dropped).
+// event is always counted (no dedup); first-seen wins.
 func (a *Aggregator) Apply(e reader.Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -85,23 +121,10 @@ func (a *Aggregator) Apply(e reader.Event) {
 			a.dupes++
 			return
 		}
-		a.perMsg[key] = contrib{} // mark seen; value unused
+		a.perMsg[key] = struct{}{}
 	}
 
-	newC := contrib{
-		day:   dayOf(e.Timestamp),
-		model: e.Model,
-		tokens: TokenCounts{
-			In:          e.Usage.InputTokens,
-			Out:         e.Usage.OutputTokens,
-			CacheCreate: e.Usage.CacheCreationInputTokens,
-			CacheRead:   e.Usage.CacheReadInputTokens,
-		},
-	}
-	if a.pricing.Has(e.Model) {
-		newC.usd = a.pricing.Cost(e.Model, e.Usage)
-	} else {
-		// Track distinct unknown models for the warning footer.
+	if !a.pricing.Has(e.Model) {
 		uid := e.MessageID
 		if uid == "" {
 			uid = e.Model + ":" + e.Timestamp.String()
@@ -109,47 +132,33 @@ func (a *Aggregator) Apply(e reader.Event) {
 		a.unknownMsgs[uid] = struct{}{}
 	}
 
-	a.add(newC)
-}
-
-func (a *Aggregator) add(c contrib) {
-	bucket, ok := a.byDay[c.day]
-	if !ok {
-		bucket = map[string]ModelDay{}
-		a.byDay[c.day] = bucket
+	k := cellKey{
+		Day:     dayOf(e.Timestamp),
+		Project: e.Project,
+		Model:   e.Model,
+		IsSub:   e.IsSubagent,
 	}
-	md := bucket[c.model]
-	md.USD += c.usd
-	md.Tokens.In += c.tokens.In
-	md.Tokens.Out += c.tokens.Out
-	md.Tokens.CacheCreate += c.tokens.CacheCreate
-	md.Tokens.CacheRead += c.tokens.CacheRead
-	bucket[c.model] = md
+	cur := a.cells[k]
+	a.cells[k] = cur.Add(TokenCounts{
+		In:          e.Usage.InputTokens,
+		Out:         e.Usage.OutputTokens,
+		CacheCreate: e.Usage.CacheCreationInputTokens,
+		CacheRead:   e.Usage.CacheReadInputTokens,
+	})
 }
 
-func (a *Aggregator) subtract(c contrib) {
-	bucket, ok := a.byDay[c.day]
-	if !ok {
-		return
-	}
-	md := bucket[c.model]
-	md.USD -= c.usd
-	md.Tokens.In -= c.tokens.In
-	md.Tokens.Out -= c.tokens.Out
-	md.Tokens.CacheCreate -= c.tokens.CacheCreate
-	md.Tokens.CacheRead -= c.tokens.CacheRead
-	bucket[c.model] = md
-}
-
-// Dupes returns the number of times a line was replaced by a later line
-// for the same message.id. Expected to be non-zero on real Claude Code
-// data because assistant responses stream in growing partial writes.
+// Dupes returns the number of msgid:reqid duplicates skipped.
 func (a *Aggregator) Dupes() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.dupes
 }
 
+// Snapshot computes per-model and per-project totals for today and this
+// month from the accumulated token cells. Costs are computed exactly
+// once per (model, scope) by summing tokens first then applying
+// pricing — this is mathematically equivalent to summing per-event
+// costs but avoids float accumulation noise over thousands of events.
 func (a *Aggregator) Snapshot() Totals {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -157,32 +166,101 @@ func (a *Aggregator) Snapshot() Totals {
 	now := a.now().Local()
 	today := civilDay{now.Year(), now.Month(), now.Day()}
 
-	t := Totals{
-		Day:     map[string]ModelDay{},
-		Month:   map[string]ModelDay{},
-		Unknown: len(a.unknownMsgs),
-		Dupes:   a.dupes,
-		AsOf:    now,
+	// 1) Aggregate per-(scope, model) and per-(scope, project, isSub)
+	//    in tokens. scope ∈ {"day","month"}.
+	type modelKey struct{ Scope, Model string }
+	type projKey struct {
+		Scope, Project string
+		IsSub          bool
+	}
+	modelTok := map[modelKey]TokenCounts{}
+	projTok := map[projKey]TokenCounts{}
+
+	inMonth := func(d civilDay) bool { return d.Y == now.Year() && d.M == now.Month() }
+
+	for k, t := range a.cells {
+		if k.Day == today {
+			mk := modelKey{"day", k.Model}
+			modelTok[mk] = modelTok[mk].Add(t)
+			pk := projKey{"day", k.Project, k.IsSub}
+			projTok[pk] = projTok[pk].Add(t)
+		}
+		if inMonth(k.Day) {
+			mk := modelKey{"month", k.Model}
+			modelTok[mk] = modelTok[mk].Add(t)
+			pk := projKey{"month", k.Project, k.IsSub}
+			projTok[pk] = projTok[pk].Add(t)
+		}
 	}
 
-	if bucket, ok := a.byDay[today]; ok {
-		for m, md := range bucket {
-			t.Day[m] = md
+	// 2) Apply pricing once per cell to derive USD.
+	out := Totals{
+		Day:       map[string]ModelDay{},
+		Month:     map[string]ModelDay{},
+		DayProj:   map[string]ProjectDay{},
+		MonthProj: map[string]ProjectDay{},
+		Unknown:   len(a.unknownMsgs),
+		Dupes:     a.dupes,
+		AsOf:      now,
+	}
+
+	for mk, tok := range modelTok {
+		usd := 0.0
+		if a.pricing.Has(mk.Model) {
+			usd = a.pricing.Cost(mk.Model, tok.ToUsage())
+		}
+		md := ModelDay{USD: usd, Tokens: tok}
+		switch mk.Scope {
+		case "day":
+			out.Day[mk.Model] = md
+		case "month":
+			out.Month[mk.Model] = md
 		}
 	}
-	for day, bucket := range a.byDay {
-		if day.Y != now.Year() || day.M != now.Month() {
-			continue
+
+	// Per-project: also need to attribute cost per (project, model)
+	// because a project may use multiple models. The projTok map has
+	// (scope, project, isSub) → tokens BUT we lost the model. Walk the
+	// raw cells again to compute per-project cost correctly.
+	type pmk struct {
+		Scope, Project string
+		IsSub          bool
+		Model          string
+	}
+	pmTok := map[pmk]TokenCounts{}
+	for k, t := range a.cells {
+		if k.Day == today {
+			pmTok[pmk{"day", k.Project, k.IsSub, k.Model}] =
+				pmTok[pmk{"day", k.Project, k.IsSub, k.Model}].Add(t)
 		}
-		for m, md := range bucket {
-			agg := t.Month[m]
-			agg.USD += md.USD
-			agg.Tokens.In += md.Tokens.In
-			agg.Tokens.Out += md.Tokens.Out
-			agg.Tokens.CacheCreate += md.Tokens.CacheCreate
-			agg.Tokens.CacheRead += md.Tokens.CacheRead
-			t.Month[m] = agg
+		if inMonth(k.Day) {
+			pmTok[pmk{"month", k.Project, k.IsSub, k.Model}] =
+				pmTok[pmk{"month", k.Project, k.IsSub, k.Model}].Add(t)
 		}
 	}
-	return t
+
+	for k, tok := range pmTok {
+		var usd float64
+		if a.pricing.Has(k.Model) {
+			usd = a.pricing.Cost(k.Model, tok.ToUsage())
+		}
+		var bucket map[string]ProjectDay
+		switch k.Scope {
+		case "day":
+			bucket = out.DayProj
+		case "month":
+			bucket = out.MonthProj
+		}
+		pd := bucket[k.Project]
+		if k.IsSub {
+			pd.Sub = pd.Sub.Add(tok)
+			pd.SubUSD += usd
+		} else {
+			pd.Main = pd.Main.Add(tok)
+			pd.MainUSD += usd
+		}
+		bucket[k.Project] = pd
+	}
+
+	return out
 }

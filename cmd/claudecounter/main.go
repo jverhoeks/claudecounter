@@ -93,7 +93,7 @@ func printSummary(snap agg.Totals, dupes, parseErrors int) {
 	}
 	fmt.Printf("Today  %s\n", ui.FormatUSD(dayT))
 	fmt.Printf("Month  %s\n", ui.FormatUSD(monthT))
-	fmt.Println(strings.Repeat("─", 48))
+	fmt.Println(strings.Repeat("─", 60))
 	fmt.Println("By model (this month):")
 	names := make([]string, 0, len(snap.Month))
 	for n := range snap.Month {
@@ -108,9 +108,42 @@ func printSummary(snap agg.Totals, dupes, parseErrors int) {
 			n, ui.FormatUSD(md.USD),
 			md.Tokens.In, md.Tokens.Out, md.Tokens.CacheCreate, md.Tokens.CacheRead)
 	}
-	fmt.Println(strings.Repeat("─", 48))
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println("By project (this month) — total · main · subagent:")
+	pnames := make([]string, 0, len(snap.MonthProj))
+	for n := range snap.MonthProj {
+		pnames = append(pnames, n)
+	}
+	sort.Slice(pnames, func(i, j int) bool {
+		return snap.MonthProj[pnames[i]].USD() > snap.MonthProj[pnames[j]].USD()
+	})
+	for _, n := range pnames {
+		p := snap.MonthProj[n]
+		fmt.Printf("  %-40s %9s · main %9s · sub %9s\n",
+			shortProject(n),
+			ui.FormatUSD(p.USD()),
+			ui.FormatUSD(p.MainUSD),
+			ui.FormatUSD(p.SubUSD),
+		)
+	}
+	fmt.Println(strings.Repeat("─", 60))
 	fmt.Printf("deduped dupes=%d  parse_errors=%d  unknown_model_events=%d\n",
 		dupes, parseErrors, snap.Unknown)
+}
+
+func shortProject(encoded string) string {
+	if encoded == "" {
+		return "(unknown)"
+	}
+	parts := strings.Split(strings.TrimPrefix(encoded, "-"), "-")
+	if len(parts) <= 4 {
+		return encoded
+	}
+	tail := strings.Join(parts[4:], "-")
+	if tail == "" {
+		return encoded
+	}
+	return tail
 }
 
 // runTUI starts the interactive dashboard.
@@ -196,12 +229,17 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 		case e := <-evCh:
 			a.Apply(e)
 			cost := table.Cost(e.Model, e.Usage)
+			tag := ""
+			if e.IsSubagent {
+				tag = " (sub)"
+			}
 			prog.Send(ui.RecentEventMsg{
-				Line: fmt.Sprintf("%s  %-12s %-8s %s",
+				Line: fmt.Sprintf("%s  %-22s %-8s %s%s",
 					e.Timestamp.Local().Format("15:04:05"),
-					filepath.Base(e.Cwd),
+					trimRight(filepath.Base(e.Cwd), 22),
 					shortModelTag(e.Model),
 					ui.FormatUSD(cost),
+					tag,
 				),
 			})
 			dirty = true
@@ -209,6 +247,13 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 			flush()
 		}
 	}
+}
+
+func trimRight(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 func shortModelTag(id string) string {
