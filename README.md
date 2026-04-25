@@ -16,13 +16,13 @@ uses, and shows you today's and this month's cost at a glance.
 │  claude-sonnet-4-6                 $88.66    2%              │
 │  claude-haiku-4-5-20251001         $30.76    1%              │
 ├─────────── by project (this month) — main · sub ────────────┤
-│  sqlengine            $2,385.96   main $1,421.71 · sub $964 │
-│  data-platform        $2,176.17   main $1,900.02 · sub $276 │
-│  viralwebgame           $251.79   main   $197.86 · sub  $54 │
+│  project1             $2,385.96   main $1,421.71 · sub $964 │
+│  project2             $2,176.17   main $1,900.02 · sub $276 │
+│  project3               $251.79   main   $197.86 · sub  $54 │
 │  …                                                           │
 ├─────────────── live ────────────────────────────────────────┤
-│ 10:21:14  claudecounter   opus    +$0.062 (sub)              │
-│ 10:21:09  claudecounter   opus    +$0.041                    │
+│ 10:21:14  project1        opus    +$0.062 (sub)              │
+│ 10:21:09  project1        opus    +$0.041                    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
