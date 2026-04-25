@@ -39,21 +39,21 @@ func (w *Watcher) Events() <-chan Change { return w.out }
 
 func (w *Watcher) Close() error { return w.fs.Close() }
 
-// AddTree watches root itself and every existing subdirectory of root.
+// AddTree watches root and every directory beneath it (recursively).
+// Recursion is necessary because subagent transcripts live nested at
+// <root>/<project>/<session-uuid>/subagents/, two levels deeper than
+// regular session jsonls. New subdirs created at any level are picked
+// up by handle() on Create events.
 func (w *Watcher) AddTree(root string) error {
-	if err := w.fs.Add(root); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			_ = w.fs.Add(filepath.Join(root, e.Name()))
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-	}
-	return nil
+		if d.IsDir() {
+			_ = w.fs.Add(path)
+		}
+		return nil
+	})
 }
 
 func (w *Watcher) loop() {
