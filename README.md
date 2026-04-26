@@ -13,14 +13,50 @@ same dollars out, to the cent.
 | **Surface** | Full-screen terminal dashboard | macOS menu bar item + popover |
 | **Best for** | Power users, SSH sessions, scripting | "Glance and go" — always-on indicator |
 | **Languages** | Go (single static binary) | Swift / SwiftUI (`.app` bundle) |
-| **Platforms** | macOS · Linux · Windows | macOS 13+ |
-| **Install** | `go build` or release binary | `make macapp` then drag to Applications |
+| **Platforms** | macOS · Linux · Windows | macOS 13+ on Apple Silicon |
 | **One-shot mode** | `claudecounter --once` | (use the TUI) |
 | **Persists between runs?** | No | Yes (`~/Library/Application Support/...`) |
 | **Live updates** | fsnotify-driven | FSEventStream-driven |
 
 Pick the one that fits your workflow — they're independent, run side
 by side without conflict, and produce identical numbers.
+
+## ⬇️ Download
+
+Pre-built binaries are published to
+**[GitHub Releases](https://github.com/jverhoeks/claudecounter/releases)**.
+
+**Go TUI** (tags shaped `vX.Y.Z`):
+
+```bash
+# macOS Apple Silicon — adjust filename for your platform
+curl -L -o claudecounter \
+  https://github.com/jverhoeks/claudecounter/releases/latest/download/claudecounter-darwin-arm64
+chmod +x claudecounter && ./claudecounter
+```
+
+Other platform binaries on the same release page: `darwin-amd64`,
+`linux-amd64`, `linux-arm64`, `windows-amd64.exe`, `windows-arm64.exe`.
+
+**Mac menu bar app** (tags shaped `macapp-vX.Y.Z`):
+
+```bash
+# Find the latest macapp tag — releases use a separate namespace
+TAG=$(curl -s https://api.github.com/repos/jverhoeks/claudecounter/releases \
+      | grep '"tag_name":' | grep macapp | head -1 | cut -d'"' -f4)
+ZIP="ClaudeCounterBar-${TAG#macapp-}-macos-arm64.zip"
+
+curl -LO "https://github.com/jverhoeks/claudecounter/releases/download/${TAG}/${ZIP}"
+ditto -xk "$ZIP" /Applications/
+
+# Strip Gatekeeper quarantine — the build is ad-hoc signed, not yet
+# notarized (see macapp/README.md "About signing" for context)
+xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
+
+open /Applications/ClaudeCounterBar.app
+```
+
+Or build from source — see the [Quick start](#quick-start) below.
 
 ## TUI preview
 
