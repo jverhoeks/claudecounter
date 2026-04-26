@@ -162,14 +162,15 @@ public actor Aggregator {
     }
 
     /// Replace internal state from a previously-persisted cache.
+    /// Hour buckets are loaded separately via `loadHourBuckets` — see
+    /// `CacheFile.restore` for the canonical sequencing.
     public func load(cells: [CellKey: TokenCounts], perMsg: Set<String>,
                      unknownMsgs: Set<String>, dupes: Int) {
         self.cells = cells
         self.perMsg = perMsg
         self.unknownMsgs = unknownMsgs
         self.dupes = dupes
-        // Hour buckets are derived from cells only for *today*; we don't
-        // persist them. They rebuild as new events arrive after restart.
+        // Default to empty until loadHourBuckets is called explicitly.
         self.hourBuckets.removeAll(keepingCapacity: false)
         self.hourBucketsDay = nil
     }
@@ -179,6 +180,38 @@ public actor Aggregator {
                                   unknownMsgs: Set<String>,
                                   dupes: Int) {
         (cells, perMsg, unknownMsgs, dupes)
+    }
+
+    /// Snapshot of today's per-(hour, model) token state. Returns
+    /// `(nil, [])` if no events have been recorded for today yet.
+    public func exportHourBuckets()
+        -> (day: CivilDay?, entries: [(hour: Int, model: String, tokens: TokenCounts)])
+    {
+        let entries = hourBuckets.map { (k, t) in
+            (hour: k.hour, model: k.model, tokens: t)
+        }
+        return (hourBucketsDay, entries)
+    }
+
+    /// Replace today's hourly state from a cache. If `day` is nil or
+    /// not equal to wall-clock today (per the injected clock), the
+    /// state is dropped — the day rolled over while quit, no point
+    /// keeping yesterday's hours visible.
+    public func loadHourBuckets(day: CivilDay?,
+                                entries: [(hour: Int, model: String, tokens: TokenCounts)]) {
+        let today = dayOf(now(), calendar: calendar)
+        guard let d = day, d == today else {
+            hourBuckets.removeAll(keepingCapacity: false)
+            hourBucketsDay = nil
+            return
+        }
+        var rebuilt: [HourBucketKey: TokenCounts] = [:]
+        for e in entries {
+            let key = HourBucketKey(hour: e.hour, model: e.model)
+            rebuilt[key] = e.tokens
+        }
+        hourBuckets = rebuilt
+        hourBucketsDay = d
     }
 
     public func reset() {

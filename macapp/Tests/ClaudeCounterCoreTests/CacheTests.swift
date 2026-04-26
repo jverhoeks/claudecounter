@@ -25,7 +25,7 @@ final class CacheTests: XCTestCase {
 
         let loaded = try store.load()
         XCTAssertNotNil(loaded)
-        XCTAssertEqual(loaded?.version, 1)
+        XCTAssertEqual(loaded?.version, CacheFile.currentVersion)
         XCTAssertEqual(loaded?.cells.count, 1)
         XCTAssertEqual(loaded?.cells.first?.input, 100)
         XCTAssertEqual(loaded?.cells.first?.output, 200)
@@ -89,6 +89,79 @@ final class CacheTests: XCTestCase {
             let p2 = snap2.dayProj[k]
             XCTAssertEqual(p1.main.input, p2?.main.input, "project \(k) main.input mismatch")
             XCTAssertEqual(p1.mainUSD, p2?.mainUSD ?? 0, accuracy: 1e-9)
+        }
+    }
+
+    func test_restore_hourBucketsSurviveRestart_sameDay() async throws {
+        // Regression for the "graph lost the older time" bug: previously
+        // the cache only persisted (day, project, model, isSub) cells.
+        // Today's hourly distribution was rebuilt only from new events
+        // *after* restart, leaving older hours flat. Now we persist
+        // the per-hour state too.
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = CacheStore(url: url)
+
+        // Two events on Self.fixedNow's day, at hours 9 and 14.
+        var c = Calendar.current.dateComponents([.year, .month, .day], from: Self.fixedNow)
+        c.hour = 9; let nineAM = Calendar.current.date(from: c)!
+        c.hour = 14; let twoPM = Calendar.current.date(from: c)!
+
+        let agg1 = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        await agg1.apply(UsageEvent(
+            timestamp: nineAM, sessionID: "s1", cwd: "/tmp",
+            project: "p1", model: "claude-opus-4-7",
+            messageID: "m1", requestID: "r1", isSubagent: false,
+            usage: Usage(input: 1_000_000)))
+        await agg1.apply(UsageEvent(
+            timestamp: twoPM, sessionID: "s1", cwd: "/tmp",
+            project: "p1", model: "claude-opus-4-7",
+            messageID: "m2", requestID: "r2", isSubagent: false,
+            usage: Usage(input: 2_000_000)))
+
+        try store.save(await CacheFile.snapshot(
+            aggregator: agg1, offsets: [:], parseErrors: 0, writtenAt: Self.fixedNow))
+
+        let agg2 = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        _ = try await store.load()!.restore(into: agg2)
+
+        // Snapshot from agg2 must reflect both hours, even though no new
+        // events flowed through apply() in this aggregator instance.
+        let snap = await agg2.snapshot()
+        XCTAssertEqual(snap.todayHourly[9].input, 1_000_000)
+        XCTAssertEqual(snap.todayHourly[14].input, 2_000_000)
+        XCTAssertEqual(snap.todayHourly[12].input, 0, "untouched hours stay zero")
+    }
+
+    func test_restore_hourBucketsDropped_onDayRollover() async throws {
+        // If the cache was written yesterday, hour buckets must NOT
+        // be carried into today's snapshot.
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = CacheStore(url: url)
+
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Self.fixedNow)!
+
+        // Aggregator clocked at "yesterday" applies an event yesterday;
+        // hour bucket gets stamped with yesterday's CivilDay.
+        let agg1 = Aggregator(pricing: .defaults, now: { yesterday })
+        await agg1.apply(UsageEvent(
+            timestamp: yesterday, sessionID: "s1", cwd: "/tmp",
+            project: "p1", model: "claude-opus-4-7",
+            messageID: "m1", requestID: "r1", isSubagent: false,
+            usage: Usage(input: 1_000_000)))
+
+        try store.save(await CacheFile.snapshot(
+            aggregator: agg1, offsets: [:], parseErrors: 0, writtenAt: yesterday))
+
+        // Restore into an aggregator clocked at today.
+        let agg2 = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        _ = try await store.load()!.restore(into: agg2)
+
+        let snap = await agg2.snapshot()
+        for h in 0..<24 {
+            XCTAssertEqual(snap.todayHourly[h].input, 0,
+                           "hour \(h): yesterday's bucket must not bleed into today")
         }
     }
 

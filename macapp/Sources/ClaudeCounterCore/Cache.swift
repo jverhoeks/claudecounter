@@ -2,6 +2,13 @@ import Foundation
 
 /// Persisted aggregator state. Lives at
 /// `~/Library/Application Support/claudecounter-bar/cache.json`.
+///
+/// **Version history**
+/// - 1: initial. Cells + perMsg + offsets only.
+/// - 2: adds `hourBuckets` + `hourBucketsDay` so today's per-hour
+///   distribution survives a relaunch. Without this, today's older
+///   hours rendered as flat baseline after every restart because
+///   cached events got deduped before reaching the hour-bucket update.
 public struct CacheFile: Codable, Sendable {
     public let version: Int
     public let writtenAt: Date
@@ -12,7 +19,13 @@ public struct CacheFile: Codable, Sendable {
     public let dupes: Int
     public let unknownMsgs: [String]
 
-    public static let currentVersion = 1
+    /// Optional in JSON for forward-compat / older caches; current
+    /// writers always emit. Empty when day rolled over and no events
+    /// have been seen yet today.
+    public let hourBuckets: [HourEntry]?
+    public let hourBucketsDay: String?
+
+    public static let currentVersion = 2
 
     public struct CellEntry: Codable, Sendable {
         public let day: String       // YYYY-MM-DD (matches civilDayString)
@@ -34,10 +47,32 @@ public struct CacheFile: Codable, Sendable {
         }
     }
 
+    /// One row of the today-only hourly distribution. Keyed by
+    /// (hour 0–23, model). Tokens are the same UInt64 quartet as
+    /// `CellEntry`; hour-USD is computed at snapshot time.
+    public struct HourEntry: Codable, Sendable {
+        public let hour: Int
+        public let model: String
+        public let input: UInt64
+        public let output: UInt64
+        public let cacheCreate: UInt64
+        public let cacheRead: UInt64
+
+        public init(hour: Int, model: String,
+                    input: UInt64, output: UInt64,
+                    cacheCreate: UInt64, cacheRead: UInt64) {
+            self.hour = hour; self.model = model
+            self.input = input; self.output = output
+            self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
+        }
+    }
+
     public init(version: Int = currentVersion, writtenAt: Date,
                 cells: [CellEntry], perMsg: [String],
                 offsets: [String: Int64], parseErrors: Int, dupes: Int,
-                unknownMsgs: [String]) {
+                unknownMsgs: [String],
+                hourBuckets: [HourEntry]? = nil,
+                hourBucketsDay: String? = nil) {
         self.version = version
         self.writtenAt = writtenAt
         self.cells = cells
@@ -46,6 +81,8 @@ public struct CacheFile: Codable, Sendable {
         self.parseErrors = parseErrors
         self.dupes = dupes
         self.unknownMsgs = unknownMsgs
+        self.hourBuckets = hourBuckets
+        self.hourBucketsDay = hourBucketsDay
     }
 }
 
@@ -115,6 +152,16 @@ extension CacheFile {
                 cacheCreate: t.cacheCreate, cacheRead: t.cacheRead
             )
         }
+        let hourState = await aggregator.exportHourBuckets()
+        let hourEntries = hourState.entries.map {
+            HourEntry(
+                hour: $0.hour, model: $0.model,
+                input: $0.tokens.input,
+                output: $0.tokens.output,
+                cacheCreate: $0.tokens.cacheCreate,
+                cacheRead: $0.tokens.cacheRead
+            )
+        }
         return CacheFile(
             writtenAt: writtenAt,
             cells: entries,
@@ -122,7 +169,9 @@ extension CacheFile {
             offsets: offsets,
             parseErrors: parseErrors,
             dupes: state.dupes,
-            unknownMsgs: Array(state.unknownMsgs)
+            unknownMsgs: Array(state.unknownMsgs),
+            hourBuckets: hourEntries,
+            hourBucketsDay: hourState.day.map { civilDayString($0) }
         )
     }
 
@@ -146,6 +195,20 @@ extension CacheFile {
             unknownMsgs: Set(unknownMsgs),
             dupes: dupes
         )
+
+        // Hour buckets — only meaningful if the cached `hourBucketsDay`
+        // is still today. Snapshot's apply path will lazily reset on
+        // day rollover, so passing yesterday's data is harmless, but
+        // we filter here to keep the wire-format meaningful.
+        let day = hourBucketsDay.flatMap(parseCivilDayString)
+        let entries: [(hour: Int, model: String, tokens: TokenCounts)] =
+            (hourBuckets ?? []).map { e in
+                (e.hour, e.model, TokenCounts(
+                    input: e.input, output: e.output,
+                    cacheCreate: e.cacheCreate, cacheRead: e.cacheRead))
+            }
+        await aggregator.loadHourBuckets(day: day, entries: entries)
+
         return offsets
     }
 }
