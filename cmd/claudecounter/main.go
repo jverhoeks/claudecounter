@@ -72,7 +72,7 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 		}
 	}()
 
-	notBefore := firstOfMonth(time.Now().Local())
+	notBefore := scanCutoff(time.Now().Local())
 	if err := r.InitialScan(root, notBefore); err != nil {
 		log.Fatalf("initial scan: %v", err)
 	}
@@ -177,7 +177,7 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
 
 	go func() {
-		notBefore := firstOfMonth(time.Now().Local())
+		notBefore := scanCutoff(time.Now().Local())
 		if err := r.InitialScan(root, notBefore); err != nil {
 			log.Printf("initial scan: %v", err)
 		}
@@ -198,6 +198,20 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 
 func firstOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+}
+
+// scanCutoff returns the mtime threshold for InitialScan: the earlier of
+// (start of current calendar month) and (now − 35 days). The wider window
+// guarantees we never miss an event near midnight on the 1st of a new
+// month, and gives us slack for future "rolling 30-day" views without
+// touching the scan code.
+func scanCutoff(now time.Time) time.Time {
+	fom := firstOfMonth(now)
+	rolling := now.AddDate(0, 0, -35)
+	if rolling.Before(fom) {
+		return rolling
+	}
+	return fom
 }
 
 func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
