@@ -107,7 +107,7 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        var first = try await reader.onChange(path: path)
+        let first = try await reader.onChange(path: path)
         XCTAssertEqual(first.count, 1)
 
         // Append a new line and re-trigger.
