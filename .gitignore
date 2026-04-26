@@ -5,3 +5,10 @@
 coverage.out
 .DS_Store
 .superpowers/
+
+# Swift / SPM
+macapp/.build/
+macapp/.swiftpm/
+macapp/Package.resolved
+macapp/*.xcodeproj
+DerivedData/
