@@ -266,23 +266,46 @@ public actor Reader {
     }
 
     /// Synchronously enumerate `*.jsonl` files under `root` whose mtime
-    /// is at or after `notBefore`. Returns absolute paths.
+    /// is at or after `notBefore`. Returns absolute paths in the same
+    /// depth-first lexical order Go's `filepath.WalkDir` produces — at
+    /// each directory, entries are sorted by name and dirs are recursed
+    /// in place. This matters because Claude Code's main session file
+    /// `<uuid>.jsonl` and its subagents directory `<uuid>/subagents/...`
+    /// share messageIds for ~30% of turns; first-seen wins the dedupe,
+    /// so traversal order decides whether those shared events are
+    /// attributed to main or sub. WalkDir visits the dir `<uuid>` before
+    /// the file `<uuid>.jsonl` (because `.` > nothing lexically), so
+    /// subagent files are read first → sub wins the dedupe. We mirror
+    /// that exactly.
     private static func candidateJSONLs(under root: String, notBefore: Date) -> [String] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: root, isDirectory: true),
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: []) else { return [] }
-
         var paths: [String] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl" else { continue }
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
-            guard values?.isRegularFile == true else { continue }
-            if let mtime = values?.contentModificationDate, mtime < notBefore { continue }
-            paths.append(url.path)
-        }
+        walkDirLikeGo(URL(fileURLWithPath: root, isDirectory: true),
+                      notBefore: notBefore, into: &paths)
         return paths
+    }
+
+    private static func walkDirLikeGo(_ dir: URL, notBefore: Date, into paths: inout [String]) {
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .contentModificationDateKey],
+            options: []
+        )) ?? []
+        // Sort by lastPathComponent — the bare name. This matches Go's
+        // filepath.WalkDir ordering, where the dir entry "<uuid>" sorts
+        // before the file "<uuid>.jsonl".
+        let sorted = entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for entry in sorted {
+            let values = try? entry.resourceValues(
+                forKeys: [.isDirectoryKey, .isRegularFileKey, .contentModificationDateKey])
+            if values?.isDirectory == true {
+                walkDirLikeGo(entry, notBefore: notBefore, into: &paths)
+            } else if values?.isRegularFile == true,
+                      entry.pathExtension == "jsonl" {
+                if let mtime = values?.contentModificationDate, mtime < notBefore { continue }
+                paths.append(entry.path)
+            }
+        }
     }
 }
 

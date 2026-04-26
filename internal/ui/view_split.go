@@ -5,13 +5,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
-// modelBarPalette assigns a consistent colour per model family so the
+// modelBarStyle assigns a consistent colour per model family so the
 // horizontal bars are readable at a glance.
 func modelBarStyle(model string) lipgloss.Style {
 	switch {
@@ -25,6 +24,27 @@ func modelBarStyle(model string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 }
 
+// inlineBar renders a fixed-width bar where `frac` (0..1) of the cells
+// are filled with the styled glyph and the rest with a dim track. This
+// replaces ntcharts' horizontal barchart for the split view: that
+// component required a separate canvas and produced misaligned
+// rendering for the small (≤4 bars) chart we want here.
+func inlineBar(width int, frac float64, style lipgloss.Style) string {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	filled := int(float64(width)*frac + 0.5)
+	if filled > width {
+		filled = width
+	}
+	bar := style.Render(strings.Repeat("█", filled))
+	track := styleDim.Render(strings.Repeat("░", width-filled))
+	return bar + track
+}
+
 func viewSplit(t agg.Totals) string {
 	var b strings.Builder
 	dayTotal := sumUSD(t.Day)
@@ -36,7 +56,7 @@ func viewSplit(t agg.Totals) string {
 		styleHead.Render("Month"),
 		styleMoney.Render(FormatUSD(monthTotal)),
 	))
-	b.WriteString(styleDim.Render(strings.Repeat("─", 48)) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")
 
 	names := make([]string, 0, len(t.Day))
 	for name := range t.Day {
@@ -46,40 +66,16 @@ func viewSplit(t agg.Totals) string {
 		return t.Day[names[i]].USD > t.Day[names[j]].USD
 	})
 
-	// Horizontal barchart, one bar per model. Width is generous so the
-	// labels (left) and values (right) breathe; height = number of bars.
-	if len(names) > 0 && dayTotal > 0 {
-		const chartW = 48
-		bars := make([]barchart.BarData, 0, len(names))
-		for _, n := range names {
-			md := t.Day[n]
-			bars = append(bars, barchart.BarData{
-				Label: fmt.Sprintf("%-7s", shortModel(n)),
-				Values: []barchart.BarValue{{
-					Name:  n,
-					Value: md.USD,
-					Style: modelBarStyle(n),
-				}},
-			})
-		}
-		bc := barchart.New(chartW, len(bars), barchart.WithHorizontalBars())
-		bc.PushAll(bars)
-		bc.Draw()
-		b.WriteString(bc.View() + "\n")
-	}
-
-	// Keep the per-model amount + percentage list below the chart so
-	// you still get the exact dollar values at a glance.
+	const barW = 24
 	for _, n := range names {
 		md := t.Day[n]
-		pct := 0.0
+		frac := 0.0
 		if dayTotal > 0 {
-			pct = md.USD / dayTotal * 100
+			frac = md.USD / dayTotal
 		}
-		line := fmt.Sprintf("  %-14s %9s  %4.0f%%\n", shortModel(n), FormatUSD(md.USD), pct)
-		if pct < 10 {
-			line = styleDim.Render(line)
-		}
+		bar := inlineBar(barW, frac, modelBarStyle(n))
+		line := fmt.Sprintf("  %-7s %s %9s  %4.0f%%\n",
+			shortModel(n), bar, FormatUSD(md.USD), frac*100)
 		b.WriteString(line)
 	}
 	return b.String()
