@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 // modelBarStyle assigns a consistent colour per model family so the

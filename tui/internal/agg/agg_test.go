@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jverhoeks/claudecounter/internal/pricing"
-	"github.com/jverhoeks/claudecounter/internal/reader"
+	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/reader"
 )
 
 func priced() pricing.Table {

@@ -201,13 +201,30 @@ attribution · format helpers. UI rendering is intentionally not tested
 
 ## 📁 Project layout
 
+Two sibling apps under one repo. Either is a complete, standalone
+implementation — pick whichever fits your workflow.
+
 ```
-cmd/claudecounter/        main, integration test
-internal/pricing/         model pricing table, fetch, defaults
-internal/reader/          JSONL tailing + project/subagent attribution
-internal/agg/             token aggregator, snapshot, civil-day bucketing
-internal/watcher/         fsnotify wrapper with recursive AddTree
-internal/ui/              bubbletea model + three views
+tui/                                  ← Go TUI (`claudecounter` binary)
+  cmd/claudecounter/                    main, integration test
+  internal/pricing/                     model pricing table, fetch, defaults
+  internal/reader/                      JSONL tailing + project/subagent attribution
+  internal/agg/                         token aggregator, snapshot, civil-day bucketing
+  internal/watcher/                     fsnotify wrapper with recursive AddTree
+  internal/ui/                          bubbletea model + three views
+  go.mod                                module: github.com/jverhoeks/claudecounter/tui
+
+macapp/                               ← Swift menu bar app (ClaudeCounterBar.app)
+  Package.swift
+  Sources/ClaudeCounterCore/            headless library (Pricing, Reader,
+                                        Aggregator, Watcher, Cache, AppState)
+  Sources/ClaudeCounterBar/             SwiftUI MenuBarExtra + popover
+  Tests/ClaudeCounterCoreTests/         72 unit tests, incl. cross-language
+                                        conformance against the Go fixtures
+  scripts/build-app.sh                  bundle `.app` from the SPM exe
+
+Makefile                              ← drives both: `make build` (TUI),
+                                        `make macapp`, `make test-all`, etc.
 ```
 
 ## 📜 License

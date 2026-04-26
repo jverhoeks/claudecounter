@@ -8,7 +8,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 var (

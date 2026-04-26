@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 type ViewMode int

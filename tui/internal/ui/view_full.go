@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 func viewFull(t agg.Totals, recent []string, streamlineView string) string {

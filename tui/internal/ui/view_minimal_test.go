@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jverhoeks/claudecounter/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 // TestViewMinimal_SparklineRenders is a smoke test: with a non-empty

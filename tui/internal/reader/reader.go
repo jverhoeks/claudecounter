@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jverhoeks/claudecounter/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 )
 
 type Event struct {

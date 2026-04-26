@@ -1,4 +1,4 @@
-module github.com/jverhoeks/claudecounter
+module github.com/jverhoeks/claudecounter/tui
 
 go 1.25.0
 
