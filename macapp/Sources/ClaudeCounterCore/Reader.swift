@@ -171,6 +171,23 @@ public actor Reader {
         offsets.removeValue(forKey: path)
     }
 
+    /// Replace per-file offsets — used after restoring from cache so the
+    /// next OnChange picks up where the old session left off.
+    public func seedOffsets(_ newOffsets: [String: Int64]) {
+        offsets = newOffsets
+    }
+
+    /// Snapshot of the per-file byte offset map.
+    public func allOffsets() -> [String: Int64] {
+        return offsets
+    }
+
+    /// Drop all offset state and reset diagnostics. Used by manual Refresh.
+    public func resetAll() {
+        offsets.removeAll(keepingCapacity: true)
+        parseErrors = 0
+    }
+
     /// Read any new complete lines since the last offset, returning their
     /// parsed events. Updates the offset to point at the byte just past the
     /// last `\n`. Bytes after the last newline (incomplete tail) stay
@@ -231,21 +248,14 @@ public actor Reader {
     /// After this returns, the reader's offset map reflects the end of
     /// every scanned file.
     public func initialScan(root: String, notBefore: Date) async throws -> [UsageEvent] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: root, isDirectory: true),
-                                             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-                                             options: []) else {
-            return []
-        }
+        // Collect candidate paths synchronously first — Swift 6 forbids
+        // iterating FileManager.enumerator across async suspension points.
+        let candidates = Self.candidateJSONLs(under: root, notBefore: notBefore)
 
         var allEvents: [UsageEvent] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl" else { continue }
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
-            guard values?.isRegularFile == true else { continue }
-            if let mtime = values?.contentModificationDate, mtime < notBefore { continue }
+        for path in candidates {
             do {
-                let evs = try await onChange(path: url.path)
+                let evs = try await onChange(path: path)
                 allEvents.append(contentsOf: evs)
             } catch {
                 // Don't abort the whole scan if a single file is unreadable.
@@ -253,6 +263,26 @@ public actor Reader {
             }
         }
         return allEvents
+    }
+
+    /// Synchronously enumerate `*.jsonl` files under `root` whose mtime
+    /// is at or after `notBefore`. Returns absolute paths.
+    private static func candidateJSONLs(under root: String, notBefore: Date) -> [String] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: root, isDirectory: true),
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: []) else { return [] }
+
+        var paths: [String] = []
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "jsonl" else { continue }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            if let mtime = values?.contentModificationDate, mtime < notBefore { continue }
+            paths.append(url.path)
+        }
+        return paths
     }
 }
 
