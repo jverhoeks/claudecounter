@@ -59,7 +59,7 @@ func TestEndToEnd_NewFileAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	if err := w.AddTree(root); err != nil {
+	if err := w.AddTree(root, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -3,6 +3,7 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -39,19 +40,31 @@ func (w *Watcher) Events() <-chan Change { return w.out }
 
 func (w *Watcher) Close() error { return w.fs.Close() }
 
-// AddTree watches root and every directory beneath it (recursively).
-// Recursion is necessary because subagent transcripts live nested at
-// <root>/<project>/<session-uuid>/subagents/, two levels deeper than
-// regular session jsonls. New subdirs created at any level are picked
-// up by handle() on Create events.
-func (w *Watcher) AddTree(root string) error {
+// AddTree watches root and every directory beneath it whose mtime is
+// at or after notBefore. Recursion is necessary because subagent
+// transcripts live nested at <root>/<project>/<session>/subagents/,
+// two levels deeper than regular session jsonls. The mtime filter
+// keeps the watcher count down to just the recently-active sessions —
+// historical dead sessions can't produce new events anyway, and on
+// large trees registering thousands of fsnotify watches blows past
+// per-process kqueue/inotify fd limits. The root itself is always
+// added so newly-appearing subdirs get caught via Create events.
+//
+// Pass time.Time{} (zero value) to disable filtering and watch
+// everything; useful in tests.
+func (w *Watcher) AddTree(root string, notBefore time.Time) error {
+	skip := !notBefore.IsZero()
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || !d.IsDir() {
 			return nil
 		}
-		if d.IsDir() {
-			_ = w.fs.Add(path)
+		if skip && path != root {
+			info, err := d.Info()
+			if err == nil && info.ModTime().Before(notBefore) {
+				return filepath.SkipDir
+			}
 		}
+		_ = w.fs.Add(path)
 		return nil
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -162,9 +163,10 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 		log.Fatalf("watcher: %v", err)
 	}
 	defer w.Close()
-	if err := w.AddTree(root); err != nil {
-		log.Fatalf("watcher add: %v", err)
-	}
+	// AddTree is deferred to the background goroutine below — registering
+	// fsnotify watchers for thousands of subdirs is slow and would block
+	// prog.Run() (i.e. the alt-screen never opens). Live updates start
+	// working once that goroutine completes the AddTree pass.
 
 	m := ui.NewModel()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
@@ -188,9 +190,22 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
+		// Register fsnotify watchers in parallel with the initial
+		// scan: AddTree is mostly syscall-bound, InitialScan is
+		// I/O-bound, so both running concurrently roughly halves the
+		// cold-start time.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := w.AddTree(root, notBefore); err != nil {
+				log.Printf("watcher add: %v", err)
+			}
+		}()
 		if err := r.InitialScan(root, notBefore); err != nil {
 			log.Printf("initial scan: %v", err)
 		}
+		wg.Wait()
 		// Push the post-backfill snapshot once, then unblock the live
 		// tail and tell the UI to drop the spinner.
 		prog.Send(ui.SnapshotMsg{

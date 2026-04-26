@@ -16,7 +16,7 @@ func TestWatcher_EmitsWriteEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	if err := w.AddTree(dir); err != nil {
+	if err := w.AddTree(dir, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -36,7 +36,7 @@ func TestWatcher_PicksUpNewSubdir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	if err := w.AddTree(dir); err != nil {
+	if err := w.AddTree(dir, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 

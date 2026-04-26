@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -196,32 +197,59 @@ func projectFromPath(path string) string {
 }
 
 // InitialScan walks root/**/*.jsonl recursively and reads every file
-// whose mtime is at or after notBefore. The recursion is required to
+// whose mtime is at or after notBefore. Files are read in parallel
+// across runtime.NumCPU() workers — OnChange is concurrency-safe on
+// distinct paths (mutex covers only offsets/counters; the event
+// channel send is independently safe). The recursion is required to
 // pick up subagent transcripts, which Claude Code writes to
 // <project>/<session-uuid>/subagents/agent-*.jsonl — these carry the
-// usage of Task-tool subagents and account for the bulk of token volume
-// on heavy days. After this returns, the reader's offset map reflects
-// the end of every scanned file.
+// usage of Task-tool subagents and account for the bulk of token
+// volume on heavy days. After this returns, the reader's offset map
+// reflects the end of every scanned file.
 func (r *Reader) InitialScan(root string, notBefore time.Time) error {
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			// Don't abort the whole scan if a single subdir is unreadable.
+	paths := make(chan string, 256)
+
+	walkErr := make(chan error, 1)
+	go func() {
+		walkErr <- filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if filepath.Ext(d.Name()) != ".jsonl" {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			if info.ModTime().Before(notBefore) {
+				return nil
+			}
+			paths <- path
 			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if filepath.Ext(d.Name()) != ".jsonl" {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if info.ModTime().Before(notBefore) {
-			return nil
-		}
-		_ = r.OnChange(path)
-		return nil
-	})
+		})
+		close(paths)
+	}()
+
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > 8 {
+		// Past 8 we hit diminishing returns and risk fd pressure on
+		// modest ulimits. Disk read bandwidth is the bottleneck.
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for p := range paths {
+				_ = r.OnChange(p)
+			}
+		}()
+	}
+	wg.Wait()
+	return <-walkErr
 }
