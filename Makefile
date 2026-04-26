@@ -66,9 +66,26 @@ build-all: ## Cross-build all platforms (always rebuilds every target)
 		GOOS=$$goos GOARCH=$$goarch go build -ldflags="$(LDFLAGS)" -o "$$out" $(PKG) || exit 1; \
 	done
 
+.PHONY: macapp
+macapp: ## Build the macOS menu bar app (.app bundle into dist/)
+	./macapp/scripts/build-app.sh release
+
+.PHONY: macapp-debug
+macapp-debug: ## Build a debug .app for fast iteration
+	./macapp/scripts/build-app.sh debug
+
+.PHONY: macapp-test
+macapp-test: ## Run Swift unit tests for the macapp core library
+	cd macapp && swift test
+
+.PHONY: macapp-run
+macapp-run: macapp ## Build and launch the menu bar app
+	open $(DIST)/ClaudeCounterBar.app
+
 .PHONY: clean
 clean: ## Remove built artefacts
 	rm -rf $(BINARY) $(DIST) coverage.out
+	rm -rf macapp/.build macapp/.swiftpm
 
 .PHONY: ccusage-diff
 ccusage-diff: build ## Compare today's totals against ccusage

@@ -46,13 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            await appState.stop()
-            semaphore.signal()
-        }
-        // Block briefly so the cache flush completes before exit.
-        _ = semaphore.wait(timeout: .now() + 2.0)
+        // Kick off the async cache flush. macOS gives the app a few
+        // seconds to wind down before SIGKILL, which is enough for the
+        // small JSON write. We do NOT block the main thread here —
+        // `applicationWillTerminate` runs on the MainActor, and any
+        // semaphore-style join would deadlock the @MainActor-bound
+        // Task we just spawned.
+        Task { await appState.stop() }
     }
 
     private static func defaultProjectsRoot() -> String {

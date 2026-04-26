@@ -178,15 +178,11 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	liveTail := make(chan struct{})
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
 
-	// Seed an initial snapshot so any pricing warnings show in the
-	// footer immediately — totals are zero until the backfill makes
-	// progress, which the spinner header signals.
-	prog.Send(ui.SnapshotMsg{
-		Totals:      a.Snapshot(),
-		ParseErrors: r.ParseErrors(),
-		Dupes:       a.Dupes(),
-		PricingWarn: pricingWarn,
-	})
+	// NOTE: bubbletea's program.Send blocks on an unbuffered channel
+	// until prog.Run() is reading. Anything that calls Send must run
+	// in a goroutine that will only fire AFTER Run has started — the
+	// pipeline ticker (250 ms) and the backfill completion send below
+	// both satisfy that. Don't send synchronously from this point.
 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
@@ -250,7 +246,10 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 
-	dirty := false
+	// Start dirty=true so the very first tick (~250 ms after Run starts)
+	// flushes an initial snapshot — that's how pricing warnings reach
+	// the footer without a synchronous Send before Run.
+	dirty := true
 	flush := func() {
 		if !dirty {
 			return

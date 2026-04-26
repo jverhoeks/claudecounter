@@ -111,6 +111,10 @@ public final class AppState: ObservableObject {
         }
         self.liveTailOpen = true
         self.status = .live
+
+        // Persist now so that even a crash a moment later keeps the
+        // post-backfill state durable.
+        await flushCache()
     }
 
     /// Tear down the pipeline. Persists current state to cache.
