@@ -5,18 +5,13 @@ import ClaudeCounterCore
 /// 8-bar sparkline of today's last 8 hours + today's $ figure.
 ///
 /// Lifecycle states:
-/// - `.starting` / `.scanning` (with no live data yet) → show a flat
-///   placeholder sparkline + `$0.00` so the label always renders
-///   *something* from the moment the SwiftUI scene mounts. Subtle
-///   pulse animation telegraphs "doing work".
+/// - `.starting` / `.scanning` (with no live data yet) → flat placeholder
+///   bars + `$0.00`, dim text, soft pulse on the bars.
 /// - `.live` → real sparkline + real `$today`.
 /// - `.noProjectsRoot` → a dash so the user knows there's no data path.
 struct MenuBarLabel: View {
     @ObservedObject var state: AppState
 
-    /// `true` while the pipeline hasn't produced any usable totals yet.
-    /// We treat both `.starting` and `.scanning` (with $0 totals) as
-    /// loading so the UI doesn't promise live numbers prematurely.
     private var isLoading: Bool {
         switch state.status {
         case .starting:           return true
@@ -26,12 +21,15 @@ struct MenuBarLabel: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             SparkBars(
                 values: lastEightHours(of: state.totals.todayHourlyUSD),
                 pulsing: isLoading
             )
-            .frame(width: 24, height: 12)
+            // Important: explicit absolute size. MenuBarExtra hands
+            // unreliable bounds to GeometryReader, so SparkBars below
+            // draws at fixed pixel sizes and we just frame it here.
+            .frame(width: 28, height: 14)
 
             Text(labelText)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -44,9 +42,6 @@ struct MenuBarLabel: View {
 
     private var labelText: String {
         if case .noProjectsRoot = state.status { return "—" }
-        // During loading the formatter still produces "$0.00" (the
-        // truthful starting value); once `.live` arrives the same path
-        // animates over to the real number without a flicker.
         return formatUSDCompact(todayUSD())
     }
 
@@ -62,25 +57,51 @@ struct MenuBarLabel: View {
     }
 }
 
-/// Tiny vertical-bar sparkline. Heights normalised to the max value
-/// in the slice; an all-zero slice draws as flat baseline bars. When
-/// `pulsing` is true (loading state) the bars dim and pulse softly so
-/// the label clearly reads as "still working" instead of "just $0".
+/// Tiny vertical-bar sparkline drawn with `Canvas`.
+///
+/// Why Canvas instead of SwiftUI shapes inside a GeometryReader: a
+/// `MenuBarExtra` label is rendered into the system menu bar, where
+/// SwiftUI hands GeometryReader children unreliable bounds (often
+/// 0×0 on first paint). That's why the sparkline was invisible in the
+/// previous build. Canvas gets explicit pixel-space drawing routines
+/// that the menu bar host renders correctly.
 struct SparkBars: View {
     let values: [Double]
     var pulsing: Bool = false
 
-    @State private var pulseOpacity: Double = 0.55
+    @State private var pulseOpacity: Double = 0.85
+
+    private let barCount: Int = 8
+    private let barWidth: CGFloat = 2.5
+    private let barSpacing: CGFloat = 1
+    private let barCorner: CGFloat = 1
 
     var body: some View {
-        GeometryReader { geo in
+        Canvas { context, size in
             let maxV = max(values.max() ?? 0, 0.0001)
-            HStack(alignment: .bottom, spacing: 1.5) {
-                ForEach(Array(values.enumerated()), id: \.offset) { _, v in
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Color.green.opacity(pulsing ? pulseOpacity : 0.85))
-                        .frame(height: max(2, CGFloat(v / maxV) * geo.size.height))
-                }
+            let totalW = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
+            let xOffset = max(0, (size.width - totalW) / 2)
+            let h = size.height
+
+            // Take the last `barCount` values; pad with zero on the left
+            // so the sparkline grows right-to-left as the day fills in.
+            var slice = values
+            if slice.count < barCount {
+                slice = Array(repeating: 0, count: barCount - slice.count) + slice
+            } else if slice.count > barCount {
+                slice = Array(slice.suffix(barCount))
+            }
+
+            let opacity = pulsing ? pulseOpacity : 0.85
+            let color = Color.green.opacity(opacity)
+
+            for i in 0..<barCount {
+                let v = slice[i]
+                let barH = max(2, CGFloat(v / maxV) * h)
+                let x = xOffset + CGFloat(i) * (barWidth + barSpacing)
+                let rect = CGRect(x: x, y: h - barH, width: barWidth, height: barH)
+                let path = Path(roundedRect: rect, cornerRadius: barCorner)
+                context.fill(path, with: .color(color))
             }
         }
         .onAppear {
@@ -93,8 +114,8 @@ struct SparkBars: View {
 
     private func startPulse() {
         // Soft fade between 0.30 and 0.55 — visible motion without
-        // shouting. Mirrors the menu bar idiom used by Time Machine /
-        // Bartender's loading hints.
+        // shouting. Mirrors the loading idiom used by Time Machine.
+        pulseOpacity = 0.55
         withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
             pulseOpacity = 0.30
         }

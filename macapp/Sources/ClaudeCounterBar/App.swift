@@ -12,8 +12,15 @@ struct ClaudeCounterBarApp: App {
     var body: some Scene {
         MenuBarExtra {
             PopoverView(state: delegate.appState)
-                .frame(width: 520)
-                .frame(minHeight: 360, maxHeight: 600)
+                // Fixed width + bounded height. SwiftUI's MenuBarExtra
+                // window opens at the size we declare here; without an
+                // explicit height it grows to the natural content size,
+                // and on shorter screens the top of the popover ends
+                // up clipped behind the menu bar overlay (you'd see
+                // the project list with the hero / chart pushed off
+                // the visible area). Bounding to 540pt keeps the whole
+                // dashboard on a 13" laptop.
+                .frame(width: 520, height: 540)
         } label: {
             MenuBarLabel(state: delegate.appState)
         }

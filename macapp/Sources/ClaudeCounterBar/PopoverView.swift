@@ -4,25 +4,43 @@ import ClaudeCounterCore
 /// Two-Column Hybrid popover (layout B from the design):
 /// hero numbers + chart on top → models | projects side-by-side →
 /// live tail at the bottom → footer with refresh + ⚙.
+///
+/// The variable-height block in the middle (the two tables) is wrapped
+/// in a ScrollView so a 12-project month doesn't push the hero / chart
+/// off-screen. The footer stays pinned at the bottom outside the scroll.
 struct PopoverView: View {
     @ObservedObject var state: AppState
     @State private var refreshing: Bool = false
     @State private var showSettings: Bool = false
 
+    /// Cap each table at the top-N rows by USD. Anything beyond is
+    /// reachable via the TUI / `claudecounter --once` — the menu bar
+    /// is a glanceable surface, not the full ledger.
+    private let topN = 8
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Pinned-top: identity + chart. These are the "glance"
+            // surface and must always be visible.
             HeroRow(state: state)
             HourlyChartRow(hourlyUSD: state.totals.todayHourlyUSD)
 
-            HStack(alignment: .top, spacing: 16) {
-                ByModelTable(month: state.totals.month)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                ByProjectTable(month: state.totals.monthProj)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // Scrollable middle: tables + live tail. Sized to fill
+            // remaining vertical space.
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 16) {
+                        ByModelTable(month: state.totals.month, topN: topN)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ByProjectTable(month: state.totals.monthProj, topN: topN)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    LiveTailSection(events: state.live)
+                }
             }
+            .frame(maxHeight: .infinity)
 
-            LiveTailSection(events: state.live)
-
+            // Pinned-bottom: refresh + settings.
             FooterRow(
                 state: state,
                 refreshing: $refreshing,
@@ -105,6 +123,7 @@ struct HourlyChartRow: View {
 
 struct ByModelTable: View {
     let month: [String: ModelDay]
+    var topN: Int = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -131,16 +150,24 @@ struct ByModelTable: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            if hiddenCount > 0 {
+                Text("+ \(hiddenCount) more")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private var rows: [(String, Double, Double)] {
+    private var sortedRows: [(String, Double, Double)] {
         let total = month.values.reduce(0) { $0 + $1.usd }
         return month
             .map { (name: $0.key, usd: $0.value.usd) }
             .sorted { $0.usd > $1.usd }
             .map { ($0.name, $0.usd, total > 0 ? $0.usd / total : 0) }
     }
+
+    private var rows: [(String, Double, Double)] { Array(sortedRows.prefix(topN)) }
+    private var hiddenCount: Int { max(0, sortedRows.count - topN) }
 
     private func shortModel(_ name: String) -> String {
         // claude-opus-4-7 → opus-4-7 (drop "claude-" prefix for compactness)
@@ -153,6 +180,7 @@ struct ByModelTable: View {
 
 struct ByProjectTable: View {
     let month: [String: ProjectDay]
+    var topN: Int = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -182,15 +210,23 @@ struct ByProjectTable: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            if hiddenCount > 0 {
+                Text("+ \(hiddenCount) more")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private var rows: [(String, Double, Double, Double)] {
+    private var sortedRows: [(String, Double, Double, Double)] {
         month
             .map { (name: $0.key, total: $0.value.totalUSD, main: $0.value.mainUSD, sub: $0.value.subUSD) }
             .sorted { $0.total > $1.total }
             .map { ($0.name, $0.total, $0.main, $0.sub) }
     }
+
+    private var rows: [(String, Double, Double, Double)] { Array(sortedRows.prefix(topN)) }
+    private var hiddenCount: Int { max(0, sortedRows.count - topN) }
 
     private func shortProject(_ encoded: String) -> String {
         // Drop the leading parts that come from /Users/<u>/.... and show
