@@ -4,7 +4,9 @@ import (
 	"fmt"
 
 	"github.com/NimbleMarkets/ntcharts/linechart/streamlinechart"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jverhoeks/claudecounter/internal/agg"
 )
@@ -32,6 +34,10 @@ type RecentEventMsg struct {
 	Cost float64 // event cost in USD; pushed into the streamlinechart
 }
 
+// BackfillDoneMsg signals that InitialScan has finished, so the
+// "loading files…" spinner should be replaced by live state.
+type BackfillDoneMsg struct{}
+
 const (
 	recentCap        = 20
 	streamlineWidth  = 60
@@ -48,6 +54,9 @@ type Model struct {
 	width       int
 	height      int
 
+	loading bool
+	spin    spinner.Model
+
 	// streamline is updated incrementally as RecentEventMsg arrives,
 	// so the rolling line is preserved across renders. Sparkline and
 	// barchart are stateless — they're built from the latest snapshot
@@ -56,13 +65,18 @@ type Model struct {
 }
 
 func NewModel() Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 	return Model{
 		mode:       ModeSplit,
+		loading:    true,
+		spin:       sp,
 		streamline: streamlinechart.New(streamlineWidth, streamlineHeight),
 	}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return m.spin.Tick }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -93,11 +107,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streamline.Push(msg.Cost)
 		m.streamline.Draw()
+	case BackfillDoneMsg:
+		m.loading = false
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
 
 func (m Model) View() string {
+	header := ""
+	if m.loading {
+		header = m.spin.View() + " loading files…\n"
+	}
+
 	var body string
 	switch m.mode {
 	case ModeMinimal:
@@ -111,7 +136,7 @@ func (m Model) View() string {
 	for _, w := range m.warns {
 		footer = w + "\n" + footer
 	}
-	return body + "\n" + footer + "\n"
+	return header + body + "\n" + footer + "\n"
 }
 
 func collectWarns(s SnapshotMsg) []string {

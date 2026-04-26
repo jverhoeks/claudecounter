@@ -176,18 +176,30 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	liveTail := make(chan struct{})
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
 
+	// Seed an initial snapshot so any pricing warnings show in the
+	// footer immediately — totals are zero until the backfill makes
+	// progress, which the spinner header signals.
+	prog.Send(ui.SnapshotMsg{
+		Totals:      a.Snapshot(),
+		ParseErrors: r.ParseErrors(),
+		Dupes:       a.Dupes(),
+		PricingWarn: pricingWarn,
+	})
+
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
 		if err := r.InitialScan(root, notBefore); err != nil {
 			log.Printf("initial scan: %v", err)
 		}
-		// Push the post-backfill snapshot once, then unblock the live tail.
+		// Push the post-backfill snapshot once, then unblock the live
+		// tail and tell the UI to drop the spinner.
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
+		prog.Send(ui.BackfillDoneMsg{})
 		close(liveTail)
 	}()
 
