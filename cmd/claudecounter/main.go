@@ -57,6 +57,9 @@ func main() {
 
 // runOnce scans the projects tree once, prints a plain-text summary, and exits.
 func runOnce(root string, table pricing.Table, pricingWarn string) {
+	fmt.Fprintf(os.Stderr, "scanning %s …\n", root)
+	start := time.Now()
+
 	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
@@ -75,6 +78,8 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	}
 	close(evCh)
 	<-done
+
+	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
 
 	snap := a.Snapshot()
 	if pricingWarn != "" {
@@ -164,23 +169,26 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	m := ui.NewModel()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
-	go pipeline(w, r, a, evCh, prog, table, pricingWarn)
+	// liveTail is closed by the backfill goroutine once InitialScan
+	// completes. Until then the pipeline only updates the aggregator —
+	// it does NOT emit RecentEventMsg per backfill event (47k+ events
+	// would flood bubbletea's message queue and delay first paint).
+	liveTail := make(chan struct{})
+	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
 
-	// Backfill in the background so the UI appears immediately. The
-	// pipeline goroutine consumes events from evCh as the scan produces
-	// them, and periodic flushes push snapshots so the user sees the
-	// numbers climb during the scan.
 	go func() {
 		notBefore := firstOfMonth(time.Now().Local())
 		if err := r.InitialScan(root, notBefore); err != nil {
 			log.Printf("initial scan: %v", err)
 		}
+		// Push the post-backfill snapshot once, then unblock the live tail.
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
+		close(liveTail)
 	}()
 
 	if _, err := prog.Run(); err != nil {
@@ -193,7 +201,8 @@ func firstOfMonth(t time.Time) time.Time {
 }
 
 func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
-	evCh chan reader.Event, prog *tea.Program, table pricing.Table, pricingWarn string) {
+	evCh chan reader.Event, prog *tea.Program, table pricing.Table, pricingWarn string,
+	liveTail <-chan struct{}) {
 
 	// Periodic flush tick keeps the UI moving during heavy bursts
 	// (e.g. the backfill) where an event-only debounce would keep resetting.
@@ -214,6 +223,15 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 		dirty = false
 	}
 
+	tailOpen := func() bool {
+		select {
+		case <-liveTail:
+			return true
+		default:
+			return false
+		}
+	}
+
 	for {
 		select {
 		case c, ok := <-w.Events():
@@ -228,20 +246,25 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 			}
 		case e := <-evCh:
 			a.Apply(e)
-			cost := table.Cost(e.Model, e.Usage)
-			tag := ""
-			if e.IsSubagent {
-				tag = " (sub)"
+			// Only stream events into the live tail AFTER backfill
+			// is complete — otherwise the 47k+ backfill events flood
+			// bubbletea's message queue and delay first paint.
+			if tailOpen() {
+				cost := table.Cost(e.Model, e.Usage)
+				tag := ""
+				if e.IsSubagent {
+					tag = " (sub)"
+				}
+				prog.Send(ui.RecentEventMsg{
+					Line: fmt.Sprintf("%s  %-22s %-8s %s%s",
+						e.Timestamp.Local().Format("15:04:05"),
+						trimRight(filepath.Base(e.Cwd), 22),
+						shortModelTag(e.Model),
+						ui.FormatUSD(cost),
+						tag,
+					),
+				})
 			}
-			prog.Send(ui.RecentEventMsg{
-				Line: fmt.Sprintf("%s  %-22s %-8s %s%s",
-					e.Timestamp.Local().Format("15:04:05"),
-					trimRight(filepath.Base(e.Cwd), 22),
-					shortModelTag(e.Model),
-					ui.FormatUSD(cost),
-					tag,
-				),
-			})
 			dirty = true
 		case <-tick.C:
 			flush()
