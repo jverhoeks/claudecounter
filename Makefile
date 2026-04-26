@@ -94,6 +94,20 @@ macapp-test: ## Run Swift unit tests for the macapp core library
 macapp-run: macapp ## Build and launch the menu bar app
 	open $(DIST)/ClaudeCounterBar.app
 
+.PHONY: macapp-release
+macapp-release: ## Package macapp as a distributable .zip + .sha256 (use VERSION=v1.0.0)
+	VERSION=$(VERSION) ./macapp/scripts/release-macapp.sh
+
+.PHONY: macapp-publish
+macapp-publish: ## Tag macapp-VERSION + push (CI builds + creates GitHub Release)
+	@if [ "$(VERSION)" = "dev" ]; then \
+		echo "VERSION=v1.0.0 required, e.g. make macapp-publish VERSION=v1.0.0"; exit 1; \
+	fi
+	git tag -a macapp-$(VERSION) -m "ClaudeCounterBar $(VERSION)"
+	git push origin macapp-$(VERSION)
+	@echo "Tag pushed. Watch the release build at:"
+	@echo "  https://github.com/jverhoeks/claudecounter/actions"
+
 # ────────────────────── meta ──────────────────────
 
 .PHONY: test-all

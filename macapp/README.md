@@ -36,7 +36,58 @@ and pricing source see the [root README](../README.md).
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
 
-## 🚀 Install / build
+## 📦 Install (release build)
+
+Grab the latest `.zip` from the
+[Releases page](https://github.com/jverhoeks/claudecounter/releases?q=macapp)
+(tags shaped `macapp-vX.Y.Z`):
+
+```bash
+# 1. Download (replace <version> with the tag, e.g. v1.0.0)
+curl -LO https://github.com/jverhoeks/claudecounter/releases/download/macapp-<version>/ClaudeCounterBar-<version>-macos-arm64.zip
+
+# 2. Verify the checksum (optional)
+curl -LO https://github.com/jverhoeks/claudecounter/releases/download/macapp-<version>/ClaudeCounterBar-<version>-macos-arm64.zip.sha256
+shasum -a 256 -c ClaudeCounterBar-<version>-macos-arm64.zip.sha256
+
+# 3. Unzip into Applications (ditto preserves the bundle structure)
+ditto -xk ClaudeCounterBar-<version>-macos-arm64.zip /Applications/
+
+# 4. Strip the Gatekeeper quarantine flag.
+#    The release is ad-hoc signed but not notarized (see "About signing"
+#    below). Without this step, macOS refuses to launch the app on first
+#    open with a "cannot be opened because it is from an unidentified
+#    developer" dialog.
+xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
+
+# 5. Launch
+open /Applications/ClaudeCounterBar.app
+```
+
+The app is **menu-bar-only** (`LSUIElement = YES`) — no Dock icon, no
+window. Quit via the ⚙ menu inside the popover or
+`osascript -e 'tell application "ClaudeCounterBar" to quit'`.
+
+**Requirements:** macOS 13+ on Apple Silicon (arm64). Intel build on
+request — open an issue.
+
+### About signing
+
+The release `.app` is signed with an **ad-hoc** signature, which lets
+the bundle launch and stops Gatekeeper from refusing the executable
+outright, but is not the same as a notarized Developer ID signature.
+Without notarization, macOS marks any downloaded `.app` with a
+quarantine extended attribute that triggers the "unidentified
+developer" dialog on first launch. The `xattr -dr com.apple.quarantine`
+step above removes that attribute.
+
+Notarization (which would eliminate this step) requires a paid
+[Apple Developer Program](https://developer.apple.com/programs/)
+membership ($99/year). Once that's in place, the release workflow
+gains a `xcrun notarytool submit` + `xcrun stapler staple` pair and
+this section goes away.
+
+## 🛠️ Build from source
 
 ### From the repo root
 
@@ -46,10 +97,6 @@ cd claudecounter
 make macapp
 open dist/ClaudeCounterBar.app
 ```
-
-The app is **menu-bar-only** (`LSUIElement = YES`) — no Dock icon, no
-window. Quit via the ⚙ menu inside the popover or `osascript -e 'tell
-application "ClaudeCounterBar" to quit'`.
 
 ### From this directory
 
@@ -188,17 +235,18 @@ Sources/
     MenuBarLabel.swift                sparkline + $today, with loading pulse
     PopoverView.swift                 hero, hourly chart, tables, live tail
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         72 unit tests
+Tests/ClaudeCounterCoreTests/         74 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
   AggregatorTests.swift               12 tests
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
-  CacheTests.swift                    6 tests
+  CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   AppStateTests.swift                 7 tests, incl. live pipeline + refresh
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
 scripts/build-app.sh                  bundle .app from `swift build`
+scripts/release-macapp.sh             package .app into a .zip + .sha256
 ```
 
 ## 🧪 Tests
@@ -244,20 +292,82 @@ verification via `make macapp-run`).
 | `make macapp-debug` | Build a debug `.app` for fast iteration |
 | `make macapp-test` | Run the Swift unit tests |
 | `make macapp-run` | Build and launch the menu bar app |
+| `make macapp-release VERSION=v1.0.0` | Build + package as `.zip` + `.sha256` in `dist/` |
+| `make macapp-publish VERSION=v1.0.0` | Tag `macapp-vX.Y.Z` + push (CI builds + creates a Release) |
 | `make test-all` | Run Go + Swift suites |
 | `make clean` | Remove `dist/`, `.build/`, `.swiftpm/`, etc. |
 
+## 🚢 Cutting a release (maintainer)
+
+Releases live on GitHub Releases under tags shaped `macapp-vX.Y.Z`.
+The Go TUI uses bare `vX.Y.Z` tags, so the namespace is split — both
+apps version independently.
+
+**Local dry run:**
+
+```bash
+make macapp-release VERSION=v1.0.0
+```
+
+Produces in `dist/`:
+
+```
+ClaudeCounterBar.app
+ClaudeCounterBar-v1.0.0-macos-arm64.zip
+ClaudeCounterBar-v1.0.0-macos-arm64.zip.sha256
+```
+
+Sanity-check the zip by unzipping it elsewhere and launching:
+
+```bash
+( cd /tmp && ditto -xk \
+    /path/to/repo/dist/ClaudeCounterBar-v1.0.0-macos-arm64.zip ./test-install )
+xattr -dr com.apple.quarantine /tmp/test-install/ClaudeCounterBar.app
+open /tmp/test-install/ClaudeCounterBar.app
+```
+
+**Publish to GitHub:**
+
+```bash
+make macapp-publish VERSION=v1.0.0
+```
+
+This tags `macapp-v1.0.0`, pushes, and stops. The
+[`release-macapp.yml`](../.github/workflows/release-macapp.yml)
+workflow takes over from there: it runs the 74-test Swift suite,
+rebuilds the `.app` from a clean checkout on `macos-14` (Apple
+Silicon), produces a fresh `.zip` + `.sha256`, and creates a GitHub
+Release with the install instructions baked into the body.
+
+The workflow can also be triggered manually from the Actions tab via
+`workflow_dispatch` — it'll run the build and upload the artifacts
+to the run summary, but not create a Release. Useful for verifying
+the build works before tagging.
+
+**To revoke a release:** delete the GitHub Release + the tag (`git
+tag -d macapp-v1.0.0 && git push --delete origin macapp-v1.0.0`).
+
 ## 🚧 Out of scope (v1)
 
-These were considered and deferred:
+Considered and deferred:
 
-- Notarization / signed `.dmg` / Homebrew cask
-- Launch-at-login UI toggle (`SMAppService.mainApp.register()` is
-  available; the popover hook isn't wired yet)
-- Budget alerts / red-tint when today exceeds a threshold
-- Per-day or per-week popover views
-- CSV export
-- Sparkle auto-update
+- **Notarization + Developer ID signing** (eliminates the `xattr`
+  step on first launch) — needs a paid Apple Developer Program
+  membership; the `release-macapp.yml` workflow is structured so the
+  notarization steps can be added when that's available without
+  reshaping anything.
+- **Homebrew Cask** (`brew install --cask claudecounter-bar`) — most
+  cask reviewers expect notarized bundles, so this naturally pairs
+  with the previous bullet.
+- **Universal binary** (Intel + Apple Silicon) — currently arm64-only.
+  Open an issue if you want Intel and we'll add a second job to the
+  release workflow.
+- **Launch-at-login UI toggle** (`SMAppService.mainApp.register()` is
+  available; the popover hook isn't wired yet).
+- Budget alerts / red-tint when today exceeds a threshold.
+- Per-day or per-week popover views.
+- CSV export.
+- Sparkle auto-update.
 
 ## 📜 License
 

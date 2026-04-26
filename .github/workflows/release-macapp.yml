@@ -1,0 +1,143 @@
+name: Release macapp
+
+# Triggers on tags shaped `macapp-vX.Y.Z` (so they don't collide with
+# the Go TUI's `vX.Y.Z` tags). Also exposes a manual workflow_dispatch
+# for testing the build pipeline without creating a release.
+on:
+  push:
+    tags:
+      - 'macapp-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. v1.0.0). No release is created on manual runs.'
+        required: true
+        default: 'v0.0.0-dev'
+
+jobs:
+  build:
+    name: Build .app bundle (macOS arm64)
+    # macos-14 is Apple Silicon; matches the platform most users want.
+    # macos-13 (Intel) could be added as a second job if Intel users
+    # request it — for now, arm64 only.
+    runs-on: macos-14
+    permissions:
+      contents: write   # required for `gh release create` to upload assets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # All untrusted inputs (workflow_dispatch input, ref_name from the
+      # pushed tag) are routed via env: vars and validated below before
+      # they reach any `run:` command. See:
+      # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+      - name: Resolve version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            VERSION="${REF_NAME#macapp-}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          # Strict allowlist: vMAJOR.MINOR.PATCH with optional pre-release
+          # like -rc.1, -beta, -dev. Rejects shell metacharacters.
+          if ! printf '%s' "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version format: $VERSION"
+            echo "Expected something like v1.0.0 or v1.0.0-rc.1"
+            exit 1
+          fi
+          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "tag=macapp-$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          sw_vers
+
+      - name: Run Swift unit tests
+        # We refuse to ship a build whose tests don't pass. The 74 tests
+        # include cross-language conformance fixtures and a live FSEvents
+        # smoke test, so this is a meaningful gate.
+        working-directory: macapp
+        run: swift test
+
+      - name: Package release artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./macapp/scripts/release-macapp.sh
+
+      - name: Show artifacts
+        run: ls -lh dist/
+
+      - name: Upload artifacts (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeCounterBar-${{ steps.version.outputs.version }}-macos-arm64
+          path: |
+            dist/ClaudeCounterBar-*.zip
+            dist/ClaudeCounterBar-*.zip.sha256
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ZIP="ClaudeCounterBar-${VERSION}-macos-arm64.zip"
+          NOTES_FILE="$(mktemp)"
+          # The body is built locally so untrusted inputs land via env
+          # expansion, not template interpolation, and so heredoc
+          # quoting protects against accidental command substitution.
+          cat > "$NOTES_FILE" <<NOTES
+
+          ## Install
+
+          \`\`\`bash
+          # Download
+          curl -LO "https://github.com/${REPO}/releases/download/${TAG}/${ZIP}"
+
+          # Unzip into Applications (ditto preserves bundle structure)
+          ditto -xk "${ZIP}" /Applications/
+
+          # Strip Gatekeeper quarantine — this build is ad-hoc signed,
+          # not yet notarized. See macapp/README.md for context.
+          xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
+
+          # Launch
+          open /Applications/ClaudeCounterBar.app
+          \`\`\`
+
+          Verify the download:
+
+          \`\`\`bash
+          shasum -a 256 -c "${ZIP}.sha256"
+          \`\`\`
+
+          ## Requirements
+
+          - macOS 13+
+          - Apple Silicon (arm64). Intel build on request.
+
+          See the [macapp README](https://github.com/${REPO}/tree/main/macapp#readme)
+          for the full feature list and how the algorithm matches the Go TUI to the cent.
+          NOTES
+
+          gh release create "$TAG" \
+            --title "ClaudeCounterBar ${VERSION}" \
+            --generate-notes \
+            --notes-file "$NOTES_FILE" \
+            "dist/${ZIP}" \
+            "dist/${ZIP}.sha256"
