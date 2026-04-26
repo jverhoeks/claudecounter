@@ -56,16 +56,15 @@ once: build ## Build and run --once (no TUI)
 	./$(BINARY) --once
 
 .PHONY: build-all
-build-all: $(addprefix $(DIST)/$(BINARY)-,$(subst /,-,$(PLATFORMS))) ## Cross-build all platforms
-
-# One rule per platform, e.g. dist/claudecounter-darwin-arm64
-# Generated dynamically: extracts goos/goarch from the suffix.
-$(DIST)/$(BINARY)-%:
+build-all: ## Cross-build all platforms (always rebuilds every target)
 	@mkdir -p $(DIST)
-	$(eval GOOS := $(word 1,$(subst -, ,$*)))
-	$(eval GOARCH := $(word 2,$(subst -, ,$*)))
-	$(eval EXT := $(if $(filter windows,$(GOOS)),.exe,))
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags="$(LDFLAGS)" -o $@$(EXT) $(PKG)
+	@for p in $(PLATFORMS); do \
+		goos=$${p%/*}; goarch=$${p#*/}; \
+		ext=""; [ "$$goos" = "windows" ] && ext=".exe"; \
+		out="$(DIST)/$(BINARY)-$$goos-$$goarch$$ext"; \
+		echo "  build $$out"; \
+		GOOS=$$goos GOARCH=$$goarch go build -ldflags="$(LDFLAGS)" -o "$$out" $(PKG) || exit 1; \
+	done
 
 .PHONY: clean
 clean: ## Remove built artefacts
