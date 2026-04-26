@@ -44,7 +44,8 @@ and pricing source see the [root README](../README.md).
 
 ### Download a release binary
 
-Grab the right artefact for your OS from
+Joint releases ship both apps under tags shaped `vX.Y.Z`. Grab the
+right artefact for your OS from
 [Releases](https://github.com/jverhoeks/claudecounter/releases):
 
 | OS / arch | file |
@@ -57,8 +58,9 @@ Grab the right artefact for your OS from
 | Windows ARM64 | `claudecounter-windows-arm64.exe` |
 
 ```bash
-# macOS / Linux
-curl -L https://github.com/jverhoeks/claudecounter/releases/download/v0.1.0/claudecounter-darwin-arm64 -o claudecounter
+# macOS / Linux — uses GitHub's "latest" alias, no version number needed
+curl -L -o claudecounter \
+  https://github.com/jverhoeks/claudecounter/releases/latest/download/claudecounter-darwin-arm64
 chmod +x claudecounter
 ./claudecounter
 ```

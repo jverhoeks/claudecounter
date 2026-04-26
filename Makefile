@@ -127,15 +127,24 @@ ccusage-diff: build ## Compare today's totals against ccusage
 		print(f'Today  \$${t[\"totalCost\"]:.2f}' if t else 'Today  no data')"
 
 .PHONY: release
-release: ## Tag VERSION and publish a GitHub release with cross-built TUI binaries
-	@if [ "$(VERSION)" = "dev" ]; then echo "VERSION=v0.x.y required, e.g. make release VERSION=v0.2.0"; exit 1; fi
-	@echo "Releasing $(VERSION)…"
-	$(MAKE) build-all VERSION=$(VERSION)
+release: ## Tag vX.Y.Z and trigger CI to build BOTH apps + create the joint Release
+	@if [ "$(VERSION)" = "dev" ]; then \
+		echo "VERSION=vX.Y.Z required, e.g. make release VERSION=v1.0.0"; exit 1; \
+	fi
+	@echo "Tagging joint release $(VERSION) (TUI + macapp ship together)…"
 	git tag -a $(VERSION) -m "claudecounter $(VERSION)"
 	git push origin $(VERSION)
-	gh release create $(VERSION) \
-		--title "$(VERSION)" \
-		--generate-notes \
-		$(DIST)/$(BINARY)-*
+	@echo
+	@echo "✓ Tag pushed. CI will build both apps and publish the Release."
+	@echo "  Watch: https://github.com/jverhoeks/claudecounter/actions"
+	@echo "  Result: https://github.com/jverhoeks/claudecounter/releases/tag/$(VERSION)"
+
+.PHONY: release-local
+release-local: ## Local cross-build of just the TUI (skips CI). Useful for testing build-all.
+	@if [ "$(VERSION)" = "dev" ]; then \
+		echo "VERSION=vX.Y.Z required, e.g. make release-local VERSION=v1.0.0"; exit 1; \
+	fi
+	$(MAKE) build-all VERSION=$(VERSION)
+	@echo "✓ TUI binaries in $(DIST)/. Did NOT tag, push, or create a release."
 
 .DEFAULT_GOAL := help

@@ -38,22 +38,27 @@ and pricing source see the [root README](../README.md).
 
 ## 📦 Install (release build)
 
-Grab the latest `.zip` from the
-[Releases page](https://github.com/jverhoeks/claudecounter/releases?q=macapp)
-(tags shaped `macapp-vX.Y.Z`):
+The menu bar app is published on each
+[joint release](https://github.com/jverhoeks/claudecounter/releases)
+(tags shaped `vX.Y.Z`). Out-of-cycle macapp-only patches also appear
+under `macapp-vX.Y.Z` tags — both work.
 
 ```bash
-# 1. Download (replace <version> with the tag, e.g. v1.0.0)
-curl -LO https://github.com/jverhoeks/claudecounter/releases/download/macapp-<version>/ClaudeCounterBar-<version>-macos-arm64.zip
+# 1. Pick a version. Replace v1.0.0 with the tag on the Releases page.
+VERSION=v1.0.0
+ZIP="ClaudeCounterBar-${VERSION}-macos-arm64.zip"
 
-# 2. Verify the checksum (optional)
-curl -LO https://github.com/jverhoeks/claudecounter/releases/download/macapp-<version>/ClaudeCounterBar-<version>-macos-arm64.zip.sha256
-shasum -a 256 -c ClaudeCounterBar-<version>-macos-arm64.zip.sha256
+# 2. Download
+curl -LO "https://github.com/jverhoeks/claudecounter/releases/download/${VERSION}/${ZIP}"
 
-# 3. Unzip into Applications (ditto preserves the bundle structure)
-ditto -xk ClaudeCounterBar-<version>-macos-arm64.zip /Applications/
+# 3. Verify the checksum (optional)
+curl -LO "https://github.com/jverhoeks/claudecounter/releases/download/${VERSION}/${ZIP}.sha256"
+shasum -a 256 -c "${ZIP}.sha256"
 
-# 4. Strip the Gatekeeper quarantine flag.
+# 4. Unzip into Applications (ditto preserves the bundle structure)
+ditto -xk "${ZIP}" /Applications/
+
+# 5. Strip the Gatekeeper quarantine flag.
 #    The release is ad-hoc signed but not notarized (see "About signing"
 #    below). Without this step, macOS refuses to launch the app on first
 #    open with a "cannot be opened because it is from an unidentified
@@ -299,11 +304,18 @@ verification via `make macapp-run`).
 
 ## 🚢 Cutting a release (maintainer)
 
-Releases live on GitHub Releases under tags shaped `macapp-vX.Y.Z`.
-The Go TUI uses bare `vX.Y.Z` tags, so the namespace is split — both
-apps version independently.
+There are two release lanes:
 
-**Local dry run:**
+1. **Joint release** (preferred) — `vX.Y.Z` tag. Both apps ship
+   together: TUI binaries for all 6 platforms + macapp `.zip`. Run
+   from the repo root: `make release VERSION=v1.0.0`.
+2. **Macapp-only patch** — `macapp-vX.Y.Z` tag. For UI fixes that
+   don't justify rebuilding the Go TUI. Run: `make macapp-publish VERSION=v1.0.1`.
+
+Both produce a Release with the macapp `.zip` + `.sha256` attached
+and install instructions baked into the body.
+
+**Local dry run** (no tag, no push):
 
 ```bash
 make macapp-release VERSION=v1.0.0
@@ -326,18 +338,28 @@ xattr -dr com.apple.quarantine /tmp/test-install/ClaudeCounterBar.app
 open /tmp/test-install/ClaudeCounterBar.app
 ```
 
-**Publish to GitHub:**
+**Publish (joint):**
 
 ```bash
-make macapp-publish VERSION=v1.0.0
+make release VERSION=v1.0.0
 ```
 
-This tags `macapp-v1.0.0`, pushes, and stops. The
+Tags `v1.0.0` and pushes. The
+[`release.yml`](../.github/workflows/release.yml) workflow takes over:
+runs the Go test suite + cross-builds 6 TUI platforms on
+`ubuntu-latest`, runs the 74-test Swift suite + builds the macapp on
+`macos-14`, then a third job creates the Release with all 8 assets
+attached.
+
+**Publish (macapp-only):**
+
+```bash
+make macapp-publish VERSION=v1.0.1
+```
+
+Tags `macapp-v1.0.1` and pushes;
 [`release-macapp.yml`](../.github/workflows/release-macapp.yml)
-workflow takes over from there: it runs the 74-test Swift suite,
-rebuilds the `.app` from a clean checkout on `macos-14` (Apple
-Silicon), produces a fresh `.zip` + `.sha256`, and creates a GitHub
-Release with the install instructions baked into the body.
+handles the macapp-side-door build.
 
 The workflow can also be triggered manually from the Actions tab via
 `workflow_dispatch` — it'll run the build and upload the artifacts

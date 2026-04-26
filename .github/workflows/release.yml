@@ -1,0 +1,217 @@
+name: Release
+
+# Joint release for both apps. Triggers on tags shaped `vX.Y.Z` —
+# the bare semver namespace. The macapp side door
+# (`release-macapp.yml`, tag `macapp-vX.Y.Z`) stays for out-of-cycle
+# macapp patches that don't warrant rebuilding the Go TUI.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. v1.0.0). No release is created on manual runs.'
+        required: true
+        default: 'v0.0.0-dev'
+
+permissions:
+  contents: write   # gh release create needs this to upload assets
+
+jobs:
+
+  # ────────────────────── version (one source of truth) ──────────────────────
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve from tag or input
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            VERSION="$REF_NAME"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          # Strict allowlist: vMAJOR.MINOR.PATCH with optional
+          # pre-release like -rc.1, -beta. Rejects shell metacharacters.
+          if ! printf '%s' "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Resolved: $VERSION"
+
+  # ────────────────────── TUI: cross-build all 6 platforms ──────────────────────
+  build-tui:
+    name: Build TUI binaries (cross-platform)
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache-dependency-path: tui/go.sum
+
+      - name: Run Go tests
+        working-directory: tui
+        run: go test ./...
+
+      - name: Cross-build all platforms
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: make build-all VERSION="$VERSION"
+
+      - name: Show TUI artifacts
+        run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tui-binaries
+          path: dist/claudecounter-*
+          retention-days: 7
+          if-no-files-found: error
+
+  # ────────────────────── macapp: build .app + zip ──────────────────────
+  build-macapp:
+    name: Build macapp .app bundle
+    needs: version
+    # macos-14 is Apple Silicon. Universal builds + Intel deferred until
+    # someone asks. See macapp/README.md "Out of scope".
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          sw_vers
+
+      - name: Run Swift unit tests
+        working-directory: macapp
+        run: swift test
+
+      - name: Package macapp
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: ./macapp/scripts/release-macapp.sh
+
+      - name: Show macapp artifacts
+        run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macapp-zip
+          path: |
+            dist/ClaudeCounterBar-*.zip
+            dist/ClaudeCounterBar-*.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+  # ────────────────────── release: collect everything, publish ──────────────────────
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs: [version, build-tui, build-macapp]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download TUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tui-binaries
+          path: dist/
+
+      - name: Download macapp artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macapp-zip
+          path: dist/
+
+      - name: Show all release assets
+        run: ls -lh dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          MACAPP_ZIP="ClaudeCounterBar-${VERSION}-macos-arm64.zip"
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<NOTES
+
+          ## What's in this release
+
+          Two ways to use claudecounter — pick one or run both side by side.
+
+          ### Go TUI
+
+          \`\`\`bash
+          # macOS Apple Silicon
+          curl -L -o claudecounter \\
+            https://github.com/${REPO}/releases/download/${TAG}/claudecounter-darwin-arm64
+          chmod +x claudecounter && ./claudecounter
+          \`\`\`
+
+          Other platforms in this release: \`darwin-amd64\`, \`linux-amd64\`,
+          \`linux-arm64\`, \`windows-amd64.exe\`, \`windows-arm64.exe\`.
+
+          ### macOS menu bar app
+
+          \`\`\`bash
+          # Download
+          curl -LO "https://github.com/${REPO}/releases/download/${TAG}/${MACAPP_ZIP}"
+
+          # Unzip into Applications
+          ditto -xk "${MACAPP_ZIP}" /Applications/
+
+          # Strip Gatekeeper quarantine — ad-hoc signed, not yet
+          # notarized (see macapp/README.md "About signing")
+          xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
+
+          # Launch
+          open /Applications/ClaudeCounterBar.app
+          \`\`\`
+
+          Verify the macapp download:
+
+          \`\`\`bash
+          shasum -a 256 -c "${MACAPP_ZIP}.sha256"
+          \`\`\`
+
+          ## Requirements
+
+          - Go TUI: macOS, Linux, or Windows.
+          - macapp: macOS 13+ on Apple Silicon.
+
+          See the [READMEs](https://github.com/${REPO}#readme) for full feature lists.
+          NOTES
+
+          gh release create "$TAG" \
+            --title "claudecounter ${VERSION}" \
+            --generate-notes \
+            --notes-file "$NOTES_FILE" \
+            dist/claudecounter-darwin-arm64 \
+            dist/claudecounter-darwin-amd64 \
+            dist/claudecounter-linux-amd64 \
+            dist/claudecounter-linux-arm64 \
+            dist/claudecounter-windows-amd64.exe \
+            dist/claudecounter-windows-arm64.exe \
+            "dist/${MACAPP_ZIP}" \
+            "dist/${MACAPP_ZIP}.sha256"

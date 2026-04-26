@@ -23,30 +23,32 @@ by side without conflict, and produce identical numbers.
 
 ## ⬇️ Download
 
-Pre-built binaries are published to
-**[GitHub Releases](https://github.com/jverhoeks/claudecounter/releases)**.
+Both apps ship together on a single
+**[GitHub Releases](https://github.com/jverhoeks/claudecounter/releases)**
+page. Tags shaped `vX.Y.Z` mean "version X.Y.Z of the project as a whole" —
+each release contains all 6 cross-platform TUI binaries plus the
+macOS menu bar app `.zip`.
 
-**Go TUI** (tags shaped `vX.Y.Z`):
+**Go TUI** — pick your platform:
 
 ```bash
-# macOS Apple Silicon — adjust filename for your platform
+# macOS Apple Silicon
 curl -L -o claudecounter \
   https://github.com/jverhoeks/claudecounter/releases/latest/download/claudecounter-darwin-arm64
 chmod +x claudecounter && ./claudecounter
 ```
 
-Other platform binaries on the same release page: `darwin-amd64`,
+Available in every release: `darwin-arm64`, `darwin-amd64`,
 `linux-amd64`, `linux-arm64`, `windows-amd64.exe`, `windows-arm64.exe`.
 
-**Mac menu bar app** (tags shaped `macapp-vX.Y.Z`):
+**Mac menu bar app:**
 
 ```bash
-# Find the latest macapp tag — releases use a separate namespace
-TAG=$(curl -s https://api.github.com/repos/jverhoeks/claudecounter/releases \
-      | grep '"tag_name":' | grep macapp | head -1 | cut -d'"' -f4)
-ZIP="ClaudeCounterBar-${TAG#macapp-}-macos-arm64.zip"
+# Replace v1.0.0 with the latest tag on the Releases page
+VERSION=v1.0.0
+ZIP="ClaudeCounterBar-${VERSION}-macos-arm64.zip"
 
-curl -LO "https://github.com/jverhoeks/claudecounter/releases/download/${TAG}/${ZIP}"
+curl -LO "https://github.com/jverhoeks/claudecounter/releases/download/${VERSION}/${ZIP}"
 ditto -xk "$ZIP" /Applications/
 
 # Strip Gatekeeper quarantine — the build is ad-hoc signed, not yet
@@ -55,6 +57,10 @@ xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
 
 open /Applications/ClaudeCounterBar.app
 ```
+
+> **Out-of-cycle macapp patches** are also published under
+> `macapp-vX.Y.Z` tags for fixes that don't warrant rebuilding the
+> Go TUI. Either tag namespace works for the menu bar app.
 
 Or build from source — see the [Quick start](#quick-start) below.
 
