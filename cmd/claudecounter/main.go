@@ -270,6 +270,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 					tag = " (sub)"
 				}
 				prog.Send(ui.RecentEventMsg{
+					Cost: cost,
 					Line: fmt.Sprintf("%s  %-22s %-8s %s%s",
 						e.Timestamp.Local().Format("15:04:05"),
 						trimRight(filepath.Base(e.Cwd), 22),

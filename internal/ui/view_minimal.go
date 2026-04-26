@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jverhoeks/claudecounter/internal/agg"
@@ -42,6 +43,17 @@ func viewMinimal(t agg.Totals) string {
 	var b strings.Builder
 	b.WriteString(styleHead.Render("Today") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Day))) + "\n")
 	b.WriteString(styleHead.Render("Month") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Month))) + "\n")
+
+	// 30-day spend sparkline. Stateless: rebuild from snapshot each render.
+	if len(t.Daily) > 0 {
+		sl := sparkline.New(30, 3)
+		for _, d := range t.Daily {
+			sl.Push(d.USD)
+		}
+		sl.Draw()
+		b.WriteString(styleDim.Render("last 30 days") + "\n")
+		b.WriteString(sl.View() + "\n")
+	}
 
 	names := make([]string, 0, len(t.Day))
 	for name := range t.Day {

@@ -54,14 +54,22 @@ func (p ProjectDay) USD() float64 { return p.MainUSD + p.SubUSD }
 // Tokens returns total tokens (main + subagent).
 func (p ProjectDay) Tokens() TokenCounts { return p.Main.Add(p.Sub) }
 
+// DailyTotal is one day's aggregate cost across all models/projects.
+// Used for the minimal-view sparkline (last N days).
+type DailyTotal struct {
+	Day string  // YYYY-MM-DD in local time
+	USD float64 // total cost for the day across all models
+}
+
 type Totals struct {
-	Day        map[string]ModelDay   // model -> totals for today
-	Month      map[string]ModelDay   // model -> totals for this month
-	DayProj    map[string]ProjectDay // project -> totals for today
-	MonthProj  map[string]ProjectDay // project -> totals for this month
-	Unknown    int                   // distinct unpriced message ids
-	Dupes      int                   // events skipped as msgid:reqid duplicates
-	AsOf       time.Time
+	Day       map[string]ModelDay   // model -> totals for today
+	Month     map[string]ModelDay   // model -> totals for this month
+	DayProj   map[string]ProjectDay // project -> totals for today
+	MonthProj map[string]ProjectDay // project -> totals for this month
+	Daily     []DailyTotal          // last N days (ascending), N set by Snapshot caller via DailyWindow
+	Unknown   int                   // distinct unpriced message ids
+	Dupes     int                   // events skipped as msgid:reqid duplicates
+	AsOf      time.Time
 }
 
 type civilDay struct {
@@ -153,6 +161,11 @@ func (a *Aggregator) Dupes() int {
 	defer a.mu.Unlock()
 	return a.dupes
 }
+
+// DailyWindow controls how many trailing days the next Snapshot
+// fills into Totals.Daily. Default is 30; the minimal-view sparkline
+// reads from this slice.
+const DailyWindow = 30
 
 // Snapshot computes per-model and per-project totals for today and this
 // month from the accumulated token cells. Costs are computed exactly
@@ -260,6 +273,33 @@ func (a *Aggregator) Snapshot() Totals {
 			pd.MainUSD += usd
 		}
 		bucket[k.Project] = pd
+	}
+
+	// Last DailyWindow days, oldest→newest. We sum tokens per day
+	// across all (project, model, isSub) cells, then apply pricing per
+	// model so the per-day USD is exact.
+	type dmKey struct {
+		Day   civilDay
+		Model string
+	}
+	byDM := map[dmKey]TokenCounts{}
+	for k, t := range a.cells {
+		byDM[dmKey{k.Day, k.Model}] = byDM[dmKey{k.Day, k.Model}].Add(t)
+	}
+	dayCost := map[civilDay]float64{}
+	for k, tok := range byDM {
+		if a.pricing.Has(k.Model) {
+			dayCost[k.Day] += a.pricing.Cost(k.Model, tok.ToUsage())
+		}
+	}
+	out.Daily = make([]DailyTotal, 0, DailyWindow)
+	for i := DailyWindow - 1; i >= 0; i-- {
+		d := now.AddDate(0, 0, -i)
+		cd := civilDay{d.Year(), d.Month(), d.Day()}
+		out.Daily = append(out.Daily, DailyTotal{
+			Day: d.Format("2006-01-02"),
+			USD: dayCost[cd],
+		})
 	}
 
 	return out

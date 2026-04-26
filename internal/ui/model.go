@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 
+	"github.com/NimbleMarkets/ntcharts/linechart/streamlinechart"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jverhoeks/claudecounter/internal/agg"
@@ -26,11 +27,16 @@ type SnapshotMsg struct {
 
 // RecentEventMsg is pushed for the live-tail in ModeFull.
 type RecentEventMsg struct {
-	Tag  string // short label (project, model, cost)
-	Line string // pre-formatted line for the feed
+	Tag  string  // short label (project, model, cost)
+	Line string  // pre-formatted line for the feed
+	Cost float64 // event cost in USD; pushed into the streamlinechart
 }
 
-const recentCap = 20
+const (
+	recentCap        = 20
+	streamlineWidth  = 60
+	streamlineHeight = 8
+)
 
 type Model struct {
 	mode        ViewMode
@@ -41,9 +47,20 @@ type Model struct {
 	pricingWarn string
 	width       int
 	height      int
+
+	// streamline is updated incrementally as RecentEventMsg arrives,
+	// so the rolling line is preserved across renders. Sparkline and
+	// barchart are stateless — they're built from the latest snapshot
+	// inside their view functions.
+	streamline streamlinechart.Model
 }
 
-func NewModel() Model { return Model{mode: ModeSplit} }
+func NewModel() Model {
+	return Model{
+		mode:       ModeSplit,
+		streamline: streamlinechart.New(streamlineWidth, streamlineHeight),
+	}
+}
 
 func (m Model) Init() tea.Cmd { return nil }
 
@@ -74,6 +91,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.recent) > recentCap {
 			m.recent = m.recent[len(m.recent)-recentCap:]
 		}
+		m.streamline.Push(msg.Cost)
+		m.streamline.Draw()
 	}
 	return m, nil
 }
@@ -86,7 +105,7 @@ func (m Model) View() string {
 	case ModeSplit:
 		body = viewSplit(m.totals)
 	case ModeFull:
-		body = viewFull(m.totals, m.recent)
+		body = viewFull(m.totals, m.recent, m.streamline.View())
 	}
 	footer := "1/2/3 or Tab: switch view   q: quit"
 	for _, w := range m.warns {

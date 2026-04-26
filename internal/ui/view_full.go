@@ -8,7 +8,7 @@ import (
 	"github.com/jverhoeks/claudecounter/internal/agg"
 )
 
-func viewFull(t agg.Totals, recent []string) string {
+func viewFull(t agg.Totals, recent []string, streamlineView string) string {
 	var b strings.Builder
 	b.WriteString(viewSplit(t))
 
@@ -40,13 +40,15 @@ func viewFull(t agg.Totals, recent []string) string {
 		}
 	}
 
-	// Live tail.
+	// Live tail: streamlinechart on top (cost per event as it arrives),
+	// then the most recent text lines below for detail.
 	b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")
 	b.WriteString(styleHead.Render("Live") + "\n")
 	if len(recent) == 0 {
 		b.WriteString(styleDim.Render("  (waiting for events…)") + "\n")
 		return b.String()
 	}
+	b.WriteString(streamlineView + "\n")
 	for _, line := range recent {
 		b.WriteString("  " + line + "\n")
 	}
