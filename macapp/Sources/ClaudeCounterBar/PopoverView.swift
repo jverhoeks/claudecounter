@@ -91,31 +91,85 @@ struct HeroRow: View {
 
 struct HourlyChartRow: View {
     let hourlyUSD: [Double]
+    @State private var hoveredHour: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Today's spend (per hour)")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("Today's spend (per hour)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // Inline readout for the hovered hour. Lives in the
+                // section header so it doesn't reflow the chart.
+                if let h = hoveredHour, h < hourlyUSD.count {
+                    HStack(spacing: 4) {
+                        Text(formatHour(h))
+                            .foregroundStyle(.primary)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(formatUSDFine(hourlyUSD[h]))
+                            .foregroundStyle(hourlyUSD[h] > 0 ? .green : .secondary)
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .frame(height: 12)
+
             GeometryReader { geo in
                 let maxV = max(hourlyUSD.max() ?? 0, 0.0001)
                 HStack(alignment: .bottom, spacing: 2) {
                     ForEach(Array(hourlyUSD.enumerated()), id: \.offset) { idx, v in
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(barColor(forHour: idx, value: v))
+                            .fill(barColor(forHour: idx, value: v, hovered: idx == hoveredHour))
                             .frame(height: max(3, CGFloat(v / maxV) * geo.size.height))
+                    }
+                }
+                // Continuous hover tracking over the chart area.
+                // We map mouse-x → bar index by dividing by the per-bar
+                // slot width (bar width + spacing). `.ended` clears the
+                // selection so the readout disappears when the mouse
+                // leaves the chart.
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoveredHour = hourIndex(for: point.x,
+                                                width: geo.size.width,
+                                                count: hourlyUSD.count)
+                    case .ended:
+                        hoveredHour = nil
                     }
                 }
             }
             .frame(height: 56)
         }
+        .animation(.easeInOut(duration: 0.12), value: hoveredHour)
     }
 
-    private func barColor(forHour hour: Int, value: Double) -> Color {
+    /// Map an x-coordinate inside the chart to one of the 24 hour
+    /// buckets. Even spacing → integer division by per-bar slot width.
+    private func hourIndex(for x: CGFloat, width: CGFloat, count: Int) -> Int? {
+        guard count > 0, x >= 0, x <= width else { return nil }
+        let slot = width / CGFloat(count)
+        let idx = Int((x / slot).rounded(.down))
+        return min(max(idx, 0), count - 1)
+    }
+
+    private func barColor(forHour hour: Int, value: Double, hovered: Bool) -> Color {
+        // Hovered bar is always vivid, even for past zero or future hours,
+        // so the readout makes visual sense as the user scrubs across.
+        if hovered { return Color.green }
         let nowHour = Calendar.current.component(.hour, from: Date())
         if hour > nowHour { return Color.gray.opacity(0.20) }   // future hours dimmed
         if value <= 0 { return Color.gray.opacity(0.30) }
         return Color.green.opacity(0.85)
+    }
+
+    private func formatHour(_ h: Int) -> String {
+        String(format: "%02d:00", h)
     }
 }
 
