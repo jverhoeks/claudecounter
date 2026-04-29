@@ -33,6 +33,10 @@ and pricing source see the [root README](../README.md).
 - Footer: "Updated Xs ago" · Refresh button · ⚙ menu
 
 **⚙ menu:**
+- **Launch at login** toggle (uses `SMAppService.mainApp` — macOS may
+  ask for one-time approval in System Settings → General → Login Items
+  the first time you enable it; the menu shows a hint when the state
+  is `requiresApproval`)
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
 
@@ -384,8 +388,6 @@ Considered and deferred:
 - **Universal binary** (Intel + Apple Silicon) — currently arm64-only.
   Open an issue if you want Intel and we'll add a second job to the
   release workflow.
-- **Launch-at-login UI toggle** (`SMAppService.mainApp.register()` is
-  available; the popover hook isn't wired yet).
 - Budget alerts / red-tint when today exceeds a threshold.
 - Per-day or per-week popover views.
 - CSV export.
