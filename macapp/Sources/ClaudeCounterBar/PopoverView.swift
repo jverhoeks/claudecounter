@@ -478,6 +478,12 @@ struct FooterRow: View {
     @Binding var refreshing: Bool
     @Binding var showSettings: Bool
 
+    /// Local mirror of the SMAppService state so the toggle can read it
+    /// synchronously. Refreshed every time the menu opens (cheap call,
+    /// no syscalls — just reads launchd state).
+    @State private var launchAtLogin: LaunchAtLoginState = .disabled
+    private let launchService: LaunchAtLoginService = SMAppServiceLaunchAtLogin()
+
     var body: some View {
         HStack {
             statusText
@@ -498,6 +504,14 @@ struct FooterRow: View {
             .disabled(refreshing)
 
             Menu {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { launchAtLogin == .enabled },
+                    set: { newValue in toggleLaunchAtLogin(to: newValue) }
+                ))
+                if launchAtLogin == .requiresApproval {
+                    Text("Open System Settings → General → Login Items to approve.")
+                }
+                Divider()
                 Button("Refresh pricing from LiteLLM") {
                     Task {
                         do {
@@ -517,7 +531,21 @@ struct FooterRow: View {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 24)
+            .onAppear { launchAtLogin = launchService.currentState() }
         }
+    }
+
+    /// Toggle launch-at-login. macOS may pop a one-time approval prompt
+    /// on first enable; if the user dismisses it the state stays
+    /// `.requiresApproval` and we surface a hint underneath the toggle.
+    private func toggleLaunchAtLogin(to enabled: Bool) {
+        do {
+            try launchService.setEnabled(enabled)
+        } catch {
+            // Don't crash on launchd quirks; just leave the toggle
+            // reflecting the actual current state.
+        }
+        launchAtLogin = launchService.currentState()
     }
 
     @ViewBuilder
