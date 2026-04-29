@@ -78,5 +78,14 @@ func viewSplit(t agg.Totals) string {
 			shortModel(n), bar, FormatUSD(md.USD), frac*100)
 		b.WriteString(line)
 	}
+
+	// 30-day spend trend underneath the per-model bars. Same renderer
+	// the minimal view uses, so the chart is visually consistent across
+	// the three view modes (minimal · split · full — full inherits this
+	// via viewSplit).
+	if chart := renderDailySparkline(t.Daily); chart != "" {
+		b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")
+		b.WriteString(chart)
+	}
 	return b.String()
 }

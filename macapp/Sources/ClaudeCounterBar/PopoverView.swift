@@ -20,10 +20,11 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Pinned-top: identity + chart. These are the "glance"
+            // Pinned-top: identity + charts. These are the "glance"
             // surface and must always be visible.
             HeroRow(state: state)
             HourlyChartRow(hourlyUSD: state.totals.todayHourlyUSD)
+            MonthlyChartRow(daily: state.totals.daily)
 
             // Scrollable middle: tables + live tail. Sized to fill
             // remaining vertical space.
@@ -170,6 +171,112 @@ struct HourlyChartRow: View {
 
     private func formatHour(_ h: Int) -> String {
         String(format: "%02d:00", h)
+    }
+}
+
+// MARK: - Monthly chart (last 30 days)
+
+/// One bar per day for the last 30 days, oldest → newest. Same hover
+/// idiom as `HourlyChartRow`: pointer over a bar highlights it and
+/// shows `YYYY-MM-DD · $X.XX` in the section header.
+struct MonthlyChartRow: View {
+    let daily: [DailyTotal]
+    @State private var hoveredIndex: Int? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Last 30 days")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let i = hoveredIndex, i < daily.count {
+                    HStack(spacing: 4) {
+                        Text(formatDay(daily[i].day))
+                            .foregroundStyle(.primary)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(formatUSDFine(daily[i].usd))
+                            .foregroundStyle(daily[i].usd > 0 ? .green : .secondary)
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else {
+                    // Static summary when no bar is hovered: range of
+                    // days + total spend across the window. Gives the
+                    // user something useful to read in the header.
+                    Text(summary)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .frame(height: 12)
+
+            GeometryReader { geo in
+                let maxV = max(daily.map { $0.usd }.max() ?? 0, 0.0001)
+                HStack(alignment: .bottom, spacing: 1) {
+                    ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(barColor(idx: idx, value: entry.usd, isToday: idx == daily.count - 1))
+                            .frame(height: max(2, CGFloat(entry.usd / maxV) * geo.size.height))
+                    }
+                }
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoveredIndex = barIndex(for: point.x,
+                                                width: geo.size.width,
+                                                count: daily.count)
+                    case .ended:
+                        hoveredIndex = nil
+                    }
+                }
+            }
+            .frame(height: 56)
+        }
+        .animation(.easeInOut(duration: 0.12), value: hoveredIndex)
+    }
+
+    private func barIndex(for x: CGFloat, width: CGFloat, count: Int) -> Int? {
+        guard count > 0, x >= 0, x <= width else { return nil }
+        let slot = width / CGFloat(count)
+        let idx = Int((x / slot).rounded(.down))
+        return min(max(idx, 0), count - 1)
+    }
+
+    /// Bars are color-graded by index in the window:
+    /// - Today's bar (last entry): solid bright green, the "you are here"
+    ///   anchor, even when zero-spend.
+    /// - Hovered bar: solid green to make scrubbing obvious.
+    /// - Zero-spend bars: muted gray track.
+    /// - Everything else: green at 0.85 alpha.
+    private func barColor(idx: Int, value: Double, isToday: Bool) -> Color {
+        if hoveredIndex == idx { return Color.green }
+        if isToday { return Color.green.opacity(0.95) }
+        if value <= 0 { return Color.gray.opacity(0.30) }
+        return Color.green.opacity(0.75)
+    }
+
+    private var summary: String {
+        let total = daily.reduce(0) { $0 + $1.usd }
+        guard let first = daily.first?.day, let last = daily.last?.day else {
+            return "no data"
+        }
+        return "\(formatDay(first))…\(formatDay(last)) · \(formatUSDCompact(total))"
+    }
+
+    /// "2026-04-26" → "Apr 26"
+    private func formatDay(_ ymd: String) -> String {
+        let inFmt = DateFormatter()
+        inFmt.dateFormat = "yyyy-MM-dd"
+        guard let d = inFmt.date(from: ymd) else { return ymd }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "MMM d"
+        outFmt.locale = Locale(identifier: "en_US_POSIX")
+        return outFmt.string(from: d)
     }
 }
 
