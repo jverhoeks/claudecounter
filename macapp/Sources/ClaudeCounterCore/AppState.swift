@@ -19,6 +19,7 @@ public final class AppState: ObservableObject {
     @Published public private(set) var pricing: PricingTable
     @Published public private(set) var status: Status = .starting
     @Published public private(set) var lastError: String? = nil
+    @Published public private(set) var settings: AppSettings
 
     public enum Status: Equatable, Sendable {
         case starting
@@ -34,6 +35,8 @@ public final class AppState: ObservableObject {
     private let reader: Reader
     private var watcher: Watcher?
     private let cacheStore: CacheStore
+    private let dockIcon: DockIconController
+    private let settingsStore: SettingsStore
     private let now: () -> Date
     private let calendar: Calendar
 
@@ -52,6 +55,8 @@ public final class AppState: ObservableObject {
                 reader: Reader = Reader(),
                 cacheStore: CacheStore,
                 pricing: PricingTable,
+                dockIcon: DockIconController? = nil,
+                settingsStore: SettingsStore? = nil,
                 now: @escaping () -> Date = Date.init,
                 calendar: Calendar = .current) {
         self.projectsRoot = projectsRoot
@@ -59,6 +64,16 @@ public final class AppState: ObservableObject {
         self.reader = reader
         self.cacheStore = cacheStore
         self.pricing = pricing
+        // Production wiring resolves the optional deps here so that
+        // existing tests (which don't pass dockIcon / settingsStore)
+        // still compile and run against safe defaults — UserDefaults
+        // is real but harmless, and the NSApp dock controller no-ops
+        // on the test runner until `setVisible(true)` is called.
+        let resolvedDock = dockIcon ?? NSAppDockIconController()
+        let resolvedStore = settingsStore ?? UserDefaultsSettingsStore()
+        self.dockIcon = resolvedDock
+        self.settingsStore = resolvedStore
+        self.settings = resolvedStore.load()
         self.now = now
         self.calendar = calendar
     }
@@ -66,13 +81,21 @@ public final class AppState: ObservableObject {
     // MARK: Lifecycle
 
     /// Boot the pipeline:
-    ///   1. Try to load cache; seed aggregator + reader offsets if present.
-    ///   2. Publish first snapshot immediately so the UI shows numbers.
-    ///   3. Start the FSEventStream watcher.
-    ///   4. Run the catch-up scan with notBefore = max(cache.writtenAt-5m,
+    ///   1. Apply the persisted dock-icon visibility (sync, before any
+    ///      async work, so the dock icon shows up immediately).
+    ///   2. Try to load cache; seed aggregator + reader offsets if present.
+    ///   3. Publish first snapshot immediately so the UI shows numbers
+    ///      (and the dock badge picks up today's spend on the same tick).
+    ///   4. Start the FSEventStream watcher.
+    ///   5. Run the catch-up scan with notBefore = max(cache.writtenAt-5m,
     ///      min(firstOfMonth, now-35d)).
-    ///   5. Open the live-tail gate so per-event UI updates start flowing.
+    ///   6. Open the live-tail gate so per-event UI updates start flowing.
     public func start() async {
+        // Apply dock visibility before checking the projects root —
+        // even if there's no data, the user should see the dock icon
+        // (which doubles as proof the app is running) when enabled.
+        dockIcon.setVisible(settings.dockIconEnabled)
+
         guard FileManager.default.fileExists(atPath: projectsRoot) else {
             self.status = .noProjectsRoot(path: projectsRoot)
             return
@@ -225,6 +248,29 @@ public final class AppState: ObservableObject {
     private func publishSnapshot() async {
         let snap = await aggregator.snapshot()
         self.totals = snap
+        updateDockBadge()
+    }
+
+    /// Stamp today's spend onto the dock badge. No-op when the user has
+    /// the dock icon turned off — the controller will skip the syscall
+    /// anyway, but checking here saves the formatter call.
+    private func updateDockBadge() {
+        guard settings.dockIconEnabled else { return }
+        let today = totals.day.values.reduce(0) { $0 + $1.usd }
+        dockIcon.setBadge(formatUSDCompact(today))
+    }
+
+    /// Toggle the dock icon at runtime (called from the ⚙ menu).
+    /// Persists the new preference, flips the activation policy, and
+    /// stamps the current spend immediately when enabling so the user
+    /// sees the value the moment the icon appears.
+    public func setDockIconEnabled(_ enabled: Bool) {
+        settings.dockIconEnabled = enabled
+        settingsStore.save(settings)
+        dockIcon.setVisible(enabled)
+        if enabled {
+            updateDockBadge()
+        }
     }
 
     private func startPeriodicFlush() {

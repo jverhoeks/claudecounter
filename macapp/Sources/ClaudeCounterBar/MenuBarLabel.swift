@@ -122,13 +122,6 @@ struct SparkBars: View {
     }
 }
 
-/// Tight currency formatter for the menu bar.
-func formatUSDCompact(_ usd: Double) -> String {
-    if usd >= 1000 {
-        return String(format: "$%.0f", usd)
-    }
-    if usd >= 100 {
-        return String(format: "$%.1f", usd)
-    }
-    return String(format: "$%.2f", usd)
-}
+// `formatUSDCompact(_:)` lives in ClaudeCounterCore so that the dock
+// badge and the menu-bar label render the same string for the same
+// value. See DockIcon.swift.

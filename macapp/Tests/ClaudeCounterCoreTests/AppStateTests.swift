@@ -71,12 +71,16 @@ final class AppStateTests: XCTestCase {
 
         let now: () -> Date = { Date() }
         let agg = Aggregator(pricing: .defaults, now: now)
+        // Pass in-memory dock + settings so the test never mutates
+        // the actual NSApp activation policy / UserDefaults.
         let app = AppState(
             projectsRoot: root + "/projects",
             aggregator: agg,
             reader: Reader(),
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
             now: now
         )
         await app.start()
@@ -128,7 +132,9 @@ final class AppStateTests: XCTestCase {
             aggregator: agg,
             reader: Reader(),
             cacheStore: CacheStore(url: cacheURL),
-            pricing: .defaults
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore()
         )
         await app.start()
         XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0)
@@ -136,6 +142,126 @@ final class AppStateTests: XCTestCase {
         await app.refresh()
         XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0,
                              "Refresh should rebuild totals from disk")
+        await app.stop()
+    }
+
+    // MARK: - Dock icon wiring
+
+    /// Boot AppState with `dockIconEnabled = true` (the default) and an
+    /// in-memory dock controller. The first publishSnapshot — which
+    /// happens whether or not files are present — should make the dock
+    /// icon visible AND stamp a badge with the formatted today total.
+    func test_appState_start_appliesDockSetting_andStampsBadge() async throws {
+        let root = NSTemporaryDirectory() + "as-d-\(UUID().uuidString)"
+        let projects = root + "/projects/p1"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        // Drop a single $5 opus event so today's USD is non-zero on
+        // first snapshot (the default $0.00 badge would also work, but
+        // proving the value flows through is more useful).
+        let path = projects + "/sess.jsonl"
+        let line = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ISO8601DateFormatter().string(from: Date()))","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        try (line + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-d-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let dock = InMemoryDockIconController()
+        let store = InMemorySettingsStore()  // defaults: dockIconEnabled = true
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: dock,
+            settingsStore: store
+        )
+        await app.start()
+        await app.stop()
+
+        XCTAssertTrue(dock.isVisible, "dock icon should be visible after start")
+        XCTAssertEqual(dock.badge, "$5.00",
+                       "dock badge should reflect today's USD after first snapshot")
+    }
+
+    /// Boot AppState with `dockIconEnabled = false`. The dock controller
+    /// should stay hidden and the badge should never be stamped.
+    func test_appState_start_withDockDisabled_keepsDockHidden() async throws {
+        let root = NSTemporaryDirectory() + "as-d2-\(UUID().uuidString)"
+        let projects = root + "/projects/p1"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-d2-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let dock = InMemoryDockIconController()
+        let store = InMemorySettingsStore(initial: AppSettings(dockIconEnabled: false))
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: dock,
+            settingsStore: store
+        )
+        await app.start()
+        await app.stop()
+
+        XCTAssertFalse(dock.isVisible, "dock icon should stay hidden when disabled")
+        XCTAssertNil(dock.badge, "no badge should be stamped when dock is hidden")
+        // The controller's setBadge call IS made (snapshot publishing
+        // is unconditional), but it's a no-op while hidden — the
+        // recorded calls show the attempts, the visible badge stays nil.
+    }
+
+    /// Toggling at runtime: starts with dock off, user enables, dock
+    /// flips to visible AND the current spend is stamped immediately.
+    func test_appState_setDockIconEnabled_togglesAndPersists() async throws {
+        let root = NSTemporaryDirectory() + "as-d3-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/projects", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-d3-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let dock = InMemoryDockIconController()
+        let store = InMemorySettingsStore(initial: AppSettings(dockIconEnabled: false))
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: dock,
+            settingsStore: store
+        )
+        await app.start()
+        XCTAssertFalse(dock.isVisible)
+
+        // User flips the toggle on → dock becomes visible and the badge
+        // is stamped (zero spend in this empty fixture, so $0.00).
+        app.setDockIconEnabled(true)
+        XCTAssertTrue(dock.isVisible)
+        XCTAssertEqual(dock.badge, "$0.00")
+        XCTAssertTrue(store.load().dockIconEnabled,
+                      "preference should be persisted via the store")
+
+        // Flip back off — dock hides, badge clears.
+        app.setDockIconEnabled(false)
+        XCTAssertFalse(dock.isVisible)
+        XCTAssertNil(dock.badge)
+        XCTAssertFalse(store.load().dockIconEnabled)
+
         await app.stop()
     }
 }

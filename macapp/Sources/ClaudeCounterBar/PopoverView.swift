@@ -511,6 +511,10 @@ struct FooterRow: View {
                 if launchAtLogin == .requiresApproval {
                     Text("Open System Settings → General → Login Items to approve.")
                 }
+                Toggle("Show dock icon with spend", isOn: Binding(
+                    get: { state.settings.dockIconEnabled },
+                    set: { newValue in state.setDockIconEnabled(newValue) }
+                ))
                 Divider()
                 Button("Refresh pricing from LiteLLM") {
                     Task {
