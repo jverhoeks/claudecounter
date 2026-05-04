@@ -20,7 +20,10 @@ and pricing source see the [root README](../README.md).
 ## ✨ What it shows
 
 **Menu bar item (always visible):**
-- Cash-register banknote glyph (`banknote.fill` SF Symbol)
+- Hand-drawn cash-register glyph (drawer body + display housing) with
+  the Claude 6-petal asterisk cut out of the display via even-odd fill
+  — a SwiftUI `Shape` so it renders crisp at any pixel density and
+  inherits the menu bar's foreground color
 - `$today` rounded to whole dollars (e.g. `$35` / `$1234`) — decimals
   are noisy at menu-bar size, the popover keeps the cents precision
 - Glyph pulses softly while the initial scan runs, snaps to solid once
