@@ -39,12 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccbar-cache.json")
         let pricing = PricingTable.resolveFromDisk()
         let agg = Aggregator(pricing: pricing)
+        // Production wiring for the dock icon + persisted settings.
+        // Keep these explicit (rather than relying on AppState defaults)
+        // so the app's runtime dependencies are visible in one place.
+        let dockIcon = NSAppDockIconController()
+        let settingsStore = UserDefaultsSettingsStore()
         self.appState = AppState(
             projectsRoot: projectsRoot,
             aggregator: agg,
             reader: Reader(),
             cacheStore: CacheStore(url: cacheURL),
-            pricing: pricing
+            pricing: pricing,
+            dockIcon: dockIcon,
+            settingsStore: settingsStore
         )
         super.init()
     }

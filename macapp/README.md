@@ -37,6 +37,11 @@ and pricing source see the [root README](../README.md).
   ask for one-time approval in System Settings → General → Login Items
   the first time you enable it; the menu shows a hint when the state
   is `requiresApproval`)
+- **Show dock icon with spend** toggle — adds a Dock icon with a red
+  badge that mirrors today's running spend (e.g. `$34.87`). Updates on
+  every snapshot tick (≤250 ms after a new event), same compact format
+  as the menu bar label. **On by default**; turn it off if you'd
+  rather keep the Dock free of an extra icon.
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
 
@@ -73,8 +78,12 @@ xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
 open /Applications/ClaudeCounterBar.app
 ```
 
-The app is **menu-bar-only** (`LSUIElement = YES`) — no Dock icon, no
-window. Quit via the ⚙ menu inside the popover or
+The bundle is `LSUIElement = YES` so the app boots into the menu bar
+only — but if you leave the **Show dock icon with spend** toggle on
+(default), it also flips the activation policy at runtime to add a
+Dock icon with a red `$today` badge. Disable the toggle in the ⚙ menu
+to get the pure menu-bar-only experience. Quit via the ⚙ menu inside
+the popover or
 `osascript -e 'tell application "ClaudeCounterBar" to quit'`.
 
 **Requirements:** macOS 13+ on Apple Silicon (arm64). Intel build on
@@ -112,7 +121,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 72 unit tests
+swift test                       # 96 unit tests
 ```
 
 ### Requirements
@@ -238,13 +247,16 @@ Sources/
     Watcher.swift                     FSEventStream wrapper
     Cache.swift                       JSON persist/restore
     LiveEventBuffer.swift             ring buffer for the popover live tail
+    LaunchAtLogin.swift               SMAppService.mainApp seam + 4-state model
+    DockIcon.swift                    NSApp activation policy + dock badge seam
+    Settings.swift                    AppSettings + UserDefaults-backed store
     AppState.swift                    @MainActor coordinator + lifecycle
   ClaudeCounterBar/                   the macOS app target
     App.swift                         @main, AppDelegate, MenuBarExtra
     MenuBarLabel.swift                sparkline + $today, with loading pulse
     PopoverView.swift                 hero, hourly chart, tables, live tail
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         74 unit tests
+Tests/ClaudeCounterCoreTests/         96 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
@@ -252,7 +264,11 @@ Tests/ClaudeCounterCoreTests/         74 unit tests
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
   CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
-  AppStateTests.swift                 7 tests, incl. live pipeline + refresh
+  LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
+  DockIconTests.swift                 7 tests, incl. NSApp instantiation smoke test
+  SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
+  AppStateTests.swift                 10 tests, incl. live pipeline + refresh
+                                              + dock-icon visibility/badge wiring
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
 scripts/build-app.sh                  bundle .app from `swift build`
 scripts/release-macapp.sh             package .app into a .zip + .sha256
@@ -288,7 +304,14 @@ What's covered:
 - **TOML + Fetch** — decode/encode round-trip, resolution paths with
   and without `XDG_CONFIG_HOME`, mock-session fetch, non-200 raises
 - **AppState** — live-buffer ordering + cap, scanCutoff in three modes,
-  end-to-end FSEvents pipeline + refresh
+  end-to-end FSEvents pipeline + refresh, dock-icon visibility/badge
+  wiring and runtime toggle persistence
+- **LaunchAtLogin** — protocol seam, 4-state enum visibility, error
+  propagation, smoke test against `SMAppService.mainApp`
+- **DockIcon** — protocol seam, in-memory test double behaviour, badge
+  formatter rules ($12.34 / $123.4 / $1234), `NSApp` smoke test
+- **Settings** — `dockIconEnabled` defaults to `true` (verified per
+  user request), UserDefaults round-trip with isolated suite names
 
 UI is intentionally not pixel-tested (thin SwiftUI layer; visual
 verification via `make macapp-run`).
@@ -351,7 +374,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 74-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 96-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 
