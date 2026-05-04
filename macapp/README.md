@@ -43,13 +43,13 @@ and pricing source see the [root README](../README.md).
   ask for one-time approval in System Settings → General → Login Items
   the first time you enable it; the menu shows a hint when the state
   is `requiresApproval`)
-- **Show dock icon with spend** toggle — adds a Dock icon (a Claude-
-  orange squircle with the same cash-register silhouette as the menu
-  bar, rendered at runtime from SwiftUI so the two surfaces stay in
-  visual sync) carrying a red badge that mirrors today's running
-  spend in whole dollars (e.g. `$35`). Badge updates on every snapshot
-  tick (≤250 ms after a new event). **On by default**; turn it off if
-  you'd rather keep the Dock free of an extra icon.
+- **Show dock icon with spend** toggle — adds a Dock icon (a white
+  squircle with an orange dollar-bill graphic in the lower half,
+  rendered at runtime from SwiftUI; the upper-right stays clear so
+  the system-drawn red badge has clean space) carrying today's
+  running spend in whole dollars (e.g. `$35`). Badge updates on every
+  snapshot tick (≤250 ms after a new event). **On by default**; turn
+  it off if you'd rather keep the Dock free of an extra icon.
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
 
