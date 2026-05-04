@@ -4,14 +4,15 @@
 > (near) real time.
 
 ```
- ▁▂▁▃▂▅▄▃ $34.87
-        ↑ click for the dashboard popover
+ 💵 $35
+    ↑ click for the dashboard popover
 ```
 
-The menu bar item shows a sparkline of today's last 8 hours of spend
-plus today's running total. Click for a popover with hero today/month
-numbers, an hourly chart, by-model and by-project tables, and a live
-tail of recent events.
+The menu bar item shows a cash-register-style banknote glyph plus
+today's running total in whole dollars. Click for a popover with hero
+today/month numbers, an hourly chart, a 30-day chart, by-model and
+by-project tables (these *do* keep cents precision), and a live tail
+of recent events.
 
 For the shared philosophy, math, "missing files" calibration story,
 and pricing source see the [root README](../README.md).
@@ -19,9 +20,11 @@ and pricing source see the [root README](../README.md).
 ## ✨ What it shows
 
 **Menu bar item (always visible):**
-- 8-bar sparkline of today's spend per hour
-- `$today` (compact format, e.g. `$34.87` / `$1,247`)
-- Pulses softly while the initial scan runs, then snaps to live numbers
+- Cash-register banknote glyph (`banknote.fill` SF Symbol)
+- `$today` rounded to whole dollars (e.g. `$35` / `$1234`) — decimals
+  are noisy at menu-bar size, the popover keeps the cents precision
+- Glyph pulses softly while the initial scan runs, snaps to solid once
+  numbers are live
 - `—` when `~/.claude/projects` is missing
 
 **Popover (~520×440px, on click):**
@@ -38,10 +41,10 @@ and pricing source see the [root README](../README.md).
   the first time you enable it; the menu shows a hint when the state
   is `requiresApproval`)
 - **Show dock icon with spend** toggle — adds a Dock icon with a red
-  badge that mirrors today's running spend (e.g. `$34.87`). Updates on
-  every snapshot tick (≤250 ms after a new event), same compact format
-  as the menu bar label. **On by default**; turn it off if you'd
-  rather keep the Dock free of an extra icon.
+  badge that mirrors today's running spend in whole dollars (e.g.
+  `$35`). Updates on every snapshot tick (≤250 ms after a new event),
+  matching the menu bar label format. **On by default**; turn it off
+  if you'd rather keep the Dock free of an extra icon.
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
 
@@ -121,7 +124,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 96 unit tests
+swift test                       # 99 unit tests
 ```
 
 ### Requirements
@@ -256,7 +259,7 @@ Sources/
     MenuBarLabel.swift                sparkline + $today, with loading pulse
     PopoverView.swift                 hero, hourly chart, tables, live tail
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         96 unit tests
+Tests/ClaudeCounterCoreTests/         99 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
@@ -265,7 +268,8 @@ Tests/ClaudeCounterCoreTests/         96 unit tests
   CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
-  DockIconTests.swift                 7 tests, incl. NSApp instantiation smoke test
+  DockIconTests.swift                 10 tests, incl. NSApp smoke test +
+                                              formatUSDWhole rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   AppStateTests.swift                 10 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
@@ -374,7 +378,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 96-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 99-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 

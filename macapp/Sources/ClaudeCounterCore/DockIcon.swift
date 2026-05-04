@@ -65,16 +65,18 @@ public final class NSAppDockIconController: DockIconController {
     }
 }
 
-// MARK: - Badge formatter
+// MARK: - Badge formatters
 
-/// Compact USD formatter shared between the menu bar label and the dock
-/// badge. Dropping precision as the number grows keeps the string short
-/// enough to fit both the menu bar (next to the sparkline) and the
-/// macOS dock badge oval (which clips at ~5 visible characters):
+/// Compact USD formatter for the popover tables (by-model, by-project,
+/// monthly summary). Dropping precision as the number grows keeps each
+/// row tight without losing the order-of-magnitude on small values:
 ///
 ///   $0.00 … $99.99    → "$%.2f"  ($12.34)
 ///   $100   … $999.9   → "$%.1f"  ($123.4)
 ///   $1000+            → "$%.0f"  ($1234)
+///
+/// The at-a-glance shell surfaces (menu bar label + dock badge) use
+/// `formatUSDWhole(_:)` instead — decimals are noisy at that size.
 public func formatUSDCompact(_ usd: Double) -> String {
     if usd >= 1000 {
         return String(format: "$%.0f", usd)
@@ -83,6 +85,21 @@ public func formatUSDCompact(_ usd: Double) -> String {
         return String(format: "$%.1f", usd)
     }
     return String(format: "$%.2f", usd)
+}
+
+/// Whole-dollar formatter for the at-a-glance OS-shell surfaces — the
+/// menu bar label next to the cash-register glyph, and the dock badge.
+/// Both render at small sizes where decimals add visual noise without
+/// the precision actually being readable; round to the nearest dollar.
+///
+///   $0.00 → "$0"
+///   $0.49 → "$0"
+///   $0.50 → "$0"   (printf %.0f banker's rounding: ties to even)
+///   $1.50 → "$2"
+///   $34.87 → "$35"
+///   $1234.5 → "$1234"
+public func formatUSDWhole(_ usd: Double) -> String {
+    return String(format: "$%.0f", usd)
 }
 
 // MARK: - Test double

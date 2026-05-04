@@ -184,8 +184,8 @@ final class AppStateTests: XCTestCase {
         await app.stop()
 
         XCTAssertTrue(dock.isVisible, "dock icon should be visible after start")
-        XCTAssertEqual(dock.badge, "$5.00",
-                       "dock badge should reflect today's USD after first snapshot")
+        XCTAssertEqual(dock.badge, "$5",
+                       "dock badge should reflect today's USD as whole dollars after first snapshot")
     }
 
     /// Boot AppState with `dockIconEnabled = false`. The dock controller
@@ -249,10 +249,10 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(dock.isVisible)
 
         // User flips the toggle on → dock becomes visible and the badge
-        // is stamped (zero spend in this empty fixture, so $0.00).
+        // is stamped (zero spend in this empty fixture, so $0).
         app.setDockIconEnabled(true)
         XCTAssertTrue(dock.isVisible)
-        XCTAssertEqual(dock.badge, "$0.00")
+        XCTAssertEqual(dock.badge, "$0")
         XCTAssertTrue(store.load().dockIconEnabled,
                       "preference should be persisted via the store")
 
