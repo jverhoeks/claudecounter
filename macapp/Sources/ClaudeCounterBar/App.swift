@@ -57,6 +57,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Render the Dock icon from SwiftUI before the dock-icon
+        // controller has a chance to flip the activation policy.
+        // `NSApp.applicationIconImage` is what macOS uses for the
+        // Dock tile — without setting it, the bundle has no .icns
+        // resource so the Dock falls back to a blank placeholder
+        // square (the "frosted" generic app icon) and only the red
+        // spend badge renders against it.
+        if let icon = renderAppIcon(edgeLength: 512) {
+            NSApp.applicationIconImage = icon
+        }
+
         Task { await appState.start() }
     }
 
