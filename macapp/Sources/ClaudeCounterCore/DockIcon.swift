@@ -27,10 +27,36 @@ public protocol DockIconController: AnyObject {
 }
 
 /// Production implementation, backed by `NSApp`.
+///
+/// The dock-tile artwork can be installed two ways:
+/// 1. `tileContentView` — an `NSView` (commonly `NSHostingView` wrapping
+///    a SwiftUI view) that the Dock renders directly. This is what we
+///    use in production: SwiftUI draws into the Dock tile each time
+///    `display()` is called, no bitmap snapshot, no `ImageRenderer`
+///    failure modes. The badge and the artwork stay independent.
+/// 2. `applicationIconImage` — a precomputed `NSImage` set on `NSApp`,
+///    used only as a belt-and-suspenders backstop for the rare paths
+///    that read the icon image directly (e.g. About panel).
+///
+/// Tests inject neither and get a controller that no-ops on the dock.
 @MainActor
 public final class NSAppDockIconController: DockIconController {
 
-    public init() {}
+    private let tileContentView: NSView?
+    private let applicationIconImage: NSImage?
+
+    /// - Parameters:
+    ///   - tileContentView: an `NSView` (typically an `NSHostingView`)
+    ///     that the Dock renders as the icon. Pass `nil` if you only
+    ///     want to use the bundle's `.icns` resource.
+    ///   - applicationIconImage: optional `NSImage` for `NSApp.applicationIconImage`.
+    ///     Set this for code paths that read the icon image directly
+    ///     (About panel, alerts).
+    public init(tileContentView: NSView? = nil,
+                applicationIconImage: NSImage? = nil) {
+        self.tileContentView = tileContentView
+        self.applicationIconImage = applicationIconImage
+    }
 
     public private(set) var isVisible: Bool = false
 
@@ -42,14 +68,36 @@ public final class NSAppDockIconController: DockIconController {
         // process. Using `NSApplication.shared` directly forces
         // initialisation and is safe in every context.
         let app = NSApplication.shared
+
+        // Re-apply the artwork on every visibility flip. macOS resets
+        // some dock-tile state when the activation policy changes, so
+        // setting the icon ONCE at launch isn't reliable — the user
+        // toggling the icon off and back on would lose the artwork.
+        if visible {
+            if let view = tileContentView {
+                app.dockTile.contentView = view
+            }
+            if let icon = applicationIconImage {
+                app.applicationIconImage = icon
+            }
+        }
+
         let policy: NSApplication.ActivationPolicy = visible ? .regular : .accessory
         app.setActivationPolicy(policy)
+
         // Clear any stale badge when the icon is going away — otherwise
         // the next `setVisible(true)` would briefly show the previous
         // value before the next snapshot comes in.
         if !visible {
             app.dockTile.badgeLabel = nil
         }
+
+        // Force the Dock to redraw the tile NOW. Without this, the
+        // tile holds onto whatever it had cached (often the macOS
+        // generic frosted-square placeholder for apps with no .icns)
+        // until the next system-driven refresh — which can be many
+        // seconds away.
+        app.dockTile.display()
         #endif
         isVisible = visible
     }
@@ -60,7 +108,12 @@ public final class NSAppDockIconController: DockIconController {
         // is harmless in that state but we'd rather avoid waking up the
         // dock for a UI affordance the user can't see.
         guard isVisible else { return }
-        NSApplication.shared.dockTile.badgeLabel = text
+        let app = NSApplication.shared
+        app.dockTile.badgeLabel = text
+        // Re-display so the new badge text shows immediately on top of
+        // our SwiftUI tile content — `badgeLabel` alone schedules a
+        // redraw eventually, but `display()` makes it instant.
+        app.dockTile.display()
         #endif
     }
 }
