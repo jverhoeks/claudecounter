@@ -39,10 +39,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccbar-cache.json")
         let pricing = PricingTable.resolveFromDisk()
         let agg = Aggregator(pricing: pricing)
+
         // Production wiring for the dock icon + persisted settings.
-        // Keep these explicit (rather than relying on AppState defaults)
-        // so the app's runtime dependencies are visible in one place.
-        let dockIcon = NSAppDockIconController()
+        // The dock controller takes both:
+        //   - tileContentView: a SwiftUI `AppIconView` wrapped in
+        //     NSHostingView; the Dock renders this directly, no bitmap
+        //   - applicationIconImage: a precomputed NSImage backstop for
+        //     code paths that read `NSApp.applicationIconImage`
+        //     (About panel, system alerts, etc.)
+        let dockTileView = makeDockTileHostingView(edgeLength: 128)
+        let dockIconImage = renderAppIcon(edgeLength: 512)
+        let dockIcon = NSAppDockIconController(
+            tileContentView: dockTileView,
+            applicationIconImage: dockIconImage
+        )
         let settingsStore = UserDefaultsSettingsStore()
         self.appState = AppState(
             projectsRoot: projectsRoot,
@@ -57,17 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Render the Dock icon from SwiftUI before the dock-icon
-        // controller has a chance to flip the activation policy.
-        // `NSApp.applicationIconImage` is what macOS uses for the
-        // Dock tile — without setting it, the bundle has no .icns
-        // resource so the Dock falls back to a blank placeholder
-        // square (the "frosted" generic app icon) and only the red
-        // spend badge renders against it.
-        if let icon = renderAppIcon(edgeLength: 512) {
-            NSApp.applicationIconImage = icon
-        }
-
+        // No icon-image juggling here — the dock controller installs
+        // both the hosting view and the backstop image inside
+        // `setVisible(true)` and forces a `dockTile.display()`. That
+        // way, toggling the dock icon off and back on always reapplies
+        // the artwork; macOS resets some dock-tile state when the
+        // activation policy flips and a one-shot launch-time install
+        // wouldn't survive that.
         Task { await appState.start() }
     }
 

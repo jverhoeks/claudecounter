@@ -60,14 +60,39 @@ struct AppIconView: View {
 /// Render the app icon to an `NSImage` suitable for assigning to
 /// `NSApp.applicationIconImage`.
 ///
-/// We render at 512pt @2× so the produced bitmap is 1024×1024 — large
-/// enough for the Dock's 128pt-zoomed-on-retina case (which asks for
-/// 256px in each direction).  Returns `nil` if the renderer can't
-/// produce a CGImage (shouldn't happen in practice, but `cgImage` is
-/// optional so we return `nil` instead of crashing).
+/// We go through `cgImage` rather than `nsImage` and wrap manually:
+/// `ImageRenderer.nsImage` has been reported to silently return nil in
+/// some hosting contexts (menu-bar accessory at launch, no foreground
+/// window). `cgImage` is more reliable, and once we have it we can
+/// build the `NSImage` ourselves with the logical size we want.
+///
+/// Rendered at 512pt @2× so the bitmap is 1024×1024 — enough for the
+/// Dock's 128pt @2× retina worst case (256 actual pixels).
 @MainActor
 func renderAppIcon(edgeLength: CGFloat = 512) -> NSImage? {
     let renderer = ImageRenderer(content: AppIconView(size: edgeLength))
-    renderer.scale = 2.0  // retina bitmap
-    return renderer.nsImage
+    renderer.scale = 2.0
+    guard let cgImage = renderer.cgImage else { return nil }
+    return NSImage(
+        cgImage: cgImage,
+        size: CGSize(width: edgeLength, height: edgeLength)
+    )
+}
+
+/// Build an `NSHostingView` that renders `AppIconView` directly as the
+/// Dock tile's content view.
+///
+/// Why prefer this over `NSApp.applicationIconImage`:
+/// - The Dock draws an `NSView` natively, no bitmap snapshot — so we
+///   skip `ImageRenderer.nsImage`'s "returns nil sometimes" failure
+///   mode entirely
+/// - SwiftUI redraws the view live on `dockTile.display()`, so the
+///   icon stays crisp at every dock zoom level
+/// - The badge (`dockTile.badgeLabel`) sits on top of the contentView
+///   independently — no interference between artwork and badge
+@MainActor
+func makeDockTileHostingView(edgeLength: CGFloat = 128) -> NSView {
+    let hosting = NSHostingView(rootView: AppIconView(size: edgeLength))
+    hosting.frame = NSRect(x: 0, y: 0, width: edgeLength, height: edgeLength)
+    return hosting
 }
