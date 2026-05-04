@@ -1,13 +1,15 @@
 import SwiftUI
 import ClaudeCounterCore
 
-/// The view that renders into the system menu bar. F3-style:
-/// 8-bar sparkline of today's last 8 hours + today's $ figure.
+/// The view that renders into the system menu bar.
+///
+/// Cash-register theme: a `banknote.fill` SF Symbol on the left, today's
+/// running spend (whole dollars, no decimals) on the right.
 ///
 /// Lifecycle states:
-/// - `.starting` / `.scanning` (with no live data yet) → flat placeholder
-///   bars + `$0.00`, dim text, soft pulse on the bars.
-/// - `.live` → real sparkline + real `$today`.
+/// - `.starting` / `.scanning` (with no live data yet) → dim glyph,
+///   `$0`, soft pulse on the icon to signal "working".
+/// - `.live` → solid glyph + the real `$today` figure.
 /// - `.noProjectsRoot` → a dash so the user knows there's no data path.
 struct MenuBarLabel: View {
     @ObservedObject var state: AppState
@@ -21,15 +23,13 @@ struct MenuBarLabel: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            SparkBars(
-                values: lastEightHours(of: state.totals.todayHourlyUSD),
-                pulsing: isLoading
-            )
-            // Important: explicit absolute size. MenuBarExtra hands
-            // unreliable bounds to GeometryReader, so SparkBars below
-            // draws at fixed pixel sizes and we just frame it here.
-            .frame(width: 28, height: 14)
+        HStack(spacing: 4) {
+            CashRegisterGlyph(pulsing: isLoading)
+                // Match the visual weight of the menu-bar text. SF
+                // Symbols scale with `.imageScale(.medium)` and the
+                // surrounding font; keeping them in the same HStack
+                // gives macOS a single text baseline to align to.
+                .font(.system(size: 13, weight: .semibold))
 
             Text(labelText)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -42,86 +42,51 @@ struct MenuBarLabel: View {
 
     private var labelText: String {
         if case .noProjectsRoot = state.status { return "—" }
-        return formatUSDCompact(todayUSD())
+        return formatUSDWhole(todayUSD())
     }
 
     private func todayUSD() -> Double {
         state.totals.day.values.reduce(0) { $0 + $1.usd }
     }
-
-    private func lastEightHours(of hourly: [Double]) -> [Double] {
-        guard hourly.count == 24 else { return Array(repeating: 0, count: 8) }
-        let nowHour = Calendar.current.component(.hour, from: Date())
-        let start = max(0, nowHour - 7)
-        return Array(hourly[start...min(start + 7, 23)])
-    }
 }
 
-/// Tiny vertical-bar sparkline drawn with `Canvas`.
+/// The cash-register glyph for the menu bar. macOS 13 doesn't ship a
+/// literal cash-register SF Symbol, so we use `banknote.fill` — a
+/// stylised banknote that reads as "money/POS" at 12-14pt sizes and
+/// renders monochrome in the menu bar by default.
 ///
-/// Why Canvas instead of SwiftUI shapes inside a GeometryReader: a
-/// `MenuBarExtra` label is rendered into the system menu bar, where
-/// SwiftUI hands GeometryReader children unreliable bounds (often
-/// 0×0 on first paint). That's why the sparkline was invisible in the
-/// previous build. Canvas gets explicit pixel-space drawing routines
-/// that the menu bar host renders correctly.
-struct SparkBars: View {
-    let values: [Double]
+/// Pulses softly while the initial scan runs, snaps to solid once we
+/// transition to `.live`. Mirrors the loading idiom used by Time
+/// Machine in the menu bar.
+struct CashRegisterGlyph: View {
     var pulsing: Bool = false
 
-    @State private var pulseOpacity: Double = 0.85
-
-    private let barCount: Int = 8
-    private let barWidth: CGFloat = 2.5
-    private let barSpacing: CGFloat = 1
-    private let barCorner: CGFloat = 1
+    @State private var pulseOpacity: Double = 1.0
 
     var body: some View {
-        Canvas { context, size in
-            let maxV = max(values.max() ?? 0, 0.0001)
-            let totalW = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-            let xOffset = max(0, (size.width - totalW) / 2)
-            let h = size.height
-
-            // Take the last `barCount` values; pad with zero on the left
-            // so the sparkline grows right-to-left as the day fills in.
-            var slice = values
-            if slice.count < barCount {
-                slice = Array(repeating: 0, count: barCount - slice.count) + slice
-            } else if slice.count > barCount {
-                slice = Array(slice.suffix(barCount))
+        Image(systemName: "banknote.fill")
+            .symbolRenderingMode(.monochrome)
+            .opacity(pulseOpacity)
+            .onAppear {
+                if pulsing { startPulse() } else { pulseOpacity = 1.0 }
             }
-
-            let opacity = pulsing ? pulseOpacity : 0.85
-            let color = Color.green.opacity(opacity)
-
-            for i in 0..<barCount {
-                let v = slice[i]
-                let barH = max(2, CGFloat(v / maxV) * h)
-                let x = xOffset + CGFloat(i) * (barWidth + barSpacing)
-                let rect = CGRect(x: x, y: h - barH, width: barWidth, height: barH)
-                let path = Path(roundedRect: rect, cornerRadius: barCorner)
-                context.fill(path, with: .color(color))
+            .onChange(of: pulsing) { isPulsing in
+                if isPulsing { startPulse() } else { pulseOpacity = 1.0 }
             }
-        }
-        .onAppear {
-            if pulsing { startPulse() }
-        }
-        .onChange(of: pulsing) { isPulsing in
-            if isPulsing { startPulse() } else { pulseOpacity = 0.85 }
-        }
     }
 
     private func startPulse() {
-        // Soft fade between 0.30 and 0.55 — visible motion without
-        // shouting. Mirrors the loading idiom used by Time Machine.
-        pulseOpacity = 0.55
+        // Gentle fade between 0.45 and 0.85 — visible motion without
+        // shouting. Same animation curve as the old sparkline pulse so
+        // the loading idiom is consistent across the v1.3 → v1.3.1 jump.
+        pulseOpacity = 0.85
         withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-            pulseOpacity = 0.30
+            pulseOpacity = 0.45
         }
     }
 }
 
-// `formatUSDCompact(_:)` lives in ClaudeCounterCore so that the dock
-// badge and the menu-bar label render the same string for the same
-// value. See DockIcon.swift.
+// `formatUSDCompact(_:)` and `formatUSDWhole(_:)` live in
+// ClaudeCounterCore — see DockIcon.swift. The dock badge and the menu
+// bar label both call `formatUSDWhole(_:)` so the two shell surfaces
+// always render the same number for the same value.

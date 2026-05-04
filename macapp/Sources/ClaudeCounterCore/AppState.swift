@@ -254,10 +254,12 @@ public final class AppState: ObservableObject {
     /// Stamp today's spend onto the dock badge. No-op when the user has
     /// the dock icon turned off — the controller will skip the syscall
     /// anyway, but checking here saves the formatter call.
+    /// Uses the whole-dollar format (`$35`, not `$34.87`) to match the
+    /// menu bar label — both shell surfaces stay legible at small size.
     private func updateDockBadge() {
         guard settings.dockIconEnabled else { return }
         let today = totals.day.values.reduce(0) { $0 + $1.usd }
-        dockIcon.setBadge(formatUSDCompact(today))
+        dockIcon.setBadge(formatUSDWhole(today))
     }
 
     /// Toggle the dock icon at runtime (called from the ⚙ menu).

@@ -58,6 +58,31 @@ final class DockIconTests: XCTestCase {
         XCTAssertNil(dock.setBadgeCalls[1])
     }
 
+    // MARK: - formatUSDWhole
+
+    func test_formatUSDWhole_zeroAndDecimals() {
+        XCTAssertEqual(formatUSDWhole(0), "$0")
+        XCTAssertEqual(formatUSDWhole(0.49), "$0")
+        // printf %.0f rounds ties to even — 0.50 → 0, 1.50 → 2.
+        XCTAssertEqual(formatUSDWhole(0.50), "$0")
+        XCTAssertEqual(formatUSDWhole(1.50), "$2")
+    }
+
+    func test_formatUSDWhole_typicalSpend() {
+        XCTAssertEqual(formatUSDWhole(34.87), "$35")
+        XCTAssertEqual(formatUSDWhole(123.45), "$123")
+        XCTAssertEqual(formatUSDWhole(1234.56), "$1235")
+    }
+
+    func test_formatUSDWhole_neverEmitsDecimalPoint() {
+        // Regression guard: any input value, whole or fractional,
+        // produces a string with no '.' — the whole point of the helper.
+        for v in [0.0, 0.01, 0.5, 1.0, 9.99, 50.0, 100.0, 999.99, 1234.56] {
+            XCTAssertFalse(formatUSDWhole(v).contains("."),
+                           "formatUSDWhole(\(v)) should not contain a decimal point")
+        }
+    }
+
     // MARK: - NSAppDockIconController (smoke test only)
 
     /// Verify the production type can be instantiated without crashing.
