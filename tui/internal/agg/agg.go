@@ -54,11 +54,13 @@ func (p ProjectDay) USD() float64 { return p.MainUSD + p.SubUSD }
 // Tokens returns total tokens (main + subagent).
 func (p ProjectDay) Tokens() TokenCounts { return p.Main.Add(p.Sub) }
 
-// DailyTotal is one day's aggregate cost across all models/projects.
-// Used for the minimal-view sparkline (last N days).
+// DailyTotal is one day's aggregate cost AND token usage across all
+// models/projects. Used for both the daily-spend sparkline and the
+// token-volume sparkline in the minimal/split views.
 type DailyTotal struct {
-	Day string  // YYYY-MM-DD in local time
-	USD float64 // total cost for the day across all models
+	Day    string // YYYY-MM-DD in local time
+	USD    float64
+	Tokens uint64 // sum of input + output + cacheCreate + cacheRead
 }
 
 type Totals struct {
@@ -286,19 +288,25 @@ func (a *Aggregator) Snapshot() Totals {
 	for k, t := range a.cells {
 		byDM[dmKey{k.Day, k.Model}] = byDM[dmKey{k.Day, k.Model}].Add(t)
 	}
+	// Cost only counts priced models so the dollar sparkline matches
+	// the rest of the UI; tokens count ALL models so the token chart
+	// reflects raw activity even when an unpriced model is in use.
 	dayCost := map[civilDay]float64{}
+	dayTokens := map[civilDay]uint64{}
 	for k, tok := range byDM {
 		if a.pricing.Has(k.Model) {
 			dayCost[k.Day] += a.pricing.Cost(k.Model, tok.ToUsage())
 		}
+		dayTokens[k.Day] += tok.In + tok.Out + tok.CacheCreate + tok.CacheRead
 	}
 	out.Daily = make([]DailyTotal, 0, DailyWindow)
 	for i := DailyWindow - 1; i >= 0; i-- {
 		d := now.AddDate(0, 0, -i)
 		cd := civilDay{d.Year(), d.Month(), d.Day()}
 		out.Daily = append(out.Daily, DailyTotal{
-			Day: d.Format("2006-01-02"),
-			USD: dayCost[cd],
+			Day:    d.Format("2006-01-02"),
+			USD:    dayCost[cd],
+			Tokens: dayTokens[cd],
 		})
 	}
 

@@ -79,12 +79,15 @@ func viewSplit(t agg.Totals) string {
 		b.WriteString(line)
 	}
 
-	// 30-day spend trend underneath the per-model bars. Same renderer
-	// the minimal view uses, so the chart is visually consistent across
-	// the three view modes (minimal · split · full — full inherits this
-	// via viewSplit).
+	// 30-day spend trend, then the parallel 30-day token-volume trend.
+	// Same renderers as the minimal view so the charts are visually
+	// consistent across the three view modes (minimal · split · full —
+	// full inherits this via viewSplit).
 	if chart := renderDailySparkline(t.Daily); chart != "" {
 		b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")
+		b.WriteString(chart)
+	}
+	if chart := renderDailyTokensSparkline(t.Daily); chart != "" {
 		b.WriteString(chart)
 	}
 	return b.String()

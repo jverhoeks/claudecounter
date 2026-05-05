@@ -155,6 +155,30 @@ public func formatUSDWhole(_ usd: Double) -> String {
     return String(format: "$%.0f", usd)
 }
 
+/// Compact token-count formatter for charts and tables. Claude usage
+/// volumes can run from hundreds (debug calls) to billions (heavy
+/// agentic days), so we adopt the K/M/B convention with one or two
+/// digits of precision so the column width stays predictable.
+///
+///   0          → "0"
+///   1234       → "1K"
+///   12345      → "12K"
+///   1234567    → "1.2M"
+///   1234567890 → "1.23B"
+public func formatTokens(_ count: UInt64) -> String {
+    let n = Double(count)
+    if count >= 1_000_000_000 {
+        return String(format: "%.2fB", n / 1_000_000_000)
+    }
+    if count >= 1_000_000 {
+        return String(format: "%.1fM", n / 1_000_000)
+    }
+    if count >= 1_000 {
+        return String(format: "%.0fK", n / 1_000)
+    }
+    return "\(count)"
+}
+
 // MARK: - Test double
 
 /// In-memory test double. Records every call so tests can assert that

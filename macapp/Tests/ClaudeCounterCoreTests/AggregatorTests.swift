@@ -140,10 +140,59 @@ final class AggregatorTests: XCTestCase {
         XCTAssertEqual(s.daily.last?.day, fmt.string(from: now))
         // Today's USD reflects the event we recorded.
         XCTAssertEqual(s.daily.last?.usd ?? 0, 5.0, accuracy: 1e-9)
-        // Days other than today are zero (no events).
+        // Today's tokens reflect the event we recorded (1M input, 0 of others).
+        XCTAssertEqual(s.daily.last?.tokens ?? 0, 1_000_000)
+        // Days other than today are zero (no events) — both USD and tokens.
         for entry in s.daily.dropLast() {
             XCTAssertEqual(entry.usd, 0)
+            XCTAssertEqual(entry.tokens, 0)
         }
+    }
+
+    func test_snapshot_dailyTokens_sumAllFourTokenTypes() async {
+        // One event with non-zero values for ALL four token types — the
+        // daily token total should be the sum, not just `input`.
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        await agg.apply(event(model: "claude-opus-4-7",
+                              input: 100, output: 200,
+                              cacheCreate: 30, cacheRead: 70,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.daily.last?.tokens ?? 0, 100 + 200 + 30 + 70)
+    }
+
+    func test_snapshot_dailyTokens_sumAcrossModels() async {
+        // Two events on the same day from two different models — the
+        // daily total should sum across models (it's an unbucketed total).
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        await agg.apply(event(model: "claude-opus-4-7", input: 100, output: 0,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        await agg.apply(event(model: "claude-sonnet-4-7", input: 250, output: 0,
+                              project: "p2", isSub: false,
+                              ts: now, msgID: "m2", reqID: "r2"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.daily.last?.tokens ?? 0, 350)
+    }
+
+    func test_snapshot_dailyTokens_includesUnpricedModels() async {
+        // Tokens count for ALL models, even ones missing from pricing —
+        // the chart should reflect raw activity. (USD only counts priced
+        // models, that's the existing behaviour and is unchanged.)
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        await agg.apply(event(model: "claude-mystery-model-9000",
+                              input: 500, output: 0,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.daily.last?.tokens ?? 0, 500,
+                       "tokens count even for unpriced models")
+        XCTAssertEqual(s.daily.last?.usd ?? 0, 0,
+                       "USD stays zero for unpriced models")
     }
 
     // MARK: - hourly (today)
@@ -194,6 +243,7 @@ final class AggregatorTests: XCTestCase {
     }()
 
     private func event(model: String, input: UInt64, output: UInt64,
+                       cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0,
                        project: String, isSub: Bool, ts: Date,
                        msgID: String, reqID: String) -> UsageEvent {
         UsageEvent(
@@ -201,7 +251,8 @@ final class AggregatorTests: XCTestCase {
             project: project, model: model,
             messageID: msgID, requestID: reqID,
             isSubagent: isSub,
-            usage: Usage(input: input, output: output)
+            usage: Usage(input: input, output: output,
+                         cacheCreate: cacheCreate, cacheRead: cacheRead)
         )
     }
 }

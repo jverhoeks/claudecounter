@@ -35,6 +35,9 @@ and pricing source see the [root README](../README.md).
 - 🧩 **Per-project breakdown** with main vs subagent (Task tool) split
 - 🎯 **Token-first math**: cost is derived from accumulated tokens at
   snapshot time, never from running float sums (no accumulation drift)
+- 📈 **30-day twin charts**: daily cost (green) and daily token volume
+  (blue) stacked, so you can see at a glance whether spend tracked
+  usage or whether a model price was driving the bill
 - 🪶 **Single binary** — no Node, no Python, no daemon
 - 🌍 **Cross-platform**: macOS · Linux · Windows (testers welcome 🪟 — see below)
 - 💾 **Zero-config**: defaults work; pricing falls back to a baked-in

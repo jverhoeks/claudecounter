@@ -83,6 +83,33 @@ final class DockIconTests: XCTestCase {
         }
     }
 
+    // MARK: - formatTokens
+
+    func test_formatTokens_zeroAndSmall() {
+        // Below 1K we render the raw integer — readable and exact for
+        // the rare debug-call days where the count is tiny.
+        XCTAssertEqual(formatTokens(0), "0")
+        XCTAssertEqual(formatTokens(1), "1")
+        XCTAssertEqual(formatTokens(999), "999")
+    }
+
+    func test_formatTokens_thousands() {
+        XCTAssertEqual(formatTokens(1_000), "1K")
+        XCTAssertEqual(formatTokens(12_345), "12K")
+        XCTAssertEqual(formatTokens(999_999), "1000K") // edge: just under 1M
+    }
+
+    func test_formatTokens_millions() {
+        XCTAssertEqual(formatTokens(1_000_000), "1.0M")
+        XCTAssertEqual(formatTokens(1_234_567), "1.2M")
+        XCTAssertEqual(formatTokens(999_999_999), "1000.0M") // edge: just under 1B
+    }
+
+    func test_formatTokens_billions() {
+        XCTAssertEqual(formatTokens(1_000_000_000), "1.00B")
+        XCTAssertEqual(formatTokens(1_234_567_890), "1.23B")
+    }
+
     // MARK: - NSAppDockIconController (smoke test only)
 
     /// Verify the production type can be instantiated without crashing.

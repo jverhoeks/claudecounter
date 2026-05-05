@@ -43,9 +43,11 @@ func viewMinimal(t agg.Totals) string {
 	b.WriteString(styleHead.Render("Today") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Day))) + "\n")
 	b.WriteString(styleHead.Render("Month") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Month))) + "\n")
 
-	// 30-day spend trend. Same renderer as view_split / view_full so
-	// the chart is consistent across all three modes.
+	// 30-day spend trend, then the parallel 30-day token-volume trend.
+	// Same renderers as view_split / view_full so the charts are
+	// consistent across all three modes.
 	b.WriteString(renderDailySparkline(t.Daily))
+	b.WriteString(renderDailyTokensSparkline(t.Daily))
 
 	names := make([]string, 0, len(t.Day))
 	for name := range t.Day {

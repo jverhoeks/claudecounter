@@ -25,6 +25,7 @@ struct PopoverView: View {
             HeroRow(state: state)
             HourlyChartRow(hourlyUSD: state.totals.todayHourlyUSD)
             MonthlyChartRow(daily: state.totals.daily)
+            MonthlyTokenChartRow(daily: state.totals.daily)
 
             // Scrollable middle: tables + live tail. Sized to fill
             // remaining vertical space.
@@ -269,6 +270,123 @@ struct MonthlyChartRow: View {
     }
 
     /// "2026-04-26" → "Apr 26"
+    private func formatDay(_ ymd: String) -> String {
+        let inFmt = DateFormatter()
+        inFmt.dateFormat = "yyyy-MM-dd"
+        guard let d = inFmt.date(from: ymd) else { return ymd }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "MMM d"
+        outFmt.locale = Locale(identifier: "en_US_POSIX")
+        return outFmt.string(from: d)
+    }
+}
+
+// MARK: - Monthly token chart (last 30 days, parallel to MonthlyChartRow)
+
+/// One bar per day for the last 30 days, oldest → newest, plotting
+/// total tokens (input + output + cache-create + cache-read) instead
+/// of USD. Hover surfaces both the token count AND the cost for that
+/// day, so the user can answer "did I spend more because I used the
+/// API more, or because the model was more expensive?" in one glance.
+///
+/// Colour scheme deliberately differs from `MonthlyChartRow` (blue
+/// vs green) so the two stacked charts stay visually distinct at a
+/// glance — the eye reads "this row is tokens, not money."
+struct MonthlyTokenChartRow: View {
+    let daily: [DailyTotal]
+    @State private var hoveredIndex: Int? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Last 30 days · tokens")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let i = hoveredIndex, i < daily.count {
+                    HStack(spacing: 4) {
+                        Text(formatDay(daily[i].day))
+                            .foregroundStyle(.primary)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(formatTokens(daily[i].tokens))
+                            .foregroundStyle(daily[i].tokens > 0 ? .blue : .secondary)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(formatUSDFine(daily[i].usd))
+                            .foregroundStyle(daily[i].usd > 0 ? .green : .secondary)
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else {
+                    Text(summary)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .frame(height: 12)
+
+            GeometryReader { geo in
+                let maxV = max(daily.map { $0.tokens }.max() ?? 0, 1)
+                HStack(alignment: .bottom, spacing: 1) {
+                    ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(barColor(idx: idx,
+                                           value: entry.tokens,
+                                           isToday: idx == daily.count - 1))
+                            .frame(height: max(2,
+                                               CGFloat(Double(entry.tokens) / Double(maxV))
+                                               * geo.size.height))
+                    }
+                }
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoveredIndex = barIndex(for: point.x,
+                                                width: geo.size.width,
+                                                count: daily.count)
+                    case .ended:
+                        hoveredIndex = nil
+                    }
+                }
+            }
+            .frame(height: 56)
+        }
+        .animation(.easeInOut(duration: 0.12), value: hoveredIndex)
+    }
+
+    private func barIndex(for x: CGFloat, width: CGFloat, count: Int) -> Int? {
+        guard count > 0, x >= 0, x <= width else { return nil }
+        let slot = width / CGFloat(count)
+        let idx = Int((x / slot).rounded(.down))
+        return min(max(idx, 0), count - 1)
+    }
+
+    /// Same per-bar colour grading rules as `MonthlyChartRow`, with
+    /// blue swapped in for green: hover wins, then today, then zero,
+    /// then a default tint.
+    private func barColor(idx: Int, value: UInt64, isToday: Bool) -> Color {
+        if hoveredIndex == idx { return Color.blue }
+        if isToday { return Color.blue.opacity(0.95) }
+        if value == 0 { return Color.gray.opacity(0.30) }
+        return Color.blue.opacity(0.75)
+    }
+
+    private var summary: String {
+        let totalTokens: UInt64 = daily.reduce(0) { $0 &+ $1.tokens }
+        let totalUSD = daily.reduce(0) { $0 + $1.usd }
+        guard let first = daily.first?.day, let last = daily.last?.day else {
+            return "no data"
+        }
+        return "\(formatDay(first))…\(formatDay(last)) · \(formatTokens(totalTokens)) · \(formatUSDCompact(totalUSD))"
+    }
+
+    /// "2026-04-26" → "Apr 26" (same DateFormatter dance as the USD
+    /// chart — duplicated here intentionally to keep this view file-
+    /// scoped without a shared helper that could become stale).
     private func formatDay(_ ymd: String) -> String {
         let inFmt = DateFormatter()
         inFmt.dateFormat = "yyyy-MM-dd"
