@@ -159,3 +159,69 @@ func TestSnapshot_ExcludesPreviousMonth(t *testing.T) {
 		t.Error("last month's event must not appear in this-month snapshot")
 	}
 }
+
+// TestDailyTotal_TokensSumAllFourTypes guards against future regressions
+// where someone summing tokens forgets one of the cache fields.
+func TestDailyTotal_TokensSumAllFourTypes(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	// One event with non-zero values for ALL four token kinds.
+	e := reader.Event{
+		Timestamp: now,
+		Model:     "claude-opus-4-7",
+		Usage: pricing.Usage{
+			InputTokens:              100,
+			OutputTokens:             200,
+			CacheCreationInputTokens: 30,
+			CacheReadInputTokens:     70,
+		},
+	}
+	a.Apply(e)
+
+	snap := a.Snapshot()
+	last := snap.Daily[len(snap.Daily)-1]
+	if last.Tokens != 100+200+30+70 {
+		t.Errorf("Daily.Tokens: got %d want %d (input+output+cacheCreate+cacheRead)",
+			last.Tokens, 100+200+30+70)
+	}
+}
+
+// TestDailyTotal_TokensIncludeUnpriced — tokens reflect raw activity
+// regardless of pricing coverage. USD continues to count only priced
+// models (existing behaviour, asserted alongside for clarity).
+func TestDailyTotal_TokensIncludeUnpriced(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	a.Apply(mkEvent(now.UTC().Format(time.RFC3339),
+		"claude-mystery-model-9000", 500, 0))
+
+	snap := a.Snapshot()
+	last := snap.Daily[len(snap.Daily)-1]
+	if last.Tokens != 500 {
+		t.Errorf("Daily.Tokens for unpriced model: got %d want 500", last.Tokens)
+	}
+	if last.USD != 0 {
+		t.Errorf("Daily.USD for unpriced model: got %v want 0", last.USD)
+	}
+}
+
+// TestDailyTotal_TokensSumAcrossModels — daily is unbucketed by model;
+// two events from different models on the same day must add together.
+func TestDailyTotal_TokensSumAcrossModels(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	a.Apply(mkEvent(now.UTC().Format(time.RFC3339), "claude-opus-4-7", 100, 0))
+	e2 := mkEvent(now.UTC().Format(time.RFC3339), "claude-sonnet-4-6", 250, 0)
+	e2.MessageID = "m2"
+	e2.RequestID = "r2"
+	a.Apply(e2)
+
+	snap := a.Snapshot()
+	last := snap.Daily[len(snap.Daily)-1]
+	if last.Tokens != 350 {
+		t.Errorf("Daily.Tokens summed across models: got %d want 350", last.Tokens)
+	}
+}

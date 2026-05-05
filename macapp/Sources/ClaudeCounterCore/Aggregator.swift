@@ -71,7 +71,15 @@ public struct ProjectDay: Equatable, Sendable {
 public struct DailyTotal: Equatable, Sendable {
     public var day: String   // YYYY-MM-DD in local TZ
     public var usd: Double
-    public init(day: String, usd: Double) { self.day = day; self.usd = usd }
+    /// Total tokens for the day across all models — sum of input,
+    /// output, cache-create and cache-read. UInt64 so it accumulates
+    /// exactly across thousands of events without float drift.
+    public var tokens: UInt64
+    public init(day: String, usd: Double, tokens: UInt64 = 0) {
+        self.day = day
+        self.usd = usd
+        self.tokens = tokens
+    }
 }
 
 public struct Totals: Equatable, Sendable {
@@ -355,15 +363,27 @@ public actor Aggregator {
             }
         }
 
-        // Daily window: last 30 days, oldest→newest.
+        // Daily window: last 30 days, oldest→newest. Tokens are summed
+        // across ALL models (priced and unknown) so the token chart
+        // reflects raw activity even when a model isn't in the pricing
+        // table; cost only counts priced models, matching the USD chart.
         var dayCost: [CivilDay: Double] = [:]
-        for (k, tok) in byDM where pricing.has(model: k.model) {
-            dayCost[k.day, default: 0] += pricing.cost(model: k.model, usage: tok.toUsage())
+        var dayTokens: [CivilDay: UInt64] = [:]
+        for (k, tok) in byDM {
+            if pricing.has(model: k.model) {
+                dayCost[k.day, default: 0] += pricing.cost(model: k.model, usage: tok.toUsage())
+            }
+            let total = tok.input &+ tok.output &+ tok.cacheCreate &+ tok.cacheRead
+            dayTokens[k.day, default: 0] = (dayTokens[k.day] ?? 0) &+ total
         }
         out.daily = (0..<Self.dailyWindow).reversed().map { i in
             let date = calendar.date(byAdding: .day, value: -i, to: nowLocal) ?? nowLocal
             let cd = dayOf(date, calendar: calendar)
-            return DailyTotal(day: civilDayString(cd), usd: dayCost[cd] ?? 0)
+            return DailyTotal(
+                day: civilDayString(cd),
+                usd: dayCost[cd] ?? 0,
+                tokens: dayTokens[cd] ?? 0
+            )
         }
 
         // Today hourly: tokens per hour, plus per-hour USD by walking the

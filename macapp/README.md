@@ -30,9 +30,13 @@ and pricing source see the [root README](../README.md).
   numbers are live
 - `—` when `~/.claude/projects` is missing
 
-**Popover (~520×440px, on click):**
+**Popover (~520×700px, on click):**
 - Hero today + month numbers
 - 24-bar hourly chart for today (future hours dimmed)
+- 30-day **cost** chart (green) — hover shows day + USD
+- 30-day **token-volume** chart (blue) — hover shows day + tokens + USD
+  in the same row, so you can see at a glance whether spend tracked
+  usage or whether a model price was driving the bill
 - "By model · month" table with USD and %
 - "By project · month" table with main / subagent split
 - Live tail — last 8 events as they arrive
@@ -129,7 +133,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 99 unit tests
+swift test                       # 106 unit tests
 ```
 
 ### Requirements
@@ -267,17 +271,18 @@ Sources/
                                               into NSApp.applicationIconImage
     PopoverView.swift                 hero, hourly chart, tables, live tail
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         99 unit tests
+Tests/ClaudeCounterCoreTests/         106 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
-  AggregatorTests.swift               12 tests
+  AggregatorTests.swift               15 tests, incl. daily token totals
+                                              (4-type sum, multi-model, unpriced)
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
   CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
-  DockIconTests.swift                 10 tests, incl. NSApp smoke test +
-                                              formatUSDWhole rules
+  DockIconTests.swift                 14 tests, incl. NSApp smoke test +
+                                              formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   AppStateTests.swift                 10 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
@@ -386,7 +391,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 99-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 106-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 
