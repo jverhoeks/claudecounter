@@ -33,10 +33,14 @@ and pricing source see the [root README](../README.md).
 **Popover (~520×700px, on click):**
 - Hero today + month numbers
 - 24-bar hourly chart for today (future hours dimmed)
-- 30-day **cost** chart (green) — hover shows day + USD
-- 30-day **token-volume** chart (blue) — hover shows day + tokens + USD
-  in the same row, so you can see at a glance whether spend tracked
-  usage or whether a model price was driving the bill
+- 30-day **cost** chart with each day's bar **stacked by model** —
+  the segment colours match the swatches in the "By model · month"
+  table below (so the table doubles as a colour legend)
+- 30-day **token-volume** chart, same per-model stacking with the
+  same colour palette — a model's blue (or whatever it got) sits at
+  the same vertical position in both charts. Hover any bar to see
+  day + tokens + USD in the header row, so you can answer "did spend
+  follow usage?" at a glance
 - "By model · month" table with USD and %
 - "By project · month" table with main / subagent split
 - Live tail — last 8 events as they arrive
@@ -133,7 +137,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 106 unit tests
+swift test                       # 111 unit tests
 ```
 
 ### Requirements
@@ -269,14 +273,16 @@ Sources/
                                               + ClaudeRegisterShape definition
     AppIcon.swift                     SwiftUI Dock icon, rendered at launch
                                               into NSApp.applicationIconImage
+    ModelPalette.swift                shared model→colour mapping for the
+                                              monthly charts and the by-model table
     PopoverView.swift                 hero, hourly chart, tables, live tail
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         106 unit tests
+Tests/ClaudeCounterCoreTests/         111 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
-  AggregatorTests.swift               15 tests, incl. daily token totals
-                                              (4-type sum, multi-model, unpriced)
+  AggregatorTests.swift               18 tests, incl. daily token totals +
+                                              per-model breakdowns (USD + tokens)
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
   CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
@@ -284,6 +290,7 @@ Tests/ClaudeCounterCoreTests/         106 unit tests
   DockIconTests.swift                 14 tests, incl. NSApp smoke test +
                                               formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
+  ModelPaletteTests.swift             2 tests, model→colour ranking rule
   AppStateTests.swift                 10 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
@@ -391,7 +398,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 106-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 111-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 

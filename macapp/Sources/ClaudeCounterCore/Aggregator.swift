@@ -75,10 +75,24 @@ public struct DailyTotal: Equatable, Sendable {
     /// output, cache-create and cache-read. UInt64 so it accumulates
     /// exactly across thousands of events without float drift.
     public var tokens: UInt64
-    public init(day: String, usd: Double, tokens: UInt64 = 0) {
+    /// Per-model breakdown for the day. The chart layer uses this to
+    /// stack bar segments by model so the user can see at a glance
+    /// which model drove the spend / token volume on a given day.
+    /// Same key set as `tokensByModel` (the union of every model that
+    /// produced events on the day).
+    public var usdByModel: [String: Double]
+    public var tokensByModel: [String: UInt64]
+
+    public init(day: String,
+                usd: Double,
+                tokens: UInt64 = 0,
+                usdByModel: [String: Double] = [:],
+                tokensByModel: [String: UInt64] = [:]) {
         self.day = day
         self.usd = usd
         self.tokens = tokens
+        self.usdByModel = usdByModel
+        self.tokensByModel = tokensByModel
     }
 }
 
@@ -367,14 +381,22 @@ public actor Aggregator {
         // across ALL models (priced and unknown) so the token chart
         // reflects raw activity even when a model isn't in the pricing
         // table; cost only counts priced models, matching the USD chart.
+        // We also keep the per-model breakdown for each day so the UI
+        // layer can stack bars by model.
         var dayCost: [CivilDay: Double] = [:]
         var dayTokens: [CivilDay: UInt64] = [:]
+        var dayCostByModel: [CivilDay: [String: Double]] = [:]
+        var dayTokensByModel: [CivilDay: [String: UInt64]] = [:]
         for (k, tok) in byDM {
-            if pricing.has(model: k.model) {
-                dayCost[k.day, default: 0] += pricing.cost(model: k.model, usage: tok.toUsage())
-            }
             let total = tok.input &+ tok.output &+ tok.cacheCreate &+ tok.cacheRead
             dayTokens[k.day, default: 0] = (dayTokens[k.day] ?? 0) &+ total
+            dayTokensByModel[k.day, default: [:]][k.model] =
+                (dayTokensByModel[k.day]?[k.model] ?? 0) &+ total
+            if pricing.has(model: k.model) {
+                let cost = pricing.cost(model: k.model, usage: tok.toUsage())
+                dayCost[k.day, default: 0] += cost
+                dayCostByModel[k.day, default: [:]][k.model, default: 0] += cost
+            }
         }
         out.daily = (0..<Self.dailyWindow).reversed().map { i in
             let date = calendar.date(byAdding: .day, value: -i, to: nowLocal) ?? nowLocal
@@ -382,7 +404,9 @@ public actor Aggregator {
             return DailyTotal(
                 day: civilDayString(cd),
                 usd: dayCost[cd] ?? 0,
-                tokens: dayTokens[cd] ?? 0
+                tokens: dayTokens[cd] ?? 0,
+                usdByModel: dayCostByModel[cd] ?? [:],
+                tokensByModel: dayTokensByModel[cd] ?? [:]
             )
         }
 

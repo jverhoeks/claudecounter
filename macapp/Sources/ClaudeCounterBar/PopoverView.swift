@@ -18,21 +18,29 @@ struct PopoverView: View {
     /// is a glanceable surface, not the full ledger.
     private let topN = 8
 
+    /// Computed once per view body so both monthly charts AND the
+    /// by-model table share the same model→colour mapping. Recomputed
+    /// every snapshot publish (cheap — small dictionary), so the
+    /// palette stays in sync with the data the UI is currently showing.
+    private var palette: ModelPalette {
+        ModelPalette(monthUSD: state.totals.month, dailyWindow: state.totals.daily)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Pinned-top: identity + charts. These are the "glance"
             // surface and must always be visible.
             HeroRow(state: state)
             HourlyChartRow(hourlyUSD: state.totals.todayHourlyUSD)
-            MonthlyChartRow(daily: state.totals.daily)
-            MonthlyTokenChartRow(daily: state.totals.daily)
+            MonthlyChartRow(daily: state.totals.daily, palette: palette)
+            MonthlyTokenChartRow(daily: state.totals.daily, palette: palette)
 
             // Scrollable middle: tables + live tail. Sized to fill
             // remaining vertical space.
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 16) {
-                        ByModelTable(month: state.totals.month, topN: topN)
+                        ByModelTable(month: state.totals.month, topN: topN, palette: palette)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ByProjectTable(month: state.totals.monthProj, topN: topN)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -182,6 +190,7 @@ struct HourlyChartRow: View {
 /// shows `YYYY-MM-DD · $X.XX` in the section header.
 struct MonthlyChartRow: View {
     let daily: [DailyTotal]
+    let palette: ModelPalette
     @State private var hoveredIndex: Int? = nil
 
     var body: some View {
@@ -219,9 +228,16 @@ struct MonthlyChartRow: View {
                 let maxV = max(daily.map { $0.usd }.max() ?? 0, 0.0001)
                 HStack(alignment: .bottom, spacing: 1) {
                     ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(barColor(idx: idx, value: entry.usd, isToday: idx == daily.count - 1))
-                            .frame(height: max(2, CGFloat(entry.usd / maxV) * geo.size.height))
+                        StackedDailyBar(
+                            byModel: entry.usdByModel,
+                            total: entry.usd,
+                            maxV: maxV,
+                            availableHeight: geo.size.height,
+                            palette: palette,
+                            isToday: idx == daily.count - 1,
+                            isHovered: idx == hoveredIndex,
+                            zeroValueTint: Color.gray.opacity(0.30)
+                        )
                     }
                 }
                 .contentShape(Rectangle())
@@ -248,19 +264,6 @@ struct MonthlyChartRow: View {
         return min(max(idx, 0), count - 1)
     }
 
-    /// Bars are color-graded by index in the window:
-    /// - Today's bar (last entry): solid bright green, the "you are here"
-    ///   anchor, even when zero-spend.
-    /// - Hovered bar: solid green to make scrubbing obvious.
-    /// - Zero-spend bars: muted gray track.
-    /// - Everything else: green at 0.85 alpha.
-    private func barColor(idx: Int, value: Double, isToday: Bool) -> Color {
-        if hoveredIndex == idx { return Color.green }
-        if isToday { return Color.green.opacity(0.95) }
-        if value <= 0 { return Color.gray.opacity(0.30) }
-        return Color.green.opacity(0.75)
-    }
-
     private var summary: String {
         let total = daily.reduce(0) { $0 + $1.usd }
         guard let first = daily.first?.day, let last = daily.last?.day else {
@@ -281,6 +284,89 @@ struct MonthlyChartRow: View {
     }
 }
 
+/// One day's stacked bar, height proportional to its (USD or token)
+/// total against the whole window's max, internal segments sized
+/// proportional to each model's share of that day.
+///
+/// Used by both `MonthlyChartRow` (USD) and `MonthlyTokenChartRow`
+/// (tokens) — generic over `Numeric & BinaryFloatingPoint`-ish via
+/// the `Double` conversion the caller does.
+///
+/// Stacking order is GLOBAL (from the palette), not per-day, so a
+/// model's colour stays at the same vertical position whether or not
+/// it's the top spender on a given day. That makes the chart easier
+/// to read horizontally — the eye picks out the "blue band" running
+/// across days even as its height varies.
+///
+/// Empty days (zero total) render a thin grey track so the day
+/// position is still visible on the timeline.
+struct StackedDailyBar: View {
+    let byModel: [String: Double]
+    let total: Double
+    let maxV: Double
+    let availableHeight: CGFloat
+    let palette: ModelPalette
+    let isToday: Bool
+    let isHovered: Bool
+    /// Colour for a zero-total day — a muted track so the timeline
+    /// gap is visible without competing with real data.
+    let zeroValueTint: Color
+
+    var body: some View {
+        let totalHeight = max(2, CGFloat(total / maxV) * availableHeight)
+        if total <= 0 {
+            // Zero day: thin muted track.
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(zeroValueTint)
+                .frame(height: totalHeight)
+        } else {
+            // Build segment rectangles in global model order so the
+            // vertical placement of each colour stays stable across
+            // days. Smallest-index models go to the BOTTOM of the
+            // stack (foundational), larger indices stack on top.
+            VStack(spacing: 0) {
+                // Top → bottom in palette.order.reversed(), so palette
+                // index 0 (top spender, e.g. opus) is at the BOTTOM
+                // of the stack — the conventional "foundation" colour.
+                ForEach(Array(palette.order.reversed().enumerated()), id: \.element) { _, model in
+                    let v = byModel[model] ?? 0
+                    if v > 0 {
+                        Rectangle()
+                            .fill(segmentColor(for: model))
+                            .frame(height: max(0.5, totalHeight * CGFloat(v / total)))
+                    }
+                }
+            }
+            .frame(height: totalHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 1.5))
+            // Today's bar gets a thin outline so the eye lands on it
+            // even when its height isn't the chart's max.
+            .overlay(
+                RoundedRectangle(cornerRadius: 1.5)
+                    .stroke(isToday ? Color.primary.opacity(0.55) : Color.clear,
+                            lineWidth: isToday ? 0.6 : 0)
+            )
+            // Hover: brighten the whole stack by overlaying a faint
+            // primary colour. Subtler than swapping every segment to
+            // a single colour (which would lose the breakdown info).
+            .overlay(
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.primary.opacity(isHovered ? 0.18 : 0))
+            )
+        }
+    }
+
+    private func segmentColor(for model: String) -> Color {
+        let base = palette.colour(for: model)
+        // Slight transparency on non-hovered, non-today days keeps
+        // the chart from looking like a candy-coloured wall when 30
+        // days are stacked next to each other; today/hovered days
+        // pop at full saturation.
+        if isHovered || isToday { return base }
+        return base.opacity(0.78)
+    }
+}
+
 // MARK: - Monthly token chart (last 30 days, parallel to MonthlyChartRow)
 
 /// One bar per day for the last 30 days, oldest → newest, plotting
@@ -294,6 +380,7 @@ struct MonthlyChartRow: View {
 /// glance — the eye reads "this row is tokens, not money."
 struct MonthlyTokenChartRow: View {
     let daily: [DailyTotal]
+    let palette: ModelPalette
     @State private var hoveredIndex: Int? = nil
 
     var body: some View {
@@ -329,16 +416,23 @@ struct MonthlyTokenChartRow: View {
             .frame(height: 12)
 
             GeometryReader { geo in
-                let maxV = max(daily.map { $0.tokens }.max() ?? 0, 1)
+                let maxV = max(Double(daily.map { $0.tokens }.max() ?? 0), 1)
                 HStack(alignment: .bottom, spacing: 1) {
                     ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(barColor(idx: idx,
-                                           value: entry.tokens,
-                                           isToday: idx == daily.count - 1))
-                            .frame(height: max(2,
-                                               CGFloat(Double(entry.tokens) / Double(maxV))
-                                               * geo.size.height))
+                        // Convert tokensByModel (UInt64) → Double for
+                        // the shared StackedDailyBar machinery, and
+                        // keep the SAME palette so a model's colour
+                        // matches between the two charts.
+                        StackedDailyBar(
+                            byModel: entry.tokensByModel.mapValues { Double($0) },
+                            total: Double(entry.tokens),
+                            maxV: maxV,
+                            availableHeight: geo.size.height,
+                            palette: palette,
+                            isToday: idx == daily.count - 1,
+                            isHovered: idx == hoveredIndex,
+                            zeroValueTint: Color.gray.opacity(0.30)
+                        )
                     }
                 }
                 .contentShape(Rectangle())
@@ -363,16 +457,6 @@ struct MonthlyTokenChartRow: View {
         let slot = width / CGFloat(count)
         let idx = Int((x / slot).rounded(.down))
         return min(max(idx, 0), count - 1)
-    }
-
-    /// Same per-bar colour grading rules as `MonthlyChartRow`, with
-    /// blue swapped in for green: hover wins, then today, then zero,
-    /// then a default tint.
-    private func barColor(idx: Int, value: UInt64, isToday: Bool) -> Color {
-        if hoveredIndex == idx { return Color.blue }
-        if isToday { return Color.blue.opacity(0.95) }
-        if value == 0 { return Color.gray.opacity(0.30) }
-        return Color.blue.opacity(0.75)
     }
 
     private var summary: String {
@@ -403,6 +487,10 @@ struct MonthlyTokenChartRow: View {
 struct ByModelTable: View {
     let month: [String: ModelDay]
     var topN: Int = 8
+    /// Same palette the monthly charts use — passed in so the small
+    /// colour swatch next to each model name matches its bar segment
+    /// in the chart, making this table a self-explanatory legend.
+    let palette: ModelPalette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -410,7 +498,13 @@ struct ByModelTable: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
             ForEach(rows, id: \.0) { name, usd, pct in
-                HStack {
+                HStack(spacing: 6) {
+                    // Tiny colour swatch — same colour the model has
+                    // in the stacked bars above, so the user can
+                    // visually trace a row to its segment.
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(palette.colour(for: name))
+                        .frame(width: 8, height: 8)
                     Text(shortModel(name)).foregroundStyle(.primary)
                     Spacer()
                     Text(formatUSDCompact(usd))
