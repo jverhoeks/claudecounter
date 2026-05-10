@@ -195,6 +195,71 @@ final class AggregatorTests: XCTestCase {
                        "USD stays zero for unpriced models")
     }
 
+    // MARK: - Per-model daily breakdown (for stacked-bar charts)
+
+    /// Two models on the same day → daily breakdown maps each model
+    /// name to its individual tokens AND usd contribution. The totals
+    /// already-tested elsewhere should equal the sum of these maps.
+    func test_snapshot_dailyByModel_splitsTokensAndUSD() async {
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        await agg.apply(event(model: "claude-sonnet-4-6", input: 2_000_000, output: 0,
+                              project: "p2", isSub: false,
+                              ts: now, msgID: "m2", reqID: "r2"))
+
+        let s = await agg.snapshot()
+        let last = s.daily.last
+        XCTAssertEqual(last?.tokensByModel["claude-opus-4-7"] ?? 0, 1_000_000)
+        XCTAssertEqual(last?.tokensByModel["claude-sonnet-4-6"] ?? 0, 2_000_000)
+        // Sum of per-model tokens equals the day's total.
+        let summedTokens = (last?.tokensByModel.values.reduce(0, +)) ?? 0
+        XCTAssertEqual(summedTokens, last?.tokens ?? 0)
+
+        // Costs split per model too. Default input prices: Opus $5/Mtok,
+        // Sonnet $3/Mtok (see Pricing.swift `defaults`).
+        XCTAssertEqual(last?.usdByModel["claude-opus-4-7"] ?? 0, 5.0, accuracy: 1e-9)
+        XCTAssertEqual(last?.usdByModel["claude-sonnet-4-6"] ?? 0, 6.0, accuracy: 1e-9)
+        let summedUSD = (last?.usdByModel.values.reduce(0, +)) ?? 0
+        XCTAssertEqual(summedUSD, last?.usd ?? 0, accuracy: 1e-9)
+    }
+
+    /// Unpriced models contribute to `tokensByModel` but NOT to
+    /// `usdByModel` — the breakdown mirrors the totals' rule that
+    /// USD-bearing keys must be priced.
+    func test_snapshot_dailyByModel_unpricedHasTokensButNoUSD() async {
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        await agg.apply(event(model: "claude-mystery-model-9000",
+                              input: 500, output: 0,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        let last = s.daily.last
+        XCTAssertEqual(last?.tokensByModel["claude-mystery-model-9000"] ?? 0, 500,
+                       "unpriced model should appear in tokensByModel")
+        XCTAssertNil(last?.usdByModel["claude-mystery-model-9000"],
+                     "unpriced model must not appear in usdByModel")
+    }
+
+    /// Days with no events have empty per-model breakdowns.
+    func test_snapshot_dailyByModel_emptyDaysHaveEmptyMaps() async {
+        let now = Self.fixedNow
+        let agg = Aggregator(pricing: .defaults, now: { now })
+        // Single event — only "today" has data. Yesterday should be empty.
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false,
+                              ts: now, msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        XCTAssertGreaterThan(s.daily.count, 1)
+        // Penultimate entry (yesterday) — both maps empty.
+        let yesterday = s.daily[s.daily.count - 2]
+        XCTAssertTrue(yesterday.tokensByModel.isEmpty)
+        XCTAssertTrue(yesterday.usdByModel.isEmpty)
+    }
+
     // MARK: - hourly (today)
 
     func test_snapshot_todayHourly_bucketsByLocalHour() async {
