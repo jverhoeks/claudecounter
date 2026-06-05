@@ -30,13 +30,18 @@ func fmtRatio(v float64) string {
 
 // viewReport renders the git-activity report. days/size describe the active
 // window; skipped is the count of non-repo projects dropped; loading shows
-// the spinner line instead of the table.
-func viewReport(reports []report.RepoReport, days int, size report.BucketSize, skipped int, loading bool) string {
+// the spinner line instead of the table; errText (when non-empty) replaces
+// the table with an error line while keeping the header + hint visible.
+func viewReport(reports []report.RepoReport, days int, size report.BucketSize, skipped int, loading bool, errText string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n",
 		styleHead.Render(fmt.Sprintf("Git activity & ROI — last %d days, by %s", days, bucketName(size))))
 	b.WriteString(styleDim.Render("d/w/m: bucket   [/]: window   ratios are temporal, not causal") + "\n\n")
 
+	if errText != "" {
+		b.WriteString("  report error: " + errText + "\n")
+		return b.String()
+	}
 	if loading {
 		b.WriteString("  collecting git stats…\n")
 		return b.String()
@@ -56,10 +61,10 @@ func viewReport(reports []report.RepoReport, days int, size report.BucketSize, s
 			styleDim.Render("-"), r.Total.Deleted,
 			r.Total.Files,
 		)
-		fmt.Fprintf(&b, "  %-12s %9s  %12s  %8s %8s %6s  %9s %9s\n",
+		fmt.Fprintf(&b, "  %-12s %10s  %12s  %8s %8s %6s  %9s %9s\n",
 			"bucket", "$", "commits", "+lines", "-lines", "files", "$/commit", "$/line")
 		for _, bk := range r.Buckets {
-			fmt.Fprintf(&b, "  %-12s %9s  %12s  %8d %8d %6d  %9s %9s\n",
+			fmt.Fprintf(&b, "  %-12s %10s  %12s  %8d %8d %6d  %9s %9s\n",
 				bk.Label,
 				FormatUSD(bk.USD),
 				fmt.Sprintf("%d / %d", bk.CommitsMine, bk.CommitsAll),

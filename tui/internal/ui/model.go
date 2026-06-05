@@ -123,18 +123,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = ModeFull
 		case "4":
 			m.mode = ModeReport
-			if !m.reportLoaded && !m.reportLoading {
+			if !m.reportLoaded && !m.reportLoading && m.reportFn != nil {
 				m.reportLoading = true
 				return m, m.runReportCmd()
 			}
 		case "tab":
 			m.mode = (m.mode + 1) % 4
-			if m.mode == ModeReport && !m.reportLoaded && !m.reportLoading {
+			if m.mode == ModeReport && !m.reportLoaded && !m.reportLoading && m.reportFn != nil {
 				m.reportLoading = true
 				return m, m.runReportCmd()
 			}
 		case "d", "w", "m":
-			if m.mode == ModeReport {
+			if m.mode == ModeReport && !m.reportLoading {
 				switch msg.String() {
 				case "d":
 					m.reportBucket = report.BucketDay
@@ -147,7 +147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.runReportCmd()
 			}
 		case "[", "]":
-			if m.mode == ModeReport {
+			if m.mode == ModeReport && !m.reportLoading {
 				windows := []int{30, 90, 180}
 				idx := 1
 				for i, w := range windows {
@@ -211,11 +211,11 @@ func (m Model) View() string {
 	case ModeFull:
 		body = viewFull(m.totals, m.recent, m.streamline.View())
 	case ModeReport:
+		errText := ""
 		if m.reportErr != nil {
-			body = "report error: " + m.reportErr.Error()
-		} else {
-			body = viewReport(m.reports, m.reportDays, m.reportBucket, m.reportSkipped, m.reportLoading)
+			errText = m.reportErr.Error()
 		}
+		body = viewReport(m.reports, m.reportDays, m.reportBucket, m.reportSkipped, m.reportLoading, errText)
 	}
 	footer := "1/2/3/4 or Tab: switch view   q: quit"
 	for _, w := range m.warns {
