@@ -4,8 +4,12 @@
 package gitstat
 
 import (
+	"bufio"
+	"bytes"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // RepoRoot resolves the toplevel directory of the repo containing cwd.
@@ -32,4 +36,79 @@ func MyEmail(root string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// Commit is one non-merge commit's contribution within the window.
+// Added/Deleted/Files are summed across the commit's files; binary files
+// contribute to Files but add 0 lines.
+type Commit struct {
+	Date    time.Time // commit date (local zone)
+	Author  string    // author email
+	Added   int
+	Deleted int
+	Files   int
+	Mine    bool // Author == repo-local user.email
+}
+
+// Collect runs `git log` over [since, now] in root and returns one Commit
+// per non-merge commit. myEmail marks commits as Mine; pass MyEmail(root).
+func Collect(root string, since time.Time, myEmail string) ([]Commit, error) {
+	cmd := exec.Command("git", "-C", root, "log",
+		"--no-merges",
+		"--numstat",
+		"--date=unix",
+		"--since="+since.Format(time.RFC3339),
+		"--pretty=format:%x00%H%x09%ae%x09%cd",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseLog(out, myEmail), nil
+}
+
+// parseLog is the pure parser for the format Collect requests. A line
+// beginning with a NUL byte starts a new commit; subsequent numstat lines
+// accumulate into it until the next NUL (or EOF).
+func parseLog(out []byte, myEmail string) []Commit {
+	var commits []Commit
+	var cur *Commit
+
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			continue
+		}
+		if line[0] == '\x00' {
+			commits = append(commits, Commit{})
+			cur = &commits[len(commits)-1]
+			fields := strings.Split(line[1:], "\t")
+			if len(fields) >= 3 {
+				cur.Author = fields[1]
+				cur.Mine = myEmail != "" && fields[1] == myEmail
+				if sec, err := strconv.ParseInt(fields[2], 10, 64); err == nil {
+					cur.Date = time.Unix(sec, 0)
+				}
+			}
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		// numstat row: added<TAB>deleted<TAB>path
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		cur.Files++
+		if a, err := strconv.Atoi(parts[0]); err == nil {
+			cur.Added += a
+		}
+		if d, err := strconv.Atoi(parts[1]); err == nil {
+			cur.Deleted += d
+		}
+	}
+	return commits
 }
