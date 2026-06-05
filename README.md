@@ -111,8 +111,13 @@ claudecounter --report [--days 30|90|180] [--bucket day|week|month]   # human ta
 claudecounter --csv    [--days 30|90|180] [--bucket day|week|month]   # CSV to stdout
 ```
 
+Alongside cost, each bucket also shows **`$/commit`**, **`$/line`** (to 4
+decimals — per-line cost is fractions of a cent), **`tok/commit`** and
+**`tok/line`** (token volume per commit/line, with k/M suffixes), plus the
+repo's total token volume.
+
 `--csv` prints one row per repo+bucket
-(`repo,bucket,usd,commits_mine,commits_all,added,deleted,files,usd_per_commit,usd_per_line`)
+(`repo,bucket,usd,commits_mine,commits_all,added,deleted,files,usd_per_commit,usd_per_line,tokens,tokens_per_commit,tokens_per_line`)
 — undefined ratios are empty cells — so you can pipe it into a sheet or
 `awk`. Progress goes to stderr, so `--csv … > out.csv` stays clean.
 
