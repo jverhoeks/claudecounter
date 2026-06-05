@@ -56,6 +56,26 @@ func TestDefaultsCoversMajorModels(t *testing.T) {
 	}
 }
 
+func TestDefaults_CoversCurrentModels(t *testing.T) {
+	d := Defaults()
+	for _, m := range []string{
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+		"opus", "sonnet", "haiku",
+	} {
+		if !d.Has(m) {
+			t.Errorf("Defaults() missing price for %q", m)
+		}
+	}
+	// opus-4-8 is the Opus 4.5+ tier: $5 in / $25 out per 1M.
+	p := d.Models["claude-opus-4-8"]
+	if p.InputPerMTok != 5.00 || p.OutputPerMTok != 25.00 {
+		t.Errorf("opus-4-8 price = $%v/$%v, want $5/$25", p.InputPerMTok, p.OutputPerMTok)
+	}
+}
+
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
