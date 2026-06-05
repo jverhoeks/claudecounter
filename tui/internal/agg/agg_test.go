@@ -10,7 +10,7 @@ import (
 
 func priced() pricing.Table {
 	return pricing.Table{Models: map[string]pricing.ModelPrice{
-		"claude-opus-4-7":  {InputPerMTok: 15, OutputPerMTok: 75},
+		"claude-opus-4-7":   {InputPerMTok: 15, OutputPerMTok: 75},
 		"claude-sonnet-4-6": {InputPerMTok: 3, OutputPerMTok: 15},
 	}}
 }

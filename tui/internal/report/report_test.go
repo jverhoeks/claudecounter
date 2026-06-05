@@ -15,9 +15,9 @@ func TestBuild_BucketsRatiosAndMineVsAll(t *testing.T) {
 	inputs := []RepoInput{{
 		Root: "/repo/alpha",
 		CostDays: []CostDay{
-			{Day: day(2026, 6, 1), USD: 8},  // Mon, ISO 2026-W23
-			{Day: day(2026, 6, 2), USD: 2},  // Tue, same week
-			{Day: day(2026, 6, 8), USD: 5},  // next Mon, 2026-W24
+			{Day: day(2026, 6, 1), USD: 8}, // Mon, ISO 2026-W23
+			{Day: day(2026, 6, 2), USD: 2}, // Tue, same week
+			{Day: day(2026, 6, 8), USD: 5}, // next Mon, 2026-W24
 		},
 		Commits: []gitstat.Commit{
 			{Date: day(2026, 6, 1), Added: 100, Deleted: 0, Files: 2, Mine: true},

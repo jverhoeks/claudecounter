@@ -102,7 +102,7 @@ type Aggregator struct {
 	unknownMsgs map[string]struct{}
 	dupes       int
 	now         func() time.Time
-	projectCwd  map[string]string   // project key -> first non-empty cwd seen
+	projectCwd  map[string]string // project key -> first non-empty cwd seen
 }
 
 func New(p pricing.Table) *Aggregator {
