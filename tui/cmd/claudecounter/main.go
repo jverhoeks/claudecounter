@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +48,7 @@ func main() {
 	reportFlag := flag.Bool("report", false, "scan once, print the git-activity report, and exit")
 	days := flag.Int("days", 90, "report window in days (30/90/180)")
 	bucket := flag.String("bucket", "week", "report bucket: day|week|month")
+	csvFlag := flag.Bool("csv", false, "print the git-activity report as CSV to stdout and exit (implies --report)")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -55,6 +59,10 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *csvFlag {
+		runReportCSV(*root, table, *days, parseBucket(*bucket))
 		return
 	}
 	if *reportFlag {
@@ -299,6 +307,52 @@ func runReport(root string, table pricing.Table, days int, size report.BucketSiz
 	}
 	if skipped > 0 {
 		fmt.Printf("\n(%d non-git projects skipped)\n", skipped)
+	}
+}
+
+// ratioCSV renders a ratio for CSV: empty when undefined (zero denominator),
+// otherwise a plain decimal (no $ or thousands separators).
+func ratioCSV(v float64) string {
+	if v <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(v, 'f', 4, 64)
+}
+
+// writeReportCSV emits one row per (repo, bucket). Pure (takes an io.Writer)
+// so it's testable without touching stdout.
+func writeReportCSV(w io.Writer, reports []report.RepoReport) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{
+		"repo", "bucket", "usd", "commits_mine", "commits_all",
+		"added", "deleted", "files", "usd_per_commit", "usd_per_line",
+	}); err != nil {
+		return err
+	}
+	for _, r := range reports {
+		for _, b := range r.Buckets {
+			if err := cw.Write([]string{
+				r.Root, b.Label,
+				strconv.FormatFloat(b.USD, 'f', 2, 64),
+				strconv.Itoa(b.CommitsMine), strconv.Itoa(b.CommitsAll),
+				strconv.Itoa(b.Added), strconv.Itoa(b.Deleted), strconv.Itoa(b.Files),
+				ratioCSV(b.USDPerCommit), ratioCSV(b.USDPerLine),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+func runReportCSV(root string, table pricing.Table, days int, size report.BucketSize) {
+	reports, _, err := gatherReport(root, table, days, size)
+	if err != nil {
+		log.Fatalf("report scan: %v", err)
+	}
+	if err := writeReportCSV(os.Stdout, reports); err != nil {
+		log.Fatalf("csv: %v", err)
 	}
 }
 
