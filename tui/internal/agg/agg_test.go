@@ -10,7 +10,7 @@ import (
 
 func priced() pricing.Table {
 	return pricing.Table{Models: map[string]pricing.ModelPrice{
-		"claude-opus-4-7":  {InputPerMTok: 15, OutputPerMTok: 75},
+		"claude-opus-4-7":   {InputPerMTok: 15, OutputPerMTok: 75},
 		"claude-sonnet-4-6": {InputPerMTok: 3, OutputPerMTok: 15},
 	}}
 }
@@ -223,5 +223,88 @@ func TestDailyTotal_TokensSumAcrossModels(t *testing.T) {
 	last := snap.Daily[len(snap.Daily)-1]
 	if last.Tokens != 350 {
 		t.Errorf("Daily.Tokens summed across models: got %d want 350", last.Tokens)
+	}
+}
+
+func mkProjEvent(ts, project, cwd, model string, inTok, outTok uint64) reader.Event {
+	t, _ := time.Parse(time.RFC3339, ts)
+	return reader.Event{
+		Timestamp: t,
+		Project:   project,
+		Cwd:       cwd,
+		Model:     model,
+		Usage:     pricing.Usage{InputTokens: inTok, OutputTokens: outTok},
+	}
+}
+
+func TestProjectDaily_PerProjectPerDayCostAndCwd(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+
+	day1 := now.UTC().Format(time.RFC3339)
+	day2 := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+
+	// alpha: opus today (1M input = $15) + sonnet today (1M output = $15)
+	a.Apply(mkProjEvent(day1, "-Users-me-alpha", "/Users/me/alpha", "claude-opus-4-7", 1_000_000, 0))
+	a.Apply(mkProjEvent(day1, "-Users-me-alpha", "/Users/me/alpha", "claude-sonnet-4-6", 0, 1_000_000))
+	// alpha: opus yesterday ($15)
+	a.Apply(mkProjEvent(day2, "-Users-me-alpha", "/Users/me/alpha", "claude-opus-4-7", 1_000_000, 0))
+	// beta: opus today ($15)
+	a.Apply(mkProjEvent(day1, "-Users-me-beta", "/Users/me/beta", "claude-opus-4-7", 1_000_000, 0))
+
+	rows := a.ProjectDaily()
+
+	type key struct {
+		proj string
+		day  string
+	}
+	got := map[key]float64{}
+	toks := map[key]TokenCounts{}
+	cwds := map[string]string{}
+	for _, r := range rows {
+		got[key{r.Project, r.Day.Format("2006-01-02")}] = r.USD
+		toks[key{r.Project, r.Day.Format("2006-01-02")}] = r.Tokens
+		cwds[r.Project] = r.Cwd
+	}
+
+	today := now.Format("2006-01-02")
+	yday := now.Add(-24 * time.Hour).Format("2006-01-02")
+
+	if v := got[key{"-Users-me-alpha", today}]; v != 30 {
+		t.Errorf("alpha today USD = %v, want 30", v)
+	}
+	if v := got[key{"-Users-me-alpha", yday}]; v != 15 {
+		t.Errorf("alpha yesterday USD = %v, want 15", v)
+	}
+	if v := got[key{"-Users-me-beta", today}]; v != 15 {
+		t.Errorf("beta today USD = %v, want 15", v)
+	}
+	// alpha today had 1M input (opus) + 1M output (sonnet): both must be
+	// accumulated, so a dropped token line is caught.
+	if tk := toks[key{"-Users-me-alpha", today}]; tk.In != 1_000_000 || tk.Out != 1_000_000 {
+		t.Errorf("alpha today tokens = %+v, want In=1,000,000 Out=1,000,000", tk)
+	}
+	if cwds["-Users-me-alpha"] != "/Users/me/alpha" {
+		t.Errorf("alpha cwd = %q", cwds["-Users-me-alpha"])
+	}
+}
+
+func TestProjectDaily_FirstSeenCwdWins(t *testing.T) {
+	now := time.Date(2026, 4, 24, 15, 0, 0, 0, time.Local)
+	a := NewWithClock(priced(), func() time.Time { return now })
+	day1 := now.UTC().Format(time.RFC3339)
+
+	// Same project, two different cwd values — first one must be retained.
+	a.Apply(mkProjEvent(day1, "-Users-me-alpha", "/Users/me/alpha", "claude-opus-4-7", 100, 0))
+	a.Apply(mkProjEvent(day1, "-Users-me-alpha", "/Users/me/alpha-moved", "claude-opus-4-7", 100, 0))
+
+	var cwd string
+	for _, r := range a.ProjectDaily() {
+		if r.Project == "-Users-me-alpha" {
+			cwd = r.Cwd
+		}
+	}
+	if cwd != "/Users/me/alpha" {
+		t.Errorf("cwd = %q, want first-seen /Users/me/alpha", cwd)
 	}
 }

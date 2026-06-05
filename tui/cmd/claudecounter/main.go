@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,7 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
+	"github.com/jverhoeks/claudecounter/tui/internal/report"
 	"github.com/jverhoeks/claudecounter/tui/internal/ui"
 	"github.com/jverhoeks/claudecounter/tui/internal/watcher"
 )
@@ -41,6 +45,10 @@ func main() {
 	root := flag.String("root", defaultRoot(), "claude projects root")
 	refresh := flag.Bool("refresh-pricing", false, "fetch pricing from the web and overwrite pricing.toml")
 	once := flag.Bool("once", false, "scan once, print totals, and exit (no TUI, no watcher)")
+	reportFlag := flag.Bool("report", false, "scan once, print the git-activity report, and exit")
+	days := flag.Int("days", 90, "report window in days (30/90/180)")
+	bucket := flag.String("bucket", "week", "report bucket: day|week|month")
+	csvFlag := flag.Bool("csv", false, "print the git-activity report as CSV to stdout and exit (implies --report)")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -51,6 +59,14 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *csvFlag {
+		runReportCSV(*root, table, *days, parseBucket(*bucket))
+		return
+	}
+	if *reportFlag {
+		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
 	runTUI(*root, table, pricingWarn)
@@ -169,6 +185,10 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	// working once that goroutine completes the AddTree pass.
 
 	m := ui.NewModel()
+	m.SetReportFunc(func(days int, size report.BucketSize) ui.ReportMsg {
+		reports, skipped, err := gatherReport(root, table, days, size)
+		return ui.ReportMsg{Reports: reports, Skipped: skipped, Days: days, Bucket: size, Err: err}
+	})
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
 	// liveTail is closed by the backfill goroutine once InitialScan
@@ -216,6 +236,133 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 
 	if _, err := prog.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func parseBucket(s string) report.BucketSize {
+	switch s {
+	case "day":
+		return report.BucketDay
+	case "month":
+		return report.BucketMonth
+	default:
+		return report.BucketWeek
+	}
+}
+
+// reportSince converts a day-count window into the scan/commit cutoff.
+func reportSince(now time.Time, days int) time.Time {
+	if days <= 0 {
+		days = 90
+	}
+	return now.AddDate(0, 0, -days)
+}
+
+// gatherReport runs the wide scan + git collect for a window. Shared by the
+// CLI and the TUI's injected ReportFunc.
+func gatherReport(root string, table pricing.Table, days int, size report.BucketSize) ([]report.RepoReport, int, error) {
+	since := reportSince(time.Now().Local(), days)
+	costs, _, err := report.Scan(root, table, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	reports, skipped := report.Gather(costs, size, since)
+	return reports, skipped, nil
+}
+
+func runReport(root string, table pricing.Table, days int, size report.BucketSize) {
+	fmt.Fprintf(os.Stderr, "scanning %s (last %d days) …\n", root, days)
+	reports, skipped, err := gatherReport(root, table, days, size)
+	if err != nil {
+		log.Fatalf("report scan: %v", err)
+	}
+	if len(reports) == 0 {
+		msg := "No git activity found for projects in this window."
+		if skipped > 0 {
+			msg += fmt.Sprintf(" (%d project dirs were not git repos, or git is unavailable.)", skipped)
+		}
+		fmt.Println(msg)
+		return
+	}
+	for _, r := range reports {
+		fmt.Printf("\n%s   %s · %d commits (mine) / %d all · +%d -%d · %d files · %s tok\n",
+			r.Root, ui.FormatUSD(r.Total.USD),
+			r.Total.CommitsMine, r.Total.CommitsAll,
+			r.Total.Added, r.Total.Deleted, r.Total.Files,
+			ui.FormatTokShort(r.Total.Tokens))
+		fmt.Printf("  %-12s %10s %14s %9s %9s %7s %10s %10s %11s %11s\n",
+			"bucket", "$", "commits(m/all)", "+lines", "-lines", "files", "$/commit", "$/line", "tok/commit", "tok/line")
+		for _, bk := range r.Buckets {
+			pc, pl := "—", "—"
+			if bk.USDPerCommit > 0 {
+				pc = ui.FormatUSD(bk.USDPerCommit)
+			}
+			if bk.USDPerLine > 0 {
+				pl = fmt.Sprintf("$%.4f", bk.USDPerLine)
+			}
+			tc, tl := "—", "—"
+			if bk.TokPerCommit > 0 {
+				tc = ui.FormatTokShort(uint64(bk.TokPerCommit))
+			}
+			if bk.TokPerLine > 0 {
+				tl = ui.FormatTokShort(uint64(bk.TokPerLine))
+			}
+			fmt.Printf("  %-12s %10s %14s %9d %9d %7d %10s %10s %11s %11s\n",
+				bk.Label, ui.FormatUSD(bk.USD),
+				fmt.Sprintf("%d/%d", bk.CommitsMine, bk.CommitsAll),
+				bk.Added, bk.Deleted, bk.Files, pc, pl, tc, tl)
+		}
+	}
+	if skipped > 0 {
+		fmt.Printf("\n(%d non-git projects skipped)\n", skipped)
+	}
+}
+
+// ratioCSV renders a ratio for CSV: empty when undefined (zero denominator),
+// otherwise a plain decimal (no $ or thousands separators).
+func ratioCSV(v float64) string {
+	if v <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(v, 'f', 4, 64)
+}
+
+// writeReportCSV emits one row per (repo, bucket). Pure (takes an io.Writer)
+// so it's testable without touching stdout.
+func writeReportCSV(w io.Writer, reports []report.RepoReport) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{
+		"repo", "bucket", "usd", "commits_mine", "commits_all",
+		"added", "deleted", "files", "usd_per_commit", "usd_per_line",
+		"tokens", "tokens_per_commit", "tokens_per_line",
+	}); err != nil {
+		return err
+	}
+	for _, r := range reports {
+		for _, b := range r.Buckets {
+			if err := cw.Write([]string{
+				r.Root, b.Label,
+				strconv.FormatFloat(b.USD, 'f', 2, 64),
+				strconv.Itoa(b.CommitsMine), strconv.Itoa(b.CommitsAll),
+				strconv.Itoa(b.Added), strconv.Itoa(b.Deleted), strconv.Itoa(b.Files),
+				ratioCSV(b.USDPerCommit), ratioCSV(b.USDPerLine),
+				strconv.FormatUint(b.Tokens, 10), ratioCSV(b.TokPerCommit), ratioCSV(b.TokPerLine),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+func runReportCSV(root string, table pricing.Table, days int, size report.BucketSize) {
+	reports, _, err := gatherReport(root, table, days, size)
+	if err != nil {
+		log.Fatalf("report scan: %v", err)
+	}
+	if err := writeReportCSV(os.Stdout, reports); err != nil {
+		log.Fatalf("csv: %v", err)
 	}
 }
 

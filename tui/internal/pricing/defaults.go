@@ -2,7 +2,7 @@ package pricing
 
 // DefaultsDate is the ISO date the baked-in prices were captured.
 // Update when bumping prices.
-const DefaultsDate = "2026-04-24"
+const DefaultsDate = "2026-06-05"
 
 // Defaults returns a best-effort price table used when no pricing.toml
 // is available and live fetch also fails.
@@ -27,6 +27,7 @@ func Defaults() Table {
 	}
 	return Table{
 		Models: map[string]ModelPrice{
+			"claude-opus-4-8":           opus,
 			"claude-opus-4-7":           opus,
 			"claude-opus-4-6":           opus,
 			"claude-opus-4-5":           opus,
@@ -34,6 +35,9 @@ func Defaults() Table {
 			"claude-sonnet-4-5":         sonnet,
 			"claude-haiku-4-5":          haiku,
 			"claude-haiku-4-5-20251001": haiku,
+			"opus":                      opus,
+			"sonnet":                    sonnet,
+			"haiku":                     haiku,
 		},
 	}
 }
