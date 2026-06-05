@@ -5,6 +5,7 @@ import (
 
 	"github.com/NimbleMarkets/ntcharts/linechart/streamlinechart"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -86,6 +87,7 @@ type Model struct {
 	reportErr     error
 	reportLoading bool
 	reportLoaded  bool
+	reportVP      viewport.Model
 }
 
 func NewModel() Model {
@@ -99,6 +101,7 @@ func NewModel() Model {
 		streamline:   streamlinechart.New(streamlineWidth, streamlineHeight),
 		reportDays:   90,
 		reportBucket: report.BucketWeek,
+		reportVP:     viewport.New(0, 0),
 	}
 }
 
@@ -111,6 +114,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.reportVP.Width = msg.Width
+		h := msg.Height - 7
+		if h < 3 {
+			h = 3
+		}
+		m.reportVP.Height = h
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -165,6 +174,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reportLoading = true
 				return m, m.runReportCmd()
 			}
+		case "up", "down", "pgup", "pgdown", "j", "k":
+			if m.mode == ModeReport && !m.reportLoading {
+				var cmd tea.Cmd
+				m.reportVP, cmd = m.reportVP.Update(msg)
+				return m, cmd
+			}
+		case "g":
+			if m.mode == ModeReport {
+				m.reportVP.GotoTop()
+				return m, nil
+			}
+		case "G":
+			if m.mode == ModeReport {
+				m.reportVP.GotoBottom()
+				return m, nil
+			}
 		}
 	case SnapshotMsg:
 		m.totals = msg.Totals
@@ -188,6 +213,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reportDays = msg.Days
 		m.reportBucket = msg.Bucket
 		m.reportErr = msg.Err
+		m.reportVP.SetContent(reportTables(m.reports, m.reportSkipped))
+		m.reportVP.GotoTop()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -211,13 +238,22 @@ func (m Model) View() string {
 	case ModeFull:
 		body = viewFull(m.totals, m.recent, m.streamline.View())
 	case ModeReport:
-		errText := ""
-		if m.reportErr != nil {
-			errText = m.reportErr.Error()
+		head := reportHeader(m.reportDays, m.reportBucket)
+		switch {
+		case m.reportErr != nil:
+			body = head + "  report error: " + m.reportErr.Error() + "\n"
+		case m.reportLoading:
+			body = head + "  " + m.spin.View() + " collecting git stats…\n"
+		case len(m.reports) == 0:
+			body = head + emptyReportLine(m.reportSkipped)
+		default:
+			body = head + m.reportVP.View()
 		}
-		body = viewReport(m.reports, m.reportDays, m.reportBucket, m.reportSkipped, m.reportLoading, errText)
 	}
 	footer := "1/2/3/4 or Tab: switch view   q: quit"
+	if m.mode == ModeReport && m.reportLoaded && m.reportErr == nil && len(m.reports) > 0 {
+		footer = fmt.Sprintf("scroll %.0f%%   ", m.reportVP.ScrollPercent()*100) + footer
+	}
 	for _, w := range m.warns {
 		footer = w + "\n" + footer
 	}
