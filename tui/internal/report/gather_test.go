@@ -51,14 +51,20 @@ func TestGather_GroupsCostByRepoRootAndSkipsNonRepos(t *testing.T) {
 		{Project: "p2", Cwd: sub, Day: today, USD: 4},
 		// a non-repo cwd must be dropped
 		{Project: "p3", Cwd: nonRepo, Day: today, USD: 99},
+		// a cost dated well before the window must be clamped out: commits
+		// are bounded by `git log --since`, so out-of-window spend would
+		// inflate the ratio numerator with no commits to match.
+		{Project: "p1", Cwd: repo, Day: time.Now().AddDate(0, 0, -90), USD: 50},
 	}
 
 	reports, skipped := Gather(costs, BucketDay, time.Now().Add(-48*time.Hour))
 	if len(reports) != 1 {
 		t.Fatalf("got %d repos, want 1 (non-repo dropped)", len(reports))
 	}
+	// Only the two in-window rows merge (6+4); the $50 row dated 90 days
+	// before the window must be clamped out, so total stays 10 (not 60).
 	if reports[0].Total.USD != 10 {
-		t.Errorf("merged repo USD = %v, want 10", reports[0].Total.USD)
+		t.Errorf("merged repo USD = %v, want 10 (out-of-window $50 must be clamped)", reports[0].Total.USD)
 	}
 	if skipped != 1 {
 		t.Errorf("skipped = %d, want 1", skipped)

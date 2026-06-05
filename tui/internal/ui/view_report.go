@@ -47,7 +47,11 @@ func viewReport(reports []report.RepoReport, days int, size report.BucketSize, s
 		return b.String()
 	}
 	if len(reports) == 0 {
-		b.WriteString("  No git activity found for projects in this window.\n")
+		if skipped > 0 {
+			b.WriteString(fmt.Sprintf("  No git activity found. %d project dirs were not git repos, or git is unavailable.\n", skipped))
+		} else {
+			b.WriteString("  No git activity found for projects in this window.\n")
+		}
 		return b.String()
 	}
 

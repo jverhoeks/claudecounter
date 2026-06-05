@@ -269,7 +269,11 @@ func runReport(root string, table pricing.Table, days int, size report.BucketSiz
 		log.Fatalf("report scan: %v", err)
 	}
 	if len(reports) == 0 {
-		fmt.Println("No git activity found for projects in this window.")
+		msg := "No git activity found for projects in this window."
+		if skipped > 0 {
+			msg += fmt.Sprintf(" (%d project dirs were not git repos, or git is unavailable.)", skipped)
+		}
+		fmt.Println(msg)
 		return
 	}
 	for _, r := range reports {

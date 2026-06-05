@@ -48,6 +48,14 @@ func Scan(root string, table pricing.Table, notBefore time.Time) ([]agg.ProjDayC
 // git work tree are dropped; skipped is their count. Repos sharing a root
 // (worktrees/subdirs) merge into one.
 func Gather(costs []agg.ProjDayCost, size BucketSize, since time.Time) (reports []RepoReport, skipped int) {
+	// Cost cells live in day-files filtered by mtime, but a long-lived
+	// session file carries day-cells older than `since`; commits are
+	// bounded by `git log --since`, so without this the ratio numerator
+	// (USD) would include out-of-window spend the commits don't cover.
+	// Clamp to local midnight of the `since` day, matching how
+	// ProjDayCost.Day is local midnight.
+	cutoff := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, since.Location())
+
 	// cwd -> repo root, memoised so we run rev-parse once per distinct cwd.
 	rootOf := map[string]string{}
 	resolve := func(cwd string) (string, bool) {
@@ -65,6 +73,11 @@ func Gather(costs []agg.ProjDayCost, size BucketSize, since time.Time) (reports 
 
 	costByRoot := map[string][]CostDay{}
 	for _, c := range costs {
+		// Out-of-window cost is dropped silently; this is NOT a skip
+		// (skipped counts non-git-repo dirs only).
+		if c.Day.Before(cutoff) {
+			continue
+		}
 		root, ok := resolve(c.Cwd)
 		if !ok {
 			skipped++
