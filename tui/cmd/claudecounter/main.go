@@ -19,6 +19,7 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
+	"github.com/jverhoeks/claudecounter/tui/internal/report"
 	"github.com/jverhoeks/claudecounter/tui/internal/ui"
 	"github.com/jverhoeks/claudecounter/tui/internal/watcher"
 )
@@ -41,6 +42,9 @@ func main() {
 	root := flag.String("root", defaultRoot(), "claude projects root")
 	refresh := flag.Bool("refresh-pricing", false, "fetch pricing from the web and overwrite pricing.toml")
 	once := flag.Bool("once", false, "scan once, print totals, and exit (no TUI, no watcher)")
+	reportFlag := flag.Bool("report", false, "scan once, print the git-activity report, and exit")
+	days := flag.Int("days", 90, "report window in days (30/90/180)")
+	bucket := flag.String("bucket", "week", "report bucket: day|week|month")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -51,6 +55,10 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *reportFlag {
+		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
 	runTUI(*root, table, pricingWarn)
@@ -169,6 +177,10 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	// working once that goroutine completes the AddTree pass.
 
 	m := ui.NewModel()
+	m.SetReportFunc(func(days int, size report.BucketSize) ui.ReportMsg {
+		reports, skipped, err := gatherReport(root, table, days, size)
+		return ui.ReportMsg{Reports: reports, Skipped: skipped, Days: days, Bucket: size, Err: err}
+	})
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
 	// liveTail is closed by the backfill goroutine once InitialScan
@@ -216,6 +228,73 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 
 	if _, err := prog.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func parseBucket(s string) report.BucketSize {
+	switch s {
+	case "day":
+		return report.BucketDay
+	case "month":
+		return report.BucketMonth
+	default:
+		return report.BucketWeek
+	}
+}
+
+// reportSince converts a day-count window into the scan/commit cutoff.
+func reportSince(now time.Time, days int) time.Time {
+	if days <= 0 {
+		days = 90
+	}
+	return now.AddDate(0, 0, -days)
+}
+
+// gatherReport runs the wide scan + git collect for a window. Shared by the
+// CLI and the TUI's injected ReportFunc.
+func gatherReport(root string, table pricing.Table, days int, size report.BucketSize) ([]report.RepoReport, int, error) {
+	since := reportSince(time.Now().Local(), days)
+	costs, _, err := report.Scan(root, table, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	reports, skipped := report.Gather(costs, size, since)
+	return reports, skipped, nil
+}
+
+func runReport(root string, table pricing.Table, days int, size report.BucketSize) {
+	fmt.Fprintf(os.Stderr, "scanning %s (last %d days) …\n", root, days)
+	reports, skipped, err := gatherReport(root, table, days, size)
+	if err != nil {
+		log.Fatalf("report scan: %v", err)
+	}
+	if len(reports) == 0 {
+		fmt.Println("No git activity found for projects in this window.")
+		return
+	}
+	for _, r := range reports {
+		fmt.Printf("\n%s   %s · %d commits (mine) / %d all · +%d -%d · %d files\n",
+			r.Root, ui.FormatUSD(r.Total.USD),
+			r.Total.CommitsMine, r.Total.CommitsAll,
+			r.Total.Added, r.Total.Deleted, r.Total.Files)
+		fmt.Printf("  %-12s %10s %14s %9s %9s %7s %10s %10s\n",
+			"bucket", "$", "commits(m/all)", "+lines", "-lines", "files", "$/commit", "$/line")
+		for _, bk := range r.Buckets {
+			pc, pl := "—", "—"
+			if bk.USDPerCommit > 0 {
+				pc = ui.FormatUSD(bk.USDPerCommit)
+			}
+			if bk.USDPerLine > 0 {
+				pl = ui.FormatUSD(bk.USDPerLine)
+			}
+			fmt.Printf("  %-12s %10s %14s %9d %9d %7d %10s %10s\n",
+				bk.Label, ui.FormatUSD(bk.USD),
+				fmt.Sprintf("%d/%d", bk.CommitsMine, bk.CommitsAll),
+				bk.Added, bk.Deleted, bk.Files, pc, pl)
+		}
+	}
+	if skipped > 0 {
+		fmt.Printf("\n(%d non-git projects skipped)\n", skipped)
 	}
 }
 
