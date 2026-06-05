@@ -334,8 +334,9 @@ type ProjDayCost struct {
 
 // ProjectDaily collapses the accumulated cells into one row per
 // (project, local-day) across the aggregator's full range. Pricing is
-// applied per (model) cell exactly as Snapshot does, so dollar figures
-// match the live views. The range is bounded by whatever was scanned in.
+// applied once per (project, day, model) bucket exactly as Snapshot does
+// — tokens are summed first then priced — so dollar figures match the
+// live views. The range is bounded by whatever was scanned in.
 func (a *Aggregator) ProjectDaily() []ProjDayCost {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -348,18 +349,34 @@ func (a *Aggregator) ProjectDaily() []ProjDayCost {
 		usd float64
 		tok TokenCounts
 	}
-	m := map[key]*acc{}
+
+	// Two-pass to mirror Snapshot(): first sum tokens per
+	// (project, day, model) — merging the main/subagent IsSub split —
+	// then price once per that bucket. This keeps cost identical to the
+	// live views and avoids a hazard if pricing ever becomes non-linear.
+	type pdmKey struct {
+		proj  string
+		day   civilDay
+		model string
+	}
+	byPDM := map[pdmKey]TokenCounts{}
 	for ck, t := range a.cells {
-		kk := key{ck.Project, ck.Day}
+		pk := pdmKey{ck.Project, ck.Day, ck.Model}
+		byPDM[pk] = byPDM[pk].Add(t)
+	}
+
+	m := map[key]*acc{}
+	for pk, tok := range byPDM {
+		kk := key{pk.proj, pk.day}
 		e := m[kk]
 		if e == nil {
 			e = &acc{}
 			m[kk] = e
 		}
-		if a.pricing.Has(ck.Model) {
-			e.usd += a.pricing.Cost(ck.Model, t.ToUsage())
+		if a.pricing.Has(pk.model) {
+			e.usd += a.pricing.Cost(pk.model, tok.ToUsage())
 		}
-		e.tok = e.tok.Add(t)
+		e.tok = e.tok.Add(tok)
 	}
 
 	out := make([]ProjDayCost, 0, len(m))
