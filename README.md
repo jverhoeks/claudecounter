@@ -84,6 +84,38 @@ Or build from source — see the [Quick start](#quick-start) below.
 
 → Full TUI docs: **[`tui/README.md`](./tui/README.md)**
 
+## 📈 Git activity & ROI (TUI view `4` / `--report`)
+
+Press **`4`** in the TUI (or run `claudecounter --report`) for a per-repo
+view that puts what you *spent* beside what you *produced* — commits,
+`+`/`−` lines, and files — bucketed over a window, with `$/commit` and
+`$/line` ratios:
+
+```
+sqlengine   $4,016.58 · 440 commits (mine) / 446 all · +269,230 −15,578 · 2,527 files
+  bucket            $   commits(m/all)   +lines   -lines   files   $/commit   $/line
+  2026-W19  $1,243.81       108 / 108    39,593    4,486     546     $11.52    $0.03
+  2026-W20    $980.22        96 / 101    21,140    3,002     410     $10.21    $0.05
+```
+
+In the TUI: **`d`/`w`/`m`** switch the bucket (day/week/month), **`[`/`]`**
+cycle the window (30/90/180 days). The view is computed lazily the first
+time you open it. CLI: `claudecounter --report [--days 30|90|180]
+[--bucket day|week|month]`.
+
+It maps each Claude project's working directory to its git repo
+(`git rev-parse --show-toplevel`), so worktrees and subdirs of one repo
+merge together; non-git projects are skipped.
+
+**Read the ratios as a rough guide, not a measurement.** Nothing in the
+transcripts links a commit to a Claude session — the report simply places
+*spend during a window* next to *git activity during the same window*.
+Spend often produces no commits (debugging, reading), and commits happen
+without Claude. `+`/`−` lines are shown separately (a single lockfile
+commit can be +30k lines), merge commits are excluded, and `$/commit`
+uses **your own** commits — the per-repo `user.email` — while the
+all-authors count is shown alongside. PR/MR counts are not included yet.
+
 ## Mac menu bar preview
 
 ```
@@ -120,6 +152,9 @@ full target list.
 - 🔁 **Real-time** — file-watcher-driven, numbers tick up the moment
   Claude Code writes a new line. No polling.
 - 🧩 **Per-project breakdown** with main vs subagent (Task tool) split.
+- 📈 **Git activity & ROI** (TUI only) — per-repo spend vs. commits/lines/
+  files with `$/commit` and `$/line`, over a 30/90/180-day window. See the
+  [Git activity & ROI](#-git-activity--roi-tui-view-4----report) section.
 - 🎯 **Token-first math** — cost is derived from accumulated token
   counts at snapshot time, never from running float sums. No
   accumulation drift; daily and monthly numbers are reproducible to
