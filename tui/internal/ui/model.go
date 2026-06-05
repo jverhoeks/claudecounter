@@ -174,19 +174,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reportLoading = true
 				return m, m.runReportCmd()
 			}
-		case "up", "down", "pgup", "pgdown", "j", "k":
+		case "up", "down", "pgup", "pgdown", "j", "k", " ", "b", "f":
 			if m.mode == ModeReport && !m.reportLoading {
 				var cmd tea.Cmd
 				m.reportVP, cmd = m.reportVP.Update(msg)
 				return m, cmd
 			}
 		case "g":
-			if m.mode == ModeReport {
+			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoTop()
 				return m, nil
 			}
 		case "G":
-			if m.mode == ModeReport {
+			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoBottom()
 				return m, nil
 			}
@@ -251,8 +251,10 @@ func (m Model) View() string {
 		}
 	}
 	footer := "1/2/3/4 or Tab: switch view   q: quit"
-	if m.mode == ModeReport && m.reportLoaded && m.reportErr == nil && len(m.reports) > 0 {
-		footer = fmt.Sprintf("scroll %.0f%%   ", m.reportVP.ScrollPercent()*100) + footer
+	if m.mode == ModeReport && m.reportLoaded && !m.reportLoading && m.reportErr == nil && len(m.reports) > 0 {
+		if !(m.reportVP.AtTop() && m.reportVP.AtBottom()) {
+			footer = fmt.Sprintf("scroll %.0f%%   ", m.reportVP.ScrollPercent()*100) + footer
+		}
 	}
 	for _, w := range m.warns {
 		footer = w + "\n" + footer

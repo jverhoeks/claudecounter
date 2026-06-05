@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jverhoeks/claudecounter/tui/internal/report"
 )
 
@@ -65,5 +66,44 @@ func TestModelView_ReportError(t *testing.T) {
 	out := m.View()
 	if !strings.Contains(out, "report error: boom") {
 		t.Errorf("error view missing error text:\n%s", out)
+	}
+}
+
+func TestUpdate_ReportMsgPopulatesViewport(t *testing.T) {
+	m := NewModel()
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = m2.(Model)
+	m.mode = ModeReport
+	m3, _ := m.Update(ReportMsg{Reports: sampleReports(), Days: 90, Bucket: report.BucketWeek})
+	m = m3.(Model)
+	out := m.View()
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "2026-W23") {
+		t.Errorf("viewport not populated after ReportMsg:\n%s", out)
+	}
+}
+
+func TestUpdate_NavKeyIgnoredInCostView(t *testing.T) {
+	m := NewModel() // defaults to ModeSplit
+	start := m.mode
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m2.(Model)
+	if m.mode != start {
+		t.Errorf("a nav key changed the mode in a cost view: %v -> %v", start, m.mode)
+	}
+}
+
+func TestUpdate_BucketKeyTriggersReloadInReport(t *testing.T) {
+	m := NewModel()
+	m.SetReportFunc(func(days int, size report.BucketSize) ReportMsg {
+		return ReportMsg{Days: days, Bucket: size}
+	})
+	m.mode = ModeReport
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = m2.(Model)
+	if m.reportBucket != report.BucketMonth {
+		t.Errorf("pressing m did not set bucket=month, got %v", m.reportBucket)
+	}
+	if !m.reportLoading || cmd == nil {
+		t.Errorf("pressing m should start a reload (loading=%v, cmd nil=%v)", m.reportLoading, cmd == nil)
 	}
 }
