@@ -58,6 +58,8 @@ func Collect(root string, since time.Time, myEmail string) ([]Commit, error) {
 		"--numstat",
 		"--date=unix",
 		"--since="+since.Format(time.RFC3339),
+		// %cd = committer date, matching --since and the cost day-buckets
+		// (vs author date which drifts on rebase).
 		"--pretty=format:%x00%H%x09%ae%x09%cd",
 	)
 	out, err := cmd.Output()
@@ -69,10 +71,12 @@ func Collect(root string, since time.Time, myEmail string) ([]Commit, error) {
 
 // parseLog is the pure parser for the format Collect requests. A line
 // beginning with a NUL byte starts a new commit; subsequent numstat lines
-// accumulate into it until the next NUL (or EOF).
+// accumulate into it until the next NUL (or EOF). The in-progress commit is
+// held in a standalone *pending and appended by value once it's complete, so
+// no pointer ever aliases into the (possibly reallocated) commits slice.
 func parseLog(out []byte, myEmail string) []Commit {
 	var commits []Commit
-	var cur *Commit
+	var pending *Commit
 
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -82,19 +86,21 @@ func parseLog(out []byte, myEmail string) []Commit {
 			continue
 		}
 		if line[0] == '\x00' {
-			commits = append(commits, Commit{})
-			cur = &commits[len(commits)-1]
+			if pending != nil {
+				commits = append(commits, *pending)
+			}
+			pending = &Commit{}
 			fields := strings.Split(line[1:], "\t")
 			if len(fields) >= 3 {
-				cur.Author = fields[1]
-				cur.Mine = myEmail != "" && fields[1] == myEmail
+				pending.Author = fields[1]
+				pending.Mine = myEmail != "" && fields[1] == myEmail
 				if sec, err := strconv.ParseInt(fields[2], 10, 64); err == nil {
-					cur.Date = time.Unix(sec, 0)
+					pending.Date = time.Unix(sec, 0)
 				}
 			}
 			continue
 		}
-		if cur == nil {
+		if pending == nil {
 			continue
 		}
 		// numstat row: added<TAB>deleted<TAB>path
@@ -102,13 +108,17 @@ func parseLog(out []byte, myEmail string) []Commit {
 		if len(parts) < 3 {
 			continue
 		}
-		cur.Files++
+		pending.Files++
+		// Binary files show "-"; Atoi errors and the line count stays 0.
 		if a, err := strconv.Atoi(parts[0]); err == nil {
-			cur.Added += a
+			pending.Added += a
 		}
 		if d, err := strconv.Atoi(parts[1]); err == nil {
-			cur.Deleted += d
+			pending.Deleted += d
 		}
+	}
+	if pending != nil {
+		commits = append(commits, *pending)
 	}
 	return commits
 }
