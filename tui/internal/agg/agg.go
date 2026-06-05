@@ -102,6 +102,7 @@ type Aggregator struct {
 	unknownMsgs map[string]struct{}
 	dupes       int
 	now         func() time.Time
+	projectCwd  map[string]string   // project key -> first non-empty cwd seen
 }
 
 func New(p pricing.Table) *Aggregator {
@@ -115,6 +116,7 @@ func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 		perMsg:      map[string]struct{}{},
 		unknownMsgs: map[string]struct{}{},
 		now:         now,
+		projectCwd:  map[string]string{},
 	}
 }
 
@@ -147,6 +149,11 @@ func (a *Aggregator) Apply(e reader.Event) {
 		Project: e.Project,
 		Model:   e.Model,
 		IsSub:   e.IsSubagent,
+	}
+	if e.Cwd != "" {
+		if _, ok := a.projectCwd[e.Project]; !ok {
+			a.projectCwd[e.Project] = e.Cwd
+		}
 	}
 	cur := a.cells[k]
 	a.cells[k] = cur.Add(TokenCounts{
@@ -310,5 +317,60 @@ func (a *Aggregator) Snapshot() Totals {
 		})
 	}
 
+	return out
+}
+
+// ProjDayCost is one (project, local-day) cost+token cell, with the
+// project's working directory attached so a downstream report can map it
+// to a git repo. Cost counts only priced models (matching the rest of the
+// UI); tokens count all models.
+type ProjDayCost struct {
+	Project string
+	Cwd     string
+	Day     time.Time // local midnight of the day
+	USD     float64
+	Tokens  TokenCounts
+}
+
+// ProjectDaily collapses the accumulated cells into one row per
+// (project, local-day) across the aggregator's full range. Pricing is
+// applied per (model) cell exactly as Snapshot does, so dollar figures
+// match the live views. The range is bounded by whatever was scanned in.
+func (a *Aggregator) ProjectDaily() []ProjDayCost {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	type key struct {
+		proj string
+		day  civilDay
+	}
+	type acc struct {
+		usd float64
+		tok TokenCounts
+	}
+	m := map[key]*acc{}
+	for ck, t := range a.cells {
+		kk := key{ck.Project, ck.Day}
+		e := m[kk]
+		if e == nil {
+			e = &acc{}
+			m[kk] = e
+		}
+		if a.pricing.Has(ck.Model) {
+			e.usd += a.pricing.Cost(ck.Model, t.ToUsage())
+		}
+		e.tok = e.tok.Add(t)
+	}
+
+	out := make([]ProjDayCost, 0, len(m))
+	for kk, v := range m {
+		out = append(out, ProjDayCost{
+			Project: kk.proj,
+			Cwd:     a.projectCwd[kk.proj],
+			Day:     time.Date(kk.day.Y, kk.day.M, kk.day.D, 0, 0, 0, 0, time.Local),
+			USD:     v.usd,
+			Tokens:  v.tok,
+		})
+	}
 	return out
 }
