@@ -99,9 +99,22 @@ sqlengine   $4,016.58 · 440 commits (mine) / 446 all · +269,230 −15,578 · 2
 ```
 
 In the TUI: **`d`/`w`/`m`** switch the bucket (day/week/month), **`[`/`]`**
-cycle the window (30/90/180 days). The view is computed lazily the first
-time you open it. CLI: `claudecounter --report [--days 30|90|180]
-[--bucket day|week|month]`.
+cycle the window (30/90/180 days), and **`↑`/`↓` `PgUp`/`PgDn` `g`/`G`**
+scroll the report (it can run to many repos × buckets). The view is
+computed lazily the first time you open it, with a spinner while git is
+collected.
+
+CLI (non-interactive):
+
+```bash
+claudecounter --report [--days 30|90|180] [--bucket day|week|month]   # human table
+claudecounter --csv    [--days 30|90|180] [--bucket day|week|month]   # CSV to stdout
+```
+
+`--csv` prints one row per repo+bucket
+(`repo,bucket,usd,commits_mine,commits_all,added,deleted,files,usd_per_commit,usd_per_line`)
+— undefined ratios are empty cells — so you can pipe it into a sheet or
+`awk`. Progress goes to stderr, so `--csv … > out.csv` stays clean.
 
 It maps each Claude project's working directory to its git repo
 (`git rev-parse --show-toplevel`), so worktrees and subdirs of one repo
