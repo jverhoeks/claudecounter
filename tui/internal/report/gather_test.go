@@ -47,8 +47,8 @@ func TestGather_GroupsCostByRepoRootAndSkipsNonRepos(t *testing.T) {
 	today := time.Now()
 	costs := []agg.ProjDayCost{
 		// two project keys under the same repo (root + subdir) must merge
-		{Project: "p1", Cwd: repo, Day: today, USD: 6},
-		{Project: "p2", Cwd: sub, Day: today, USD: 4},
+		{Project: "p1", Cwd: repo, Day: today, USD: 6, Tokens: agg.TokenCounts{In: 600}},
+		{Project: "p2", Cwd: sub, Day: today, USD: 4, Tokens: agg.TokenCounts{In: 400}},
 		// a non-repo cwd must be dropped
 		{Project: "p3", Cwd: nonRepo, Day: today, USD: 99},
 		// a cost dated well before the window must be clamped out: commits
@@ -72,5 +72,8 @@ func TestGather_GroupsCostByRepoRootAndSkipsNonRepos(t *testing.T) {
 	// The repo has 1 commit by me in the window.
 	if reports[0].Total.CommitsMine != 1 {
 		t.Errorf("commits mine = %d, want 1", reports[0].Total.CommitsMine)
+	}
+	if reports[0].Total.Tokens != 1000 {
+		t.Errorf("merged repo tokens = %d, want 1000", reports[0].Total.Tokens)
 	}
 }

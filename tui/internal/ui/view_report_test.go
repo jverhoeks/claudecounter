@@ -15,16 +15,18 @@ func sampleReports() []report.RepoReport {
 		Buckets: []report.Bucket{{
 			Label: "2026-W23", USD: 10, CommitsMine: 3, CommitsAll: 5,
 			Added: 120, Deleted: 40, Files: 8, USDPerCommit: 3.33, USDPerLine: 0.0625,
+			Tokens: 1_500_000, TokPerCommit: 500000, TokPerLine: 12500,
 		}},
 		Total: report.Bucket{
 			USD: 10, CommitsMine: 3, CommitsAll: 5, Added: 120, Deleted: 40, Files: 8,
+			Tokens: 1_500_000,
 		},
 	}}
 }
 
 func TestReportTables_RendersRawComponents(t *testing.T) {
 	out := reportTables(sampleReports(), 0)
-	for _, want := range []string{"alpha", "2026-W23", "3 / 5", "+120", "-40"} {
+	for _, want := range []string{"alpha", "2026-W23", "3 / 5", "+120", "-40", "1.5M", "$0.0625"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("reportTables missing %q\n---\n%s", want, out)
 		}

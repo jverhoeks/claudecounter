@@ -285,24 +285,32 @@ func runReport(root string, table pricing.Table, days int, size report.BucketSiz
 		return
 	}
 	for _, r := range reports {
-		fmt.Printf("\n%s   %s · %d commits (mine) / %d all · +%d -%d · %d files\n",
+		fmt.Printf("\n%s   %s · %d commits (mine) / %d all · +%d -%d · %d files · %s tok\n",
 			r.Root, ui.FormatUSD(r.Total.USD),
 			r.Total.CommitsMine, r.Total.CommitsAll,
-			r.Total.Added, r.Total.Deleted, r.Total.Files)
-		fmt.Printf("  %-12s %10s %14s %9s %9s %7s %10s %10s\n",
-			"bucket", "$", "commits(m/all)", "+lines", "-lines", "files", "$/commit", "$/line")
+			r.Total.Added, r.Total.Deleted, r.Total.Files,
+			ui.FormatTokShort(r.Total.Tokens))
+		fmt.Printf("  %-12s %10s %14s %9s %9s %7s %10s %10s %11s %11s\n",
+			"bucket", "$", "commits(m/all)", "+lines", "-lines", "files", "$/commit", "$/line", "tok/commit", "tok/line")
 		for _, bk := range r.Buckets {
 			pc, pl := "—", "—"
 			if bk.USDPerCommit > 0 {
 				pc = ui.FormatUSD(bk.USDPerCommit)
 			}
 			if bk.USDPerLine > 0 {
-				pl = ui.FormatUSD(bk.USDPerLine)
+				pl = fmt.Sprintf("$%.4f", bk.USDPerLine)
 			}
-			fmt.Printf("  %-12s %10s %14s %9d %9d %7d %10s %10s\n",
+			tc, tl := "—", "—"
+			if bk.TokPerCommit > 0 {
+				tc = ui.FormatTokShort(uint64(bk.TokPerCommit))
+			}
+			if bk.TokPerLine > 0 {
+				tl = ui.FormatTokShort(uint64(bk.TokPerLine))
+			}
+			fmt.Printf("  %-12s %10s %14s %9d %9d %7d %10s %10s %11s %11s\n",
 				bk.Label, ui.FormatUSD(bk.USD),
 				fmt.Sprintf("%d/%d", bk.CommitsMine, bk.CommitsAll),
-				bk.Added, bk.Deleted, bk.Files, pc, pl)
+				bk.Added, bk.Deleted, bk.Files, pc, pl, tc, tl)
 		}
 	}
 	if skipped > 0 {
@@ -326,6 +334,7 @@ func writeReportCSV(w io.Writer, reports []report.RepoReport) error {
 	if err := cw.Write([]string{
 		"repo", "bucket", "usd", "commits_mine", "commits_all",
 		"added", "deleted", "files", "usd_per_commit", "usd_per_line",
+		"tokens", "tokens_per_commit", "tokens_per_line",
 	}); err != nil {
 		return err
 	}
@@ -337,6 +346,7 @@ func writeReportCSV(w io.Writer, reports []report.RepoReport) error {
 				strconv.Itoa(b.CommitsMine), strconv.Itoa(b.CommitsAll),
 				strconv.Itoa(b.Added), strconv.Itoa(b.Deleted), strconv.Itoa(b.Files),
 				ratioCSV(b.USDPerCommit), ratioCSV(b.USDPerLine),
+				strconv.FormatUint(b.Tokens, 10), ratioCSV(b.TokPerCommit), ratioCSV(b.TokPerLine),
 			}); err != nil {
 				return err
 			}

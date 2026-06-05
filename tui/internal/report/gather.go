@@ -83,7 +83,11 @@ func Gather(costs []agg.ProjDayCost, size BucketSize, since time.Time) (reports 
 			skipped++
 			continue
 		}
-		costByRoot[root] = append(costByRoot[root], CostDay{Day: c.Day, USD: c.USD})
+		costByRoot[root] = append(costByRoot[root], CostDay{
+			Day:    c.Day,
+			USD:    c.USD,
+			Tokens: c.Tokens.In + c.Tokens.Out + c.Tokens.CacheCreate + c.Tokens.CacheRead,
+		})
 	}
 
 	inputs := make([]RepoInput, 0, len(costByRoot))

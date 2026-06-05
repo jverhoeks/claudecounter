@@ -60,6 +60,34 @@ func TestBuild_BucketsRatiosAndMineVsAll(t *testing.T) {
 	}
 }
 
+func TestBuild_TokenRatios(t *testing.T) {
+	inputs := []RepoInput{{
+		Root: "/repo/alpha",
+		CostDays: []CostDay{
+			{Day: day(2026, 6, 1), USD: 8, Tokens: 800},
+			{Day: day(2026, 6, 2), USD: 2, Tokens: 200},
+		},
+		Commits: []gitstat.Commit{
+			{Date: day(2026, 6, 1), Added: 100, Deleted: 0, Files: 1, Mine: true},
+			{Date: day(2026, 6, 2), Added: 0, Deleted: 0, Files: 1, Mine: false},
+		},
+	}}
+	r := Build(inputs, BucketWeek)[0]
+	b := r.Buckets[0] // 2026-W23: 1000 tokens, 1 mine commit, 100 mine lines
+	if b.Tokens != 1000 {
+		t.Errorf("tokens = %d, want 1000", b.Tokens)
+	}
+	if b.TokPerCommit != 1000 { // 1000 / 1 mine
+		t.Errorf("tok/commit = %v, want 1000", b.TokPerCommit)
+	}
+	if b.TokPerLine != 10 { // 1000 / 100 mine lines
+		t.Errorf("tok/line = %v, want 10", b.TokPerLine)
+	}
+	if r.Total.Tokens != 1000 {
+		t.Errorf("total tokens = %d, want 1000", r.Total.Tokens)
+	}
+}
+
 func TestBuild_ZeroCommitsNoDivideByZero(t *testing.T) {
 	inputs := []RepoInput{{
 		Root:     "/repo/beta",

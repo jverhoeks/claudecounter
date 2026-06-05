@@ -23,8 +23,9 @@ const (
 // CostDay is one day's Claude cost attributed to a repo (summed across all
 // project keys that map to the repo root).
 type CostDay struct {
-	Day time.Time
-	USD float64
+	Day    time.Time
+	USD    float64
+	Tokens uint64
 }
 
 // RepoInput is the pre-grouped cost + commits for a single repo root.
@@ -47,6 +48,9 @@ type Bucket struct {
 	Files        int // mine
 	USDPerCommit float64
 	USDPerLine   float64
+	Tokens       uint64
+	TokPerCommit float64
+	TokPerLine   float64
 }
 
 // RepoReport is all buckets for one repo plus the window total.
@@ -80,6 +84,12 @@ func ratios(b *Bucket) {
 	if lines := b.Added + b.Deleted; lines > 0 {
 		b.USDPerLine = b.USD / float64(lines)
 	}
+	if b.CommitsMine > 0 {
+		b.TokPerCommit = float64(b.Tokens) / float64(b.CommitsMine)
+	}
+	if lines := b.Added + b.Deleted; lines > 0 {
+		b.TokPerLine = float64(b.Tokens) / float64(lines)
+	}
 }
 
 // Build joins each repo's cost-days and commits into chronological buckets,
@@ -101,8 +111,11 @@ func Build(inputs []RepoInput, size BucketSize) []RepoReport {
 
 		total := Bucket{Label: "total"}
 		for _, c := range in.CostDays {
-			get(c.Day).USD += c.USD
+			b := get(c.Day)
+			b.USD += c.USD
+			b.Tokens += c.Tokens
 			total.USD += c.USD
+			total.Tokens += c.Tokens
 		}
 		for _, c := range in.Commits {
 			b := get(c.Date)
