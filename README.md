@@ -134,6 +134,58 @@ commit can be +30k lines), merge commits are excluded, and `$/commit`
 uses **your own** commits — the per-repo `user.email` — while the
 all-authors count is shown alongside. PR/MR counts are not included yet.
 
+## 🛡️ Permission-mode safety (TUI view `5` / `--safety`)
+
+Press **`5`** in the TUI (or run `claudecounter --safety`) for a per-project
+view of which permission modes your sessions ran under — and how much of
+your work happens with permissions bypassed
+(`--dangerously-skip-permissions`):
+
+```
+⚠ 1673 turns (60.5%) ran with permissions bypassed, in 7 project(s)
+project              turns  sess  default accept  plan  auto dontAsk  BYPASS  container? entry
+terraform-provider     195     8       2%      ·     ·     ·       ·     98%  no         sdk-py
+data-platform          782    89      10%     1%     ·    6%       ·     83%  no         cli,sdk-py
+```
+
+Every real prompt turn in the transcripts carries a `permissionMode`
+(`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`),
+so the percentages are exact. The **`container?`** column is different: the
+transcripts have no hard docker/container signal, so it's a **cwd-path
+heuristic** — a session whose cwd doesn't follow the host's home-dir
+convention (e.g. `/workspace`, `/app`, `/root` on a macOS host) is marked
+`likely`. Read it as a hint, not a fact. Note that container sessions only
+show up at all when the container's `~/.claude` is volume-mounted to the
+host. `--safety --csv` exports raw per-mode counts.
+
+## 🔬 Per-session scorecard & timeline (`--scorecard` / `--timeline`)
+
+Deterministic, stats-only cousins of [arx](https://github.com/berbyte/arx-ce)'s
+session reports — no LLM judging, just what's measurable in the transcript.
+They operate on one session (default: the most recent; pick another with
+`--session <id-prefix>`), including its Task-tool subagent transcripts:
+
+```bash
+claudecounter --scorecard            # tool calls & failure rate per tool,
+                                     # files Read 2+ times, tokens by category
+                                     # + USD, peak context size, mode history
+claudecounter --timeline             # chronological audit log: every tool
+                                     # call (ok/ERR), permission-mode change ⚠,
+                                     # and priced assistant turn
+claudecounter --timeline --session 14a8997f
+```
+
+```
+06-10 11:44:34  mode       (start) → default
+06-10 11:44:53  Bash       go test ./...                                   ok
+06-10 11:45:14  Edit       tui/internal/ui/view_report.go                  ERR
+06-10 11:45:24  turn       opus                                            +$0.41  (sub)
+```
+
+Turn counts and token sums reuse the counter's `messageId:requestId`
+dedupe; tool calls dedupe by `tool_use` block id. Models missing from the
+pricing table are flagged as unpriced rather than silently counted as $0.
+
 ## Mac menu bar preview
 
 ```
@@ -173,6 +225,13 @@ full target list.
 - 📈 **Git activity & ROI** (TUI only) — per-repo spend vs. commits/lines/
   files with `$/commit` and `$/line`, over a 30/90/180-day window. See the
   [Git activity & ROI](#-git-activity--roi-tui-view-4----report) section.
+- 🛡️ **Permission-mode safety report** (TUI only) — % of turns per project
+  run with permissions bypassed, with a container-likely heuristic. See
+  [Permission-mode safety](#️-permission-mode-safety-tui-view-5----safety).
+- 🔬 **Per-session scorecard & timeline** (TUI only, CLI flags) — tool
+  success rates, duplicate reads, token/cost breakdown, and a full
+  chronological audit log per session. See
+  [scorecard & timeline](#-per-session-scorecard--timeline---scorecard----timeline).
 - 🎯 **Token-first math** — cost is derived from accumulated token
   counts at snapshot time, never from running float sums. No
   accumulation drift; daily and monthly numbers are reproducible to
@@ -282,9 +341,11 @@ Anthropic docs page and writing `~/.config/claudecounter/pricing.toml`.
 
 ```
 tui/                          ← Go TUI (`claudecounter` binary)
-  cmd/claudecounter/            main, integration test
+  cmd/claudecounter/            main, CLI reports, integration test
   internal/{pricing,reader,    pricing math · JSONL tailing · token aggregator
             agg,watcher,ui}/    · fsnotify wrapper · bubbletea views
+  internal/{report,gitstat}/    git activity & ROI report
+  internal/{safety,session}/    permission-mode report · per-session parser
   go.mod                        module: github.com/jverhoeks/claudecounter/tui
 
 macapp/                       ← Swift menu bar app (ClaudeCounterBar.app)

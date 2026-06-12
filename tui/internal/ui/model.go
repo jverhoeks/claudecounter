@@ -11,6 +11,7 @@ import (
 
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 	"github.com/jverhoeks/claudecounter/tui/internal/report"
+	"github.com/jverhoeks/claudecounter/tui/internal/safety"
 )
 
 type ViewMode int
@@ -20,6 +21,9 @@ const (
 	ModeSplit
 	ModeFull
 	ModeReport
+	ModeSafety
+
+	modeCount // number of view modes (for Tab cycling)
 )
 
 // SnapshotMsg is pushed by the app goroutine whenever totals change.
@@ -53,6 +57,17 @@ type ReportMsg struct {
 // ReportFunc runs a wide scan + git collect for the given window/bucket and
 // returns a ReportMsg. It is injected by main so ui needn't import reader.
 type ReportFunc func(days int, size report.BucketSize) ReportMsg
+
+// SafetyMsg delivers a freshly gathered permission-mode safety report.
+type SafetyMsg struct {
+	Rows []safety.Row
+	Sum  safety.Summary
+	Days int
+	Err  error
+}
+
+// SafetyFunc runs the wide mode scan for a window; injected by main.
+type SafetyFunc func(days int) SafetyMsg
 
 const (
 	recentCap        = 20
@@ -88,6 +103,15 @@ type Model struct {
 	reportLoading bool
 	reportLoaded  bool
 	reportVP      viewport.Model
+
+	safetyFn      SafetyFunc
+	safetyRows    []safety.Row
+	safetySum     safety.Summary
+	safetyDays    int
+	safetyErr     error
+	safetyLoading bool
+	safetyLoaded  bool
+	safetyVP      viewport.Model
 }
 
 func NewModel() Model {
@@ -102,11 +126,16 @@ func NewModel() Model {
 		reportDays:   90,
 		reportBucket: report.BucketWeek,
 		reportVP:     viewport.New(0, 0),
+		safetyDays:   90,
+		safetyVP:     viewport.New(0, 0),
 	}
 }
 
 // SetReportFunc injects the report generator (called by main).
 func (m *Model) SetReportFunc(fn ReportFunc) { m.reportFn = fn }
+
+// SetSafetyFunc injects the safety-report generator (called by main).
+func (m *Model) SetSafetyFunc(fn SafetyFunc) { m.safetyFn = fn }
 
 func (m Model) Init() tea.Cmd { return m.spin.Tick }
 
@@ -120,6 +149,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 3
 		}
 		m.reportVP.Height = h
+		m.safetyVP.Width = msg.Width
+		m.safetyVP.Height = h
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -136,11 +167,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reportLoading = true
 				return m, m.runReportCmd()
 			}
+		case "5":
+			m.mode = ModeSafety
+			if !m.safetyLoaded && !m.safetyLoading && m.safetyFn != nil {
+				m.safetyLoading = true
+				return m, m.runSafetyCmd()
+			}
 		case "tab":
-			m.mode = (m.mode + 1) % 4
+			m.mode = (m.mode + 1) % modeCount
 			if m.mode == ModeReport && !m.reportLoaded && !m.reportLoading && m.reportFn != nil {
 				m.reportLoading = true
 				return m, m.runReportCmd()
+			}
+			if m.mode == ModeSafety && !m.safetyLoaded && !m.safetyLoading && m.safetyFn != nil {
+				m.safetyLoading = true
+				return m, m.runSafetyCmd()
 			}
 		case "d", "w", "m":
 			if m.mode == ModeReport && !m.reportLoading {
@@ -156,11 +197,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.runReportCmd()
 			}
 		case "[", "]":
-			if m.mode == ModeReport && !m.reportLoading {
+			if (m.mode == ModeReport && !m.reportLoading) || (m.mode == ModeSafety && !m.safetyLoading) {
+				cur := m.reportDays
+				if m.mode == ModeSafety {
+					cur = m.safetyDays
+				}
 				windows := []int{30, 90, 180}
 				idx := 1
 				for i, w := range windows {
-					if w == m.reportDays {
+					if w == cur {
 						idx = i
 					}
 				}
@@ -169,6 +214,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if msg.String() == "]" && idx < len(windows)-1 {
 					idx++
+				}
+				if m.mode == ModeSafety {
+					m.safetyDays = windows[idx]
+					m.safetyLoading = true
+					return m, m.runSafetyCmd()
 				}
 				m.reportDays = windows[idx]
 				m.reportLoading = true
@@ -180,14 +230,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reportVP, cmd = m.reportVP.Update(msg)
 				return m, cmd
 			}
+			if m.mode == ModeSafety && !m.safetyLoading {
+				var cmd tea.Cmd
+				m.safetyVP, cmd = m.safetyVP.Update(msg)
+				return m, cmd
+			}
 		case "g":
 			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoTop()
 				return m, nil
 			}
+			if m.mode == ModeSafety && !m.safetyLoading {
+				m.safetyVP.GotoTop()
+				return m, nil
+			}
 		case "G":
 			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoBottom()
+				return m, nil
+			}
+			if m.mode == ModeSafety && !m.safetyLoading {
+				m.safetyVP.GotoBottom()
 				return m, nil
 			}
 		}
@@ -215,6 +278,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reportErr = msg.Err
 		m.reportVP.SetContent(reportTables(m.reports, m.reportSkipped))
 		m.reportVP.GotoTop()
+	case SafetyMsg:
+		m.safetyLoading = false
+		m.safetyLoaded = true
+		m.safetyRows = msg.Rows
+		m.safetySum = msg.Sum
+		m.safetyDays = msg.Days
+		m.safetyErr = msg.Err
+		m.safetyVP.SetContent(safetyTable(m.safetyRows, m.safetySum))
+		m.safetyVP.GotoTop()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -249,11 +321,28 @@ func (m Model) View() string {
 		default:
 			body = head + m.reportVP.View()
 		}
+	case ModeSafety:
+		head := safetyHeader(m.safetyDays)
+		switch {
+		case m.safetyErr != nil:
+			body = head + "  safety error: " + m.safetyErr.Error() + "\n"
+		case m.safetyLoading:
+			body = head + "  " + m.spin.View() + " scanning transcripts…\n"
+		case len(m.safetyRows) == 0:
+			body = head + "  No prompt turns found in this window.\n"
+		default:
+			body = head + m.safetyVP.View()
+		}
 	}
-	footer := "1/2/3/4 or Tab: switch view   q: quit"
+	footer := "1/2/3/4/5 or Tab: switch view   q: quit"
 	if m.mode == ModeReport && m.reportLoaded && !m.reportLoading && m.reportErr == nil && len(m.reports) > 0 {
 		if !(m.reportVP.AtTop() && m.reportVP.AtBottom()) {
 			footer = fmt.Sprintf("scroll %.0f%%   ", m.reportVP.ScrollPercent()*100) + footer
+		}
+	}
+	if m.mode == ModeSafety && m.safetyLoaded && !m.safetyLoading && m.safetyErr == nil && len(m.safetyRows) > 0 {
+		if !(m.safetyVP.AtTop() && m.safetyVP.AtBottom()) {
+			footer = fmt.Sprintf("scroll %.0f%%   ", m.safetyVP.ScrollPercent()*100) + footer
 		}
 	}
 	for _, w := range m.warns {
@@ -284,4 +373,13 @@ func (m Model) runReportCmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg { return fn(days, size) }
+}
+
+func (m Model) runSafetyCmd() tea.Cmd {
+	fn := m.safetyFn
+	days := m.safetyDays
+	if fn == nil {
+		return nil
+	}
+	return func() tea.Msg { return fn(days) }
 }

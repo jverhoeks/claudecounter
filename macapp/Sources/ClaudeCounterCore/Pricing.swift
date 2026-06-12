@@ -66,7 +66,7 @@ public struct PricingTable: Equatable, Sendable {
 extension PricingTable {
 
     /// ISO date the baked-in prices were captured. Update when bumping prices.
-    public static let defaultsDate = "2026-04-24"
+    public static let defaultsDate = "2026-06-12"
 
     /// Best-effort price table used when no pricing.toml is available and
     /// live fetch also fails.
@@ -92,7 +92,15 @@ extension PricingTable {
             cacheCreationPerMTok: 1.25,
             cacheReadPerMTok: 0.10
         )
+        let fable = ModelPrice(
+            inputPerMTok: 10.00,
+            outputPerMTok: 50.00,
+            cacheCreationPerMTok: 12.50,
+            cacheReadPerMTok: 1.00
+        )
         return PricingTable(models: [
+            "claude-fable-5":            fable,
+            "claude-opus-4-8":           opus,
             "claude-opus-4-7":           opus,
             "claude-opus-4-6":           opus,
             "claude-opus-4-5":           opus,
