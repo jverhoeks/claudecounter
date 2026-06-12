@@ -82,17 +82,23 @@ public struct DailyTotal: Equatable, Sendable {
     /// produced events on the day).
     public var usdByModel: [String: Double]
     public var tokensByModel: [String: UInt64]
+    /// Per-hour, per-model USD for the day — 24 entries, one dictionary
+    /// per local hour. Drives the hourly chart both for today and when
+    /// the user clicks a day in the monthly chart to drill in.
+    public var hourlyUSDByModel: [[String: Double]]
 
     public init(day: String,
                 usd: Double,
                 tokens: UInt64 = 0,
                 usdByModel: [String: Double] = [:],
-                tokensByModel: [String: UInt64] = [:]) {
+                tokensByModel: [String: UInt64] = [:],
+                hourlyUSDByModel: [[String: Double]] = Array(repeating: [:], count: 24)) {
         self.day = day
         self.usd = usd
         self.tokens = tokens
         self.usdByModel = usdByModel
         self.tokensByModel = tokensByModel
+        self.hourlyUSDByModel = hourlyUSDByModel
     }
 }
 
@@ -160,14 +166,16 @@ public actor Aggregator {
     private var unknownMsgs: Set<String> = []
     private(set) public var dupes: Int = 0
 
-    /// Per-hour tokens for events that fall on `today` only. Stored
-    /// separately from `cells` because cells are keyed by day, not hour.
+    /// Per-(day, hour, model) tokens for every day in the trailing
+    /// `dailyWindow`. Stored separately from `cells` because cells are
+    /// keyed by day, not hour. Days that fall out of the window are
+    /// pruned lazily at snapshot time.
     private struct HourBucketKey: Hashable {
+        let day: CivilDay
         let hour: Int
         let model: String
     }
     private var hourBuckets: [HourBucketKey: TokenCounts] = [:]
-    private var hourBucketsDay: CivilDay? = nil
 
     private let now: () -> Date
     private let calendar: Calendar
@@ -194,7 +202,6 @@ public actor Aggregator {
         self.dupes = dupes
         // Default to empty until loadHourBuckets is called explicitly.
         self.hourBuckets.removeAll(keepingCapacity: false)
-        self.hourBucketsDay = nil
     }
 
     public func exportState() -> (cells: [CellKey: TokenCounts],
@@ -204,36 +211,38 @@ public actor Aggregator {
         (cells, perMsg, unknownMsgs, dupes)
     }
 
-    /// Snapshot of today's per-(hour, model) token state. Returns
-    /// `(nil, [])` if no events have been recorded for today yet.
+    /// Snapshot of the per-(day, hour, model) token state for the
+    /// trailing window. Empty if no events have been recorded yet.
     public func exportHourBuckets()
-        -> (day: CivilDay?, entries: [(hour: Int, model: String, tokens: TokenCounts)])
+        -> [(day: CivilDay, hour: Int, model: String, tokens: TokenCounts)]
     {
-        let entries = hourBuckets.map { (k, t) in
-            (hour: k.hour, model: k.model, tokens: t)
+        hourBuckets.map { (k, t) in
+            (day: k.day, hour: k.hour, model: k.model, tokens: t)
         }
-        return (hourBucketsDay, entries)
     }
 
-    /// Replace today's hourly state from a cache. If `day` is nil or
-    /// not equal to wall-clock today (per the injected clock), the
-    /// state is dropped — the day rolled over while quit, no point
-    /// keeping yesterday's hours visible.
-    public func loadHourBuckets(day: CivilDay?,
-                                entries: [(hour: Int, model: String, tokens: TokenCounts)]) {
-        let today = dayOf(now(), calendar: calendar)
-        guard let d = day, d == today else {
-            hourBuckets.removeAll(keepingCapacity: false)
-            hourBucketsDay = nil
-            return
-        }
+    /// Replace the hourly state from a cache. Entries older than the
+    /// trailing `dailyWindow` (per the injected clock) are dropped —
+    /// they can never be displayed and would only grow the cache.
+    public func loadHourBuckets(
+        entries: [(day: CivilDay, hour: Int, model: String, tokens: TokenCounts)]
+    ) {
+        let cutoff = windowCutoffString()
         var rebuilt: [HourBucketKey: TokenCounts] = [:]
-        for e in entries {
-            let key = HourBucketKey(hour: e.hour, model: e.model)
+        for e in entries where civilDayString(e.day) >= cutoff {
+            let key = HourBucketKey(day: e.day, hour: e.hour, model: e.model)
             rebuilt[key] = e.tokens
         }
         hourBuckets = rebuilt
-        hourBucketsDay = d
+    }
+
+    /// `civilDayString` of the oldest day inside the trailing window.
+    /// Civil-day strings are zero-padded so lexicographic comparison
+    /// matches chronological order.
+    private func windowCutoffString() -> String {
+        let oldest = calendar.date(byAdding: .day, value: -(Self.dailyWindow - 1),
+                                   to: now()) ?? now()
+        return civilDayString(dayOf(oldest, calendar: calendar))
     }
 
     public func reset() {
@@ -241,7 +250,6 @@ public actor Aggregator {
         perMsg.removeAll(keepingCapacity: true)
         unknownMsgs.removeAll(keepingCapacity: true)
         hourBuckets.removeAll(keepingCapacity: true)
-        hourBucketsDay = nil
         dupes = 0
     }
 
@@ -275,19 +283,12 @@ public actor Aggregator {
         let current = cells[cellKey] ?? .zero
         cells[cellKey] = current.adding(e.usage)
 
-        // 4) If the event is on the wall-clock today, also accumulate into
-        //    today's hourly buckets. Day-rollover is detected lazily.
-        let today = dayOf(now(), calendar: calendar)
-        let evDay = cellKey.day
-        if evDay == today {
-            if hourBucketsDay != today {
-                hourBuckets.removeAll(keepingCapacity: true)
-                hourBucketsDay = today
-            }
-            let hour = hourOf(e.timestamp, calendar: calendar)
-            let hk = HourBucketKey(hour: hour, model: e.model)
-            hourBuckets[hk, default: .zero] = (hourBuckets[hk] ?? .zero).adding(e.usage)
-        }
+        // 4) Accumulate into the per-(day, hour, model) buckets so the
+        //    hourly chart can drill into any day of the window. Days
+        //    that age out of the window are pruned at snapshot time.
+        let hour = hourOf(e.timestamp, calendar: calendar)
+        let hk = HourBucketKey(day: cellKey.day, hour: hour, model: e.model)
+        hourBuckets[hk, default: .zero] = (hourBuckets[hk] ?? .zero).adding(e.usage)
     }
 
     /// Compute per-model and per-project totals for today and this month
@@ -398,6 +399,32 @@ public actor Aggregator {
                 dayCostByModel[k.day, default: [:]][k.model, default: 0] += cost
             }
         }
+        // Prune hour buckets that aged out of the window, then walk the
+        // survivors once: per-day per-hour per-model USD for the daily
+        // window, with today's totals split out into the legacy
+        // todayHourly / todayHourlyUSD arrays.
+        let cutoff = windowCutoffString()
+        hourBuckets = hourBuckets.filter { civilDayString($0.key.day) >= cutoff }
+
+        var hourly = Array(repeating: TokenCounts.zero, count: 24)
+        var hourlyUSD = Array(repeating: 0.0, count: 24)
+        var hourlyUSDByDay: [CivilDay: [[String: Double]]] = [:]
+        for (hk, t) in hourBuckets {
+            let priced = pricing.has(model: hk.model)
+            let cost = priced ? pricing.cost(model: hk.model, usage: t.toUsage()) : 0
+            if priced {
+                var hours = hourlyUSDByDay[hk.day] ?? Array(repeating: [:], count: 24)
+                hours[hk.hour][hk.model, default: 0] += cost
+                hourlyUSDByDay[hk.day] = hours
+            }
+            if hk.day == today {
+                hourly[hk.hour] = hourly[hk.hour].adding(t)
+                hourlyUSD[hk.hour] += cost
+            }
+        }
+        out.todayHourly = hourly
+        out.todayHourlyUSD = hourlyUSD
+
         out.daily = (0..<Self.dailyWindow).reversed().map { i in
             let date = calendar.date(byAdding: .day, value: -i, to: nowLocal) ?? nowLocal
             let cd = dayOf(date, calendar: calendar)
@@ -406,26 +433,10 @@ public actor Aggregator {
                 usd: dayCost[cd] ?? 0,
                 tokens: dayTokens[cd] ?? 0,
                 usdByModel: dayCostByModel[cd] ?? [:],
-                tokensByModel: dayTokensByModel[cd] ?? [:]
+                tokensByModel: dayTokensByModel[cd] ?? [:],
+                hourlyUSDByModel: hourlyUSDByDay[cd] ?? Array(repeating: [:], count: 24)
             )
         }
-
-        // Today hourly: tokens per hour, plus per-hour USD by walking the
-        // (hour, model) buckets and applying pricing. Empty when the
-        // stored hour-bucket day has rolled over (rebuilds as new events
-        // arrive after the rollover).
-        var hourly = Array(repeating: TokenCounts.zero, count: 24)
-        var hourlyUSD = Array(repeating: 0.0, count: 24)
-        if hourBucketsDay == today {
-            for (hk, t) in hourBuckets {
-                hourly[hk.hour] = hourly[hk.hour].adding(t)
-                if pricing.has(model: hk.model) {
-                    hourlyUSD[hk.hour] += pricing.cost(model: hk.model, usage: t.toUsage())
-                }
-            }
-        }
-        out.todayHourly = hourly
-        out.todayHourlyUSD = hourlyUSD
 
         return out
     }

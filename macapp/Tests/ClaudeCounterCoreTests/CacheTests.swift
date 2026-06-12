@@ -133,9 +133,10 @@ final class CacheTests: XCTestCase {
         XCTAssertEqual(snap.todayHourly[12].input, 0, "untouched hours stay zero")
     }
 
-    func test_restore_hourBucketsDropped_onDayRollover() async throws {
-        // If the cache was written yesterday, hour buckets must NOT
-        // be carried into today's snapshot.
+    func test_restore_yesterdayHourBuckets_staySeparateFromToday() async throws {
+        // Hour buckets are kept per-day across the window (so the user
+        // can drill into past days), but yesterday's hours must never
+        // bleed into TODAY's hourly arrays after a restart.
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let store = CacheStore(url: url)
@@ -163,6 +164,43 @@ final class CacheTests: XCTestCase {
             XCTAssertEqual(snap.todayHourly[h].input, 0,
                            "hour \(h): yesterday's bucket must not bleed into today")
         }
+
+        // …and yesterday's per-hour breakdown is still available for
+        // the drill-in view.
+        let yHour = Calendar.current.component(.hour, from: yesterday)
+        let yKey = String(format: "%04d-%02d-%02d",
+                          Calendar.current.component(.year, from: yesterday),
+                          Calendar.current.component(.month, from: yesterday),
+                          Calendar.current.component(.day, from: yesterday))
+        let yEntry = snap.daily.first { $0.day == yKey }
+        XCTAssertNotNil(yEntry, "yesterday must be inside the 30-day window")
+        XCTAssertGreaterThan(yEntry?.hourlyUSDByModel[yHour]["claude-opus-4-7"] ?? 0, 0,
+                             "yesterday's hourly breakdown survives the restart")
+    }
+
+    func test_restore_dropsHourBucketsOutsideWindow() async throws {
+        // Hour entries older than the 30-day window are pruned on load
+        // so the cache can't grow without bound.
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = CacheStore(url: url)
+
+        let old = Calendar.current.date(byAdding: .day, value: -40, to: Self.fixedNow)!
+        let agg1 = Aggregator(pricing: .defaults, now: { old })
+        await agg1.apply(UsageEvent(
+            timestamp: old, sessionID: "s1", cwd: "/tmp",
+            project: "p1", model: "claude-opus-4-7",
+            messageID: "m1", requestID: "r1", isSubagent: false,
+            usage: Usage(input: 1_000_000)))
+
+        try store.save(await CacheFile.snapshot(
+            aggregator: agg1, offsets: [:], parseErrors: 0, writtenAt: old))
+
+        let agg2 = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        _ = try await store.load()!.restore(into: agg2)
+
+        let buckets = await agg2.exportHourBuckets()
+        XCTAssertTrue(buckets.isEmpty, "40-day-old hour buckets must be pruned on load")
     }
 
     func test_restore_dedupePersistsAcrossRestart() async throws {

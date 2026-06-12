@@ -12,6 +12,11 @@ struct PopoverView: View {
     @ObservedObject var state: AppState
     @State private var refreshing: Bool = false
     @State private var showSettings: Bool = false
+    /// Day (YYYY-MM-DD) the hourly chart is drilled into, set by
+    /// clicking a bar in either monthly chart. `nil` → today. Stored
+    /// as the day string (not an index) so it stays pinned to the same
+    /// calendar day as snapshots shift the 30-day window.
+    @State private var selectedDay: String? = nil
 
     /// Cap each table at the top-N rows by USD. Anything beyond is
     /// reachable via the TUI / `claudecounter --once` — the menu bar
@@ -26,14 +31,37 @@ struct PopoverView: View {
         ModelPalette(monthUSD: state.totals.month, dailyWindow: state.totals.daily)
     }
 
+    /// Day key of "today" — always the last entry of the daily window.
+    private var todayKey: String? { state.totals.daily.last?.day }
+
+    /// The day the hourly chart shows: the clicked day if it's still in
+    /// the window, else today. Selecting today is the same as clearing.
+    private var shownEntry: DailyTotal? {
+        guard let sel = selectedDay, sel != todayKey else { return state.totals.daily.last }
+        return state.totals.daily.first(where: { $0.day == sel }) ?? state.totals.daily.last
+    }
+
     var body: some View {
+        let shown = shownEntry
+        let showingToday = shown == nil || shown?.day == todayKey
+
         VStack(alignment: .leading, spacing: 12) {
             // Pinned-top: identity + charts. These are the "glance"
             // surface and must always be visible.
             HeroRow(state: state)
-            HourlyChartRow(hourlyUSD: state.totals.todayHourlyUSD)
-            MonthlyChartRow(daily: state.totals.daily, palette: palette)
-            MonthlyTokenChartRow(daily: state.totals.daily, palette: palette)
+            HourlyChartRow(
+                day: shown?.day ?? "",
+                hourlyUSDByModel: shown?.hourlyUSDByModel ?? Array(repeating: [:], count: 24),
+                palette: palette,
+                isToday: showingToday,
+                onReturnToToday: { selectedDay = nil }
+            )
+            MonthlyChartRow(daily: state.totals.daily, palette: palette,
+                            selectedDay: showingToday ? nil : selectedDay,
+                            onSelectDay: select(day:))
+            MonthlyTokenChartRow(daily: state.totals.daily, palette: palette,
+                                 selectedDay: showingToday ? nil : selectedDay,
+                                 onSelectDay: select(day:))
 
             // Scrollable middle: tables + live tail. Sized to fill
             // remaining vertical space.
@@ -58,6 +86,16 @@ struct PopoverView: View {
             )
         }
         .padding(14)
+    }
+
+    /// Toggle semantics: clicking the already-selected day (or today's
+    /// bar) returns the hourly chart to today.
+    private func select(day: String) {
+        if day == selectedDay || day == todayKey {
+            selectedDay = nil
+        } else {
+            selectedDay = day
+        }
     }
 }
 
@@ -99,27 +137,54 @@ struct HeroRow: View {
 
 // MARK: - Hourly chart
 
+/// Per-hour spend for one day — today by default, or any day the user
+/// clicked in the monthly chart. Bars are stacked by model with the
+/// SAME palette as the monthly charts, so a model keeps its colour
+/// across every chart in the popover.
 struct HourlyChartRow: View {
-    let hourlyUSD: [Double]
+    /// YYYY-MM-DD of the day being shown.
+    let day: String
+    /// 24 entries of model → USD for that day's hours.
+    let hourlyUSDByModel: [[String: Double]]
+    let palette: ModelPalette
+    let isToday: Bool
+    /// Invoked by the "Today" button shown while a past day is displayed.
+    let onReturnToToday: () -> Void
     @State private var hoveredHour: Int? = nil
 
+    private var hourlyUSD: [Double] {
+        hourlyUSDByModel.map { $0.values.reduce(0, +) }
+    }
+
     var body: some View {
+        let totals = hourlyUSD
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text("Today's spend (per hour)")
+                Text(isToday ? "Today's spend (per hour)"
+                             : "\(formatDayLong(day)) · spend per hour")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isToday ? AnyShapeStyle(.secondary)
+                                             : AnyShapeStyle(.primary))
+                if !isToday {
+                    // Clear affordance back to today, mirroring the
+                    // click-to-drill that got the user here.
+                    Button(action: onReturnToToday) {
+                        Label("Today", systemImage: "xmark.circle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                }
                 Spacer()
                 // Inline readout for the hovered hour. Lives in the
                 // section header so it doesn't reflow the chart.
-                if let h = hoveredHour, h < hourlyUSD.count {
+                if let h = hoveredHour, h < totals.count {
                     HStack(spacing: 4) {
                         Text(formatHour(h))
                             .foregroundStyle(.primary)
                         Text("·")
                             .foregroundStyle(.tertiary)
-                        Text(formatUSDFine(hourlyUSD[h]))
-                            .foregroundStyle(hourlyUSD[h] > 0 ? .green : .secondary)
+                        Text(formatUSDFine(totals[h]))
+                            .foregroundStyle(totals[h] > 0 ? .green : .secondary)
                     }
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .monospacedDigit()
@@ -129,12 +194,23 @@ struct HourlyChartRow: View {
             .frame(height: 12)
 
             GeometryReader { geo in
-                let maxV = max(hourlyUSD.max() ?? 0, 0.0001)
+                let maxV = max(totals.max() ?? 0, 0.0001)
+                let nowHour = Calendar.current.component(.hour, from: Date())
                 HStack(alignment: .bottom, spacing: 2) {
-                    ForEach(Array(hourlyUSD.enumerated()), id: \.offset) { idx, v in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(barColor(forHour: idx, value: v, hovered: idx == hoveredHour))
-                            .frame(height: max(3, CGFloat(v / maxV) * geo.size.height))
+                    ForEach(0..<totals.count, id: \.self) { hour in
+                        StackedDailyBar(
+                            byModel: hourlyUSDByModel[hour],
+                            total: totals[hour],
+                            maxV: maxV,
+                            availableHeight: geo.size.height,
+                            palette: palette,
+                            isToday: isToday && hour == nowHour,
+                            isHovered: hour == hoveredHour,
+                            // Future hours (today only) dim harder than
+                            // past zero hours, matching the old chart.
+                            zeroValueTint: Color.gray.opacity(
+                                isToday && hour > nowHour ? 0.20 : 0.30)
+                        )
                     }
                 }
                 // Continuous hover tracking over the chart area.
@@ -148,7 +224,7 @@ struct HourlyChartRow: View {
                     case .active(let point):
                         hoveredHour = hourIndex(for: point.x,
                                                 width: geo.size.width,
-                                                count: hourlyUSD.count)
+                                                count: totals.count)
                     case .ended:
                         hoveredHour = nil
                     }
@@ -157,6 +233,7 @@ struct HourlyChartRow: View {
             .frame(height: 56)
         }
         .animation(.easeInOut(duration: 0.12), value: hoveredHour)
+        .animation(.easeInOut(duration: 0.12), value: day)
     }
 
     /// Map an x-coordinate inside the chart to one of the 24 hour
@@ -168,18 +245,20 @@ struct HourlyChartRow: View {
         return min(max(idx, 0), count - 1)
     }
 
-    private func barColor(forHour hour: Int, value: Double, hovered: Bool) -> Color {
-        // Hovered bar is always vivid, even for past zero or future hours,
-        // so the readout makes visual sense as the user scrubs across.
-        if hovered { return Color.green }
-        let nowHour = Calendar.current.component(.hour, from: Date())
-        if hour > nowHour { return Color.gray.opacity(0.20) }   // future hours dimmed
-        if value <= 0 { return Color.gray.opacity(0.30) }
-        return Color.green.opacity(0.85)
-    }
-
     private func formatHour(_ h: Int) -> String {
         String(format: "%02d:00", h)
+    }
+
+    /// "2026-04-26" → "Sun, Apr 26" — an unambiguous date for the
+    /// drilled-in header.
+    private func formatDayLong(_ ymd: String) -> String {
+        let inFmt = DateFormatter()
+        inFmt.dateFormat = "yyyy-MM-dd"
+        guard let d = inFmt.date(from: ymd) else { return ymd }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "EEE, MMM d"
+        outFmt.locale = Locale(identifier: "en_US_POSIX")
+        return outFmt.string(from: d)
     }
 }
 
@@ -191,6 +270,12 @@ struct HourlyChartRow: View {
 struct MonthlyChartRow: View {
     let daily: [DailyTotal]
     let palette: ModelPalette
+    /// Day currently drilled into by the hourly chart (nil = today).
+    /// The matching bar gets an accent outline.
+    var selectedDay: String? = nil
+    /// Called with the clicked bar's day so the popover can drill the
+    /// hourly chart into it.
+    var onSelectDay: ((String) -> Void)? = nil
     @State private var hoveredIndex: Int? = nil
 
     var body: some View {
@@ -236,6 +321,7 @@ struct MonthlyChartRow: View {
                             palette: palette,
                             isToday: idx == daily.count - 1,
                             isHovered: idx == hoveredIndex,
+                            isSelected: daily[idx].day == selectedDay,
                             zeroValueTint: Color.gray.opacity(0.30)
                         )
                     }
@@ -249,6 +335,14 @@ struct MonthlyChartRow: View {
                                                 count: daily.count)
                     case .ended:
                         hoveredIndex = nil
+                    }
+                }
+                // Click a bar → drill the hourly chart into that day.
+                .onTapGesture(coordinateSpace: .local) { point in
+                    if let idx = barIndex(for: point.x,
+                                          width: geo.size.width,
+                                          count: daily.count) {
+                        onSelectDay?(daily[idx].day)
                     }
                 }
             }
@@ -308,6 +402,10 @@ struct StackedDailyBar: View {
     let palette: ModelPalette
     let isToday: Bool
     let isHovered: Bool
+    /// True when this bar's day is the one the hourly chart is drilled
+    /// into — gets an accent outline so the link between the two charts
+    /// is visible.
+    var isSelected: Bool = false
     /// Colour for a zero-total day — a muted track so the timeline
     /// gap is visible without competing with real data.
     let zeroValueTint: Color
@@ -315,10 +413,16 @@ struct StackedDailyBar: View {
     var body: some View {
         let totalHeight = max(2, CGFloat(total / maxV) * availableHeight)
         if total <= 0 {
-            // Zero day: thin muted track.
+            // Zero day: thin muted track. Still outlined when selected
+            // so drilling into an empty day has visible feedback.
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(zeroValueTint)
                 .frame(height: totalHeight)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .stroke(isSelected ? Color.accentColor : Color.clear,
+                                lineWidth: isSelected ? 1 : 0)
+                )
         } else {
             // Build segment rectangles in global model order so the
             // vertical placement of each colour stays stable across
@@ -339,12 +443,15 @@ struct StackedDailyBar: View {
             }
             .frame(height: totalHeight)
             .clipShape(RoundedRectangle(cornerRadius: 1.5))
-            // Today's bar gets a thin outline so the eye lands on it
-            // even when its height isn't the chart's max.
+            // Selected bar gets a vivid accent outline (it's the day
+            // the hourly chart is showing); otherwise today's bar gets
+            // a thin outline so the eye lands on it even when its
+            // height isn't the chart's max.
             .overlay(
                 RoundedRectangle(cornerRadius: 1.5)
-                    .stroke(isToday ? Color.primary.opacity(0.55) : Color.clear,
-                            lineWidth: isToday ? 0.6 : 0)
+                    .stroke(isSelected ? Color.accentColor
+                            : (isToday ? Color.primary.opacity(0.55) : Color.clear),
+                            lineWidth: isSelected ? 1 : (isToday ? 0.6 : 0))
             )
             // Hover: brighten the whole stack by overlaying a faint
             // primary colour. Subtler than swapping every segment to
@@ -381,6 +488,10 @@ struct StackedDailyBar: View {
 struct MonthlyTokenChartRow: View {
     let daily: [DailyTotal]
     let palette: ModelPalette
+    /// Same click-to-drill wiring as `MonthlyChartRow` — both charts
+    /// plot the same days, so clicking either selects the day.
+    var selectedDay: String? = nil
+    var onSelectDay: ((String) -> Void)? = nil
     @State private var hoveredIndex: Int? = nil
 
     var body: some View {
@@ -431,6 +542,7 @@ struct MonthlyTokenChartRow: View {
                             palette: palette,
                             isToday: idx == daily.count - 1,
                             isHovered: idx == hoveredIndex,
+                            isSelected: daily[idx].day == selectedDay,
                             zeroValueTint: Color.gray.opacity(0.30)
                         )
                     }
@@ -444,6 +556,13 @@ struct MonthlyTokenChartRow: View {
                                                 count: daily.count)
                     case .ended:
                         hoveredIndex = nil
+                    }
+                }
+                .onTapGesture(coordinateSpace: .local) { point in
+                    if let idx = barIndex(for: point.x,
+                                          width: geo.size.width,
+                                          count: daily.count) {
+                        onSelectDay?(daily[idx].day)
                     }
                 }
             }
