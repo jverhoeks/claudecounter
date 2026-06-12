@@ -296,6 +296,74 @@ final class AggregatorTests: XCTestCase {
         }
     }
 
+    // MARK: - hourly per-model breakdown (any day in the window)
+
+    /// Two models in the same hour stack into separate per-model
+    /// entries, and the per-hour totals match todayHourlyUSD.
+    func test_snapshot_hourlyUSDByModel_splitsModelsWithinHour() async {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Self.fixedNow)
+        comps.hour = 9; comps.minute = 30
+        let nineThirty = Calendar.current.date(from: comps)!
+
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: nineThirty,
+                              msgID: "m1", reqID: "r1"))
+        await agg.apply(event(model: "claude-sonnet-4-5", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: nineThirty,
+                              msgID: "m2", reqID: "r2"))
+        let s = await agg.snapshot()
+
+        let today = s.daily.last
+        XCTAssertEqual(today?.hourlyUSDByModel.count, 24)
+        let nine = today?.hourlyUSDByModel[9] ?? [:]
+        XCTAssertEqual(nine.count, 2, "both models present in hour 9")
+        XCTAssertGreaterThan(nine["claude-opus-4-7"] ?? 0, 0)
+        XCTAssertGreaterThan(nine["claude-sonnet-4-5"] ?? 0, 0)
+        XCTAssertEqual(nine.values.reduce(0, +), s.todayHourlyUSD[9], accuracy: 1e-9,
+                       "per-model hour segments sum to the hour total")
+        XCTAssertTrue(today?.hourlyUSDByModel[10].isEmpty ?? false, "untouched hours stay empty")
+    }
+
+    /// Past days inside the window carry their own hourly breakdown —
+    /// the data behind click-a-day-in-the-monthly-chart.
+    func test_snapshot_hourlyUSDByModel_availableForPastDays() async {
+        var comps = Calendar.current.dateComponents(
+            [.year, .month, .day],
+            from: Calendar.current.date(byAdding: .day, value: -3, to: Self.fixedNow)!)
+        comps.hour = 22
+        let threeDaysAgoLate = Calendar.current.date(from: comps)!
+
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: threeDaysAgoLate,
+                              msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+
+        let entry = s.daily[s.daily.count - 4]   // window is oldest→newest
+        XCTAssertGreaterThan(entry.hourlyUSDByModel[22]["claude-opus-4-7"] ?? 0, 0,
+                             "past day keeps its per-hour per-model spend")
+        // And today's chart stays untouched.
+        XCTAssertTrue(s.daily.last?.hourlyUSDByModel.allSatisfy { $0.isEmpty } ?? false)
+    }
+
+    /// Unpriced models bucket tokens but contribute no USD segments,
+    /// matching usdByModel's behaviour.
+    func test_snapshot_hourlyUSDByModel_excludesUnpricedModels() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        await agg.apply(event(model: "claude-mystery-model-9000", input: 500, output: 0,
+                              project: "p1", isSub: false, ts: Self.fixedNow,
+                              msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        let hour = hourOfFixedNow()
+        XCTAssertNil(s.daily.last?.hourlyUSDByModel[hour]["claude-mystery-model-9000"])
+        XCTAssertGreaterThan(s.todayHourly[hour].input, 0, "tokens still counted")
+    }
+
+    private func hourOfFixedNow() -> Int {
+        Calendar.current.component(.hour, from: Self.fixedNow)
+    }
+
     // MARK: - Fixtures / helpers
 
     /// 2026-04-26 14:00:00 in the user's local TZ. Late enough into the
