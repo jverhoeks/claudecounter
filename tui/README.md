@@ -104,6 +104,9 @@ Requires Go 1.22+.
 
 Keys:
 - `1` / `2` / `3` — minimal · split · full view
+- `4` — git activity & ROI report (`d`/`w`/`m` bucket, `[`/`]` window)
+- `5` — permission-mode safety report (`[`/`]` window)
+- `↑`/`↓` `PgUp`/`PgDn` `g`/`G` — scroll (report/safety views)
 - `Tab` — cycle views
 - `q` / `Ctrl+C` — quit
 
@@ -124,6 +127,14 @@ and a per-project breakdown with main/subagent split — then exits.
 | `--pricing` | `~/.config/claudecounter/pricing.toml` | Custom pricing table |
 | `--refresh-pricing` | off | Fetch the latest pricing from Anthropic docs and write it to disk |
 | `--once` | off | Print summary and exit (no TUI, no watcher) |
+| `--report` | off | Print the git-activity & ROI report and exit |
+| `--safety` | off | Print the permission-mode safety report and exit |
+| `--csv` | off | CSV export to stdout (of `--report`, or of `--safety` when combined) |
+| `--days` | 90 | Window for `--report`/`--safety` (30/90/180) |
+| `--bucket` | week | Report bucket: `day`\|`week`\|`month` |
+| `--scorecard` | off | Print a per-session scorecard (tools, failures, waste, tokens) and exit |
+| `--timeline` | off | Print a per-session chronological audit log and exit |
+| `--session` | most recent | Session id prefix for `--scorecard`/`--timeline` |
 
 ## 🪟 Windows testers wanted
 
@@ -164,12 +175,16 @@ attribution · format helpers. UI rendering is intentionally not tested
 ## 📁 Layout
 
 ```
-cmd/claudecounter/        main, integration test, scan-cutoff test
+cmd/claudecounter/        main, CLI report/safety/scorecard/timeline, tests
 internal/pricing/         LiteLLM table, fetch, defaults, TOML override
 internal/reader/          JSONL tailing + project/subagent attribution
 internal/agg/             token aggregator, snapshot, civil-day bucketing
 internal/watcher/         fsnotify wrapper with recursive AddTree
-internal/ui/              bubbletea model + three views (minimal/split/full)
+internal/report/          git activity & ROI report (spend × commits)
+internal/gitstat/         git repo-root mapping + commit collection
+internal/safety/          permission-mode aggregation + container heuristic
+internal/session/         per-session transcript parser (tools, modes, tokens)
+internal/ui/              bubbletea model + five views
 go.mod                    module: github.com/jverhoeks/claudecounter/tui
 ```
 

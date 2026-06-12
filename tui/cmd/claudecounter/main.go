@@ -48,7 +48,11 @@ func main() {
 	reportFlag := flag.Bool("report", false, "scan once, print the git-activity report, and exit")
 	days := flag.Int("days", 90, "report window in days (30/90/180)")
 	bucket := flag.String("bucket", "week", "report bucket: day|week|month")
-	csvFlag := flag.Bool("csv", false, "print the git-activity report as CSV to stdout and exit (implies --report)")
+	csvFlag := flag.Bool("csv", false, "print the git-activity report as CSV to stdout and exit (implies --report; with --safety, exports the safety report)")
+	safetyFlag := flag.Bool("safety", false, "scan once, print the permission-mode safety report, and exit")
+	scorecardFlag := flag.Bool("scorecard", false, "print a per-session scorecard and exit")
+	timelineFlag := flag.Bool("timeline", false, "print a per-session audit timeline and exit")
+	sessionFlag := flag.String("session", "", "session id prefix for --scorecard/--timeline (default: most recent session)")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -59,6 +63,22 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *scorecardFlag {
+		runScorecard(*root, table, *sessionFlag)
+		return
+	}
+	if *timelineFlag {
+		runTimeline(*root, table, *sessionFlag)
+		return
+	}
+	if *safetyFlag {
+		if *csvFlag {
+			runSafetyCSV(*root, *days)
+		} else {
+			runSafety(*root, *days)
+		}
 		return
 	}
 	if *csvFlag {
@@ -188,6 +208,10 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	m.SetReportFunc(func(days int, size report.BucketSize) ui.ReportMsg {
 		reports, skipped, err := gatherReport(root, table, days, size)
 		return ui.ReportMsg{Reports: reports, Skipped: skipped, Days: days, Bucket: size, Err: err}
+	})
+	m.SetSafetyFunc(func(days int) ui.SafetyMsg {
+		rows, sum, err := gatherSafety(root, days)
+		return ui.SafetyMsg{Rows: rows, Sum: sum, Days: days, Err: err}
 	})
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
