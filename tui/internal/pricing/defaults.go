@@ -2,7 +2,7 @@ package pricing
 
 // DefaultsDate is the ISO date the baked-in prices were captured.
 // Update when bumping prices.
-const DefaultsDate = "2026-06-05"
+const DefaultsDate = "2026-06-12"
 
 // Defaults returns a best-effort price table used when no pricing.toml
 // is available and live fetch also fails.
@@ -25,8 +25,14 @@ func Defaults() Table {
 		InputPerMTok: 1.00, OutputPerMTok: 5.00,
 		CacheCreationPerMTok: 1.25, CacheReadPerMTok: 0.10,
 	}
+	fable := ModelPrice{
+		// Claude Fable 5: $10/$50 per 1M (above Opus tier).
+		InputPerMTok: 10.00, OutputPerMTok: 50.00,
+		CacheCreationPerMTok: 12.50, CacheReadPerMTok: 1.00,
+	}
 	return Table{
 		Models: map[string]ModelPrice{
+			"claude-fable-5":            fable,
 			"claude-opus-4-8":           opus,
 			"claude-opus-4-7":           opus,
 			"claude-opus-4-6":           opus,

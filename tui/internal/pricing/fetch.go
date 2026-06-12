@@ -3,22 +3,25 @@ package pricing
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
 )
 
-const pricingURL = "https://docs.anthropic.com/en/docs/about-claude/pricing"
+// liteLLMURL is LiteLLM's model_prices_and_context_window.json — the same
+// source ccusage and our baked-in defaults reference, and the same URL the
+// macapp's "Refresh pricing" uses. JSON-based and stable, unlike the docs
+// page this fetcher originally scraped (whose selectors never matched the
+// real page, so --refresh-pricing silently fell back to defaults).
+const liteLLMURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
-// Fetch retrieves pricing from the Anthropic docs and parses it into a Table.
+// Fetch retrieves Anthropic pricing from LiteLLM and parses it into a Table.
 func Fetch(ctx context.Context) (Table, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pricingURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, liteLLMURL, nil)
 	if err != nil {
 		return Table{}, err
 	}
@@ -35,39 +38,50 @@ func Fetch(ctx context.Context) (Table, error) {
 	if err != nil {
 		return Table{}, err
 	}
-	return parsePricingHTML(body)
+	return parseLiteLLM(body)
 }
 
-// parsePricingHTML extracts a pricing Table from an HTML document.
-// Selectors are pinned to the synthetic fixture schema; adjust once
-// the real page is captured.
-func parsePricingHTML(body []byte) (Table, error) {
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
-	if err != nil {
-		return Table{}, err
+// liteLLMEntry mirrors the fields we read per model. LiteLLM stores costs
+// per single token; we convert to per-1M.
+type liteLLMEntry struct {
+	Provider    string  `json:"litellm_provider"`
+	InputCost   float64 `json:"input_cost_per_token"`
+	OutputCost  float64 `json:"output_cost_per_token"`
+	CacheCreate float64 `json:"cache_creation_input_token_cost"`
+	CacheRead   float64 `json:"cache_read_input_token_cost"`
+}
+
+// parseLiteLLM extracts Anthropic models from LiteLLM's JSON. Mirrors the
+// macapp's PricingFetcher.parse: filter to litellm_provider == "anthropic",
+// strip any "anthropic/" name prefix, drop entries with no price.
+func parseLiteLLM(body []byte) (Table, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return Table{}, fmt.Errorf("parse pricing: %w", err)
 	}
+	const m = 1_000_000.0
 	out := Table{Models: map[string]ModelPrice{}}
-	doc.Find("tr[data-model]").Each(func(_ int, s *goquery.Selection) {
-		model, _ := s.Attr("data-model")
-		if model == "" {
-			return
+	for rawName, val := range raw {
+		var e liteLLMEntry
+		if err := json.Unmarshal(val, &e); err != nil {
+			continue // non-object entries (e.g. spec strings)
 		}
-		parse := func(sel string) float64 {
-			txt := strings.TrimSpace(s.Find(sel).First().Text())
-			txt = strings.TrimPrefix(txt, "$")
-			txt = strings.ReplaceAll(txt, ",", "")
-			f, _ := strconv.ParseFloat(txt, 64)
-			return f
+		if !strings.EqualFold(e.Provider, "anthropic") {
+			continue
 		}
-		out.Models[model] = ModelPrice{
-			InputPerMTok:         parse("td.input"),
-			OutputPerMTok:        parse("td.output"),
-			CacheCreationPerMTok: parse("td.cache-write"),
-			CacheReadPerMTok:     parse("td.cache-read"),
+		if e.InputCost <= 0 && e.OutputCost <= 0 {
+			continue // placeholder entries
 		}
-	})
+		name := strings.TrimPrefix(rawName, "anthropic/")
+		out.Models[name] = ModelPrice{
+			InputPerMTok:         e.InputCost * m,
+			OutputPerMTok:        e.OutputCost * m,
+			CacheCreationPerMTok: e.CacheCreate * m,
+			CacheReadPerMTok:     e.CacheRead * m,
+		}
+	}
 	if len(out.Models) == 0 {
-		return Table{}, fmt.Errorf("no models found in pricing HTML")
+		return Table{}, fmt.Errorf("no anthropic models found in pricing JSON")
 	}
 	return out, nil
 }
