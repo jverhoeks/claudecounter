@@ -66,8 +66,7 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 
 	var totalCost float64
 	var judgments []insights.Judgment
-	// Collect digests per project for the miner.
-	byProject := map[string][]insights.Digest{}
+	projectsToMine := map[string]struct{}{}
 
 	for i, sr := range flagged {
 		fmt.Fprintf(os.Stderr, "  llm judge %d/%d  %s …\n", i+1, len(flagged), shortID(sr.ID))
@@ -77,7 +76,7 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 			continue
 		}
 		d := insights.BuildDigest(s, sr, digestMaxPrompts, digestMaxTools, digestMaxRunes)
-		byProject[sr.Project] = append(byProject[sr.Project], d)
+		projectsToMine[sr.Project] = struct{}{}
 
 		hash := insights.DigestHash(d)
 		j, hit := insights.Judgment{}, false
@@ -92,17 +91,21 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 		judgments = append(judgments, j)
 	}
 
-	// Mine CLAUDE.md candidates once per project of the judged sessions.
+	// Mine CLAUDE.md candidates once per flagged project, but feed the miner
+	// prompts from ALL the project's sessions (cheap prompt-only parse) — not
+	// just the flagged ones — so it can actually detect cross-session recurrence.
 	var mined []insights.ProjectMined
-	for proj, digs := range byProject {
+	for proj := range projectsToMine {
 		fmt.Fprintf(os.Stderr, "  llm mine %s …\n", shortProj(proj))
-		hash := insights.DigestHash(insights.Digest{ID: "mine:" + proj, Prompts: minePromptKeys(digs)})
+		prompts := collectProjectPrompts(root, proj, c)
+		dig := insights.Digest{ID: "mine:" + proj, Prompts: prompts}
+		hash := insights.DigestHash(dig)
 		m, hit := insights.ProjectMined{}, false
 		if !refresh {
 			m, hit = cache.GetMined(hash)
 		}
 		if !hit {
-			m = insights.MineProject(ctx, judge, proj, digs)
+			m = insights.MineProject(ctx, judge, proj, []insights.Digest{dig})
 			cache.PutMined(hash, m)
 			totalCost += m.CostUSD
 		}
@@ -112,12 +115,27 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 	writeLLM(w, judgments, mined, totalCost)
 }
 
-// minePromptKeys flattens the prompts that feed the miner, so the cache key
-// changes when the project's prompt set changes.
-func minePromptKeys(digs []insights.Digest) []string {
+// collectProjectPrompts gathers real user prompts across all of a project's
+// sessions (worst-first), stopping once enough are collected to mine. This is a
+// prompt-only parse — no extra LLM cost — that gives the miner a broad enough
+// sample to spot instructions repeated across sessions.
+func collectProjectPrompts(root, project string, c insights.CorpusReport) []string {
+	const promptCap = 80
 	var out []string
-	for _, d := range digs {
-		out = append(out, d.Prompts...)
+	for _, sr := range c.Sessions {
+		if sr.Project != project {
+			continue
+		}
+		s, err := session.Parse(filepath.Join(root, sr.Project, sr.ID+".jsonl"))
+		if err != nil {
+			continue
+		}
+		for _, p := range s.UserPrompts {
+			out = append(out, p.Text)
+			if len(out) >= promptCap {
+				return out
+			}
+		}
 	}
 	return out
 }
