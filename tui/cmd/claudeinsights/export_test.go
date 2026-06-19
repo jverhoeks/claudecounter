@@ -34,6 +34,21 @@ func TestWriteJSON(t *testing.T) {
 	}
 }
 
+func TestWriteDigest(t *testing.T) {
+	d := insights.Digest{ID: "s1", Project: "p", Model: "m", Prompts: []string{"hi"}}
+	var b strings.Builder
+	if err := writeDigest(&b, d); err != nil {
+		t.Fatal(err)
+	}
+	var back insights.Digest
+	if err := json.Unmarshal([]byte(b.String()), &back); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if back.ID != "s1" || len(back.Prompts) != 1 {
+		t.Errorf("roundtrip: %+v", back)
+	}
+}
+
 func TestWriteCSV(t *testing.T) {
 	var b strings.Builder
 	if err := writeCSV(&b, sampleCorpus()); err != nil {

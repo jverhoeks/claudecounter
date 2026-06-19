@@ -16,7 +16,11 @@ import (
 // parses + analyzes each in parallel, and returns one SessionReport per
 // session. Subagent files (under /subagents/) are skipped here because
 // session.Parse folds them into their main transcript.
-func Scan(root string, table pricing.Table, th Thresholds, notBefore time.Time) ([]SessionReport, error) {
+//
+// A non-nil cache short-circuits parsing for files whose (id+mtime+size) key
+// is already stored; refresh=true ignores existing entries but still writes
+// fresh ones. Pass OpenCache(false) (or nil) to disable caching entirely.
+func Scan(root string, table pricing.Table, th Thresholds, notBefore time.Time, cache *Cache, refresh bool) ([]SessionReport, error) {
 	paths := make(chan string, 256)
 	walkErr := make(chan error, 1)
 	go func() {
@@ -55,12 +59,33 @@ func Scan(root string, table pricing.Table, th Thresholds, notBefore time.Time) 
 		go func() {
 			defer wg.Done()
 			for p := range paths {
+				proj := projectUnder(root, p)
+				id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+
+				var key string
+				if cache != nil {
+					if info, err := os.Stat(p); err == nil {
+						key = cache.Key(id, info.ModTime(), info.Size())
+						if !refresh {
+							if r, ok := cache.GetReport(key); ok {
+								mu.Lock()
+								out = append(out, r)
+								mu.Unlock()
+								continue
+							}
+						}
+					}
+				}
+
 				s, err := session.Parse(p)
 				if err != nil {
 					continue
 				}
 				r := AnalyzeSession(s, table, th)
-				r.Project = projectUnder(root, p)
+				r.Project = proj
+				if cache != nil && key != "" {
+					cache.PutReport(key, r)
+				}
 				mu.Lock()
 				out = append(out, r)
 				mu.Unlock()

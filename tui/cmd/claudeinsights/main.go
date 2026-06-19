@@ -53,7 +53,10 @@ func main() {
 	sessionFlag := flag.String("session", "", "drill into one session (id prefix; default: corpus mode)")
 	jsonFlag := flag.Bool("json", false, "emit JSON")
 	csvFlag := flag.Bool("csv", false, "emit CSV (one row per finding)")
+	digestFlag := flag.Bool("digest", false, "with --session: print the session's compact JSON digest")
 	topN := flag.Int("top", 15, "how many worst sessions to list in corpus mode")
+	noCache := flag.Bool("no-cache", false, "ignore and do not write the on-disk cache")
+	refresh := flag.Bool("refresh", false, "recompute and overwrite cache entries")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -74,11 +77,15 @@ func main() {
 		}
 		r := insights.AnalyzeSession(s, table, th)
 		r.Project = filepath.Base(filepath.Dir(path))
-		if *jsonFlag {
+		switch {
+		case *digestFlag:
+			d := insights.BuildDigest(s, r, digestMaxPrompts, digestMaxTools, digestMaxRunes)
+			_ = writeDigest(os.Stdout, d)
+		case *jsonFlag:
 			_ = writeJSON(os.Stdout, insights.CorpusReport{Sessions: []insights.SessionReport{r}})
-			return
+		default:
+			writeSession(os.Stdout, r)
 		}
-		writeSession(os.Stdout, r)
 		return
 	}
 
@@ -86,7 +93,8 @@ func main() {
 	// the counter we have no month-aligned aggregation to anchor to.
 	notBefore := windowStart(time.Now().Local(), *days)
 	fmt.Fprintf(os.Stderr, "scanning %s (last %d days) …\n", *root, *days)
-	reports, err := insights.Scan(*root, table, th, notBefore)
+	cache := insights.OpenCache(!*noCache)
+	reports, err := insights.Scan(*root, table, th, notBefore, cache, *refresh)
 	if err != nil {
 		log.Fatalf("scan: %v", err)
 	}

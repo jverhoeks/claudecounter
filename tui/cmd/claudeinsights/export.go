@@ -9,10 +9,23 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/insights"
 )
 
+// Digest size bounds — keep LLM input small and predictable.
+const (
+	digestMaxPrompts = 40
+	digestMaxTools   = 120
+	digestMaxRunes   = 280
+)
+
 func writeJSON(w io.Writer, c insights.CorpusReport) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(c)
+}
+
+func writeDigest(w io.Writer, d insights.Digest) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(d)
 }
 
 func writeCSV(w io.Writer, c insights.CorpusReport) error {

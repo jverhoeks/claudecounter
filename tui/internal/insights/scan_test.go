@@ -20,7 +20,7 @@ func TestScan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, "s1.jsonl"), []byte(scanFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reports, err := Scan(root, priceTable(), DefaultThresholds(), time.Time{})
+	reports, err := Scan(root, priceTable(), DefaultThresholds(), time.Time{}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,5 +32,31 @@ func TestScan(t *testing.T) {
 	}
 	if reports[0].Model != "claude-opus-4-8[1m]" {
 		t.Errorf("Model = %q", reports[0].Model)
+	}
+}
+
+func TestScan_CacheRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "-tmp-proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(proj, "s1.jsonl")
+	if err := os.WriteFile(file, []byte(scanFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cache := newCacheAt(t.TempDir(), true)
+
+	first, err := Scan(root, priceTable(), DefaultThresholds(), time.Time{}, cache, false)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first scan: %v %d", err, len(first))
+	}
+	// Second scan should hit the cache and return an identical report.
+	second, err := Scan(root, priceTable(), DefaultThresholds(), time.Time{}, cache, false)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second scan: %v %d", err, len(second))
+	}
+	if second[0].ID != first[0].ID || second[0].Model != first[0].Model {
+		t.Errorf("cache hit differs: %+v vs %+v", second[0], first[0])
 	}
 }

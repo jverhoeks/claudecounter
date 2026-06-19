@@ -3,6 +3,7 @@ package insights
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
@@ -18,6 +19,8 @@ const (
 	CatSkill   Category = "skill"
 	CatContext Category = "context"
 	CatLoop    Category = "loop"
+	CatSprawl  Category = "sprawl"
+	CatRouting Category = "routing"
 )
 
 // Finding is one structural observation about a session. USD is an estimated
@@ -57,18 +60,27 @@ type Thresholds struct {
 	CtxHighPct    float64 // peak context >= this % of window => overload finding
 	HighCtxTokens uint64  // a turn whose input+cache >= this ...
 	TinyOutput    uint64  // ... and whose output <= this is a high-ctx/tiny-out waste
+
+	SprawlPrompts    int     // >= this many prompts => sprawl finding
+	SprawlHours      float64 // session duration >= this many hours => sprawl
+	RoutingMaxTokens uint64  // a session lighter than this (in+out) ...
+	RoutingMaxTools  int     // ... and with <= this many tool calls on Opus => routing
 }
 
 // DefaultThresholds returns conservative starting values; see the design spec
 // — these are tuned-by-experience starting points, not laws.
 func DefaultThresholds() Thresholds {
 	return Thresholds{
-		RepeatToolN:   3,
-		LoopMin:       3,
-		ReadDupN:      2,
-		CtxHighPct:    80,
-		HighCtxTokens: 50_000,
-		TinyOutput:    100,
+		RepeatToolN:      3,
+		LoopMin:          3,
+		ReadDupN:         2,
+		CtxHighPct:       80,
+		HighCtxTokens:    50_000,
+		TinyOutput:       100,
+		SprawlPrompts:    60,
+		SprawlHours:      4,
+		RoutingMaxTokens: 20_000,
+		RoutingMaxTools:  5,
 	}
 }
 
@@ -226,6 +238,39 @@ func trunc(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// sprawlFindings flags sessions that ran too long or accumulated too many
+// prompt-turns — a signal to split work into focused sessions or delegate to
+// subagents.
+func sprawlFindings(s *session.Session, th Thresholds) []Finding {
+	hours := s.End.Sub(s.Start).Hours()
+	if s.Prompts < th.SprawlPrompts && hours < th.SprawlHours {
+		return nil
+	}
+	return []Finding{{
+		Category: CatSprawl,
+		Detail: fmt.Sprintf("long session: %d prompts over %.1fh — consider splitting or delegating to subagents",
+			s.Prompts, hours),
+		Count: s.Prompts,
+	}}
+}
+
+// routingFindings flags a light session that ran on Opus, where a cheaper
+// model (Sonnet/Haiku) or Fast mode would likely have sufficed.
+func routingFindings(s *session.Session, model string, th Thresholds) []Finding {
+	if !strings.Contains(model, "opus") {
+		return nil
+	}
+	work := s.Tokens.InputTokens + s.Tokens.OutputTokens
+	if work >= th.RoutingMaxTokens || len(s.ToolCalls) > th.RoutingMaxTools {
+		return nil
+	}
+	return []Finding{{
+		Category: CatRouting,
+		Detail:   "light session ran on Opus — Sonnet/Haiku or Fast mode may suffice",
+		Count:    1,
+	}}
+}
+
 // dominantModel returns the model with the most turns (empty if none).
 func dominantModel(s *session.Session) string {
 	counts := map[string]int{}
@@ -277,6 +322,8 @@ func AnalyzeSession(s *session.Session, table pricing.Table, th Thresholds) Sess
 	r.Findings = append(r.Findings, abuseFindings(s, th)...)
 	r.Findings = append(r.Findings, skillFindings(s)...)
 	r.Findings = append(r.Findings, loopFindings(s, th)...)
+	r.Findings = append(r.Findings, sprawlFindings(s, th)...)
+	r.Findings = append(r.Findings, routingFindings(s, model, th)...)
 	if r.CtxPct >= th.CtxHighPct {
 		r.Findings = append(r.Findings, Finding{
 			Category: CatContext,

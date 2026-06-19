@@ -1,0 +1,105 @@
+package insights
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// Cache persists per-session Tier-1 reports keyed by file identity
+// (id + mtime + size) so unchanged transcripts are never re-parsed. It is
+// best-effort: every read/write error degrades to a fresh compute, never a
+// crash. A disabled cache is a no-op (always misses, never writes).
+type Cache struct {
+	dir     string
+	enabled bool
+}
+
+// cacheDir resolves $XDG_CACHE_HOME/claudeinsights, else ~/.cache/claudeinsights.
+func cacheDir() string {
+	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
+		return filepath.Join(x, "claudeinsights")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "claudeinsights")
+}
+
+// OpenCache returns a Cache rooted at the standard cache dir. enabled=false
+// yields a no-op cache.
+func OpenCache(enabled bool) *Cache {
+	return newCacheAt(cacheDir(), enabled)
+}
+
+func newCacheAt(dir string, enabled bool) *Cache {
+	c := &Cache{dir: dir, enabled: enabled}
+	if enabled {
+		// Failure here just means later writes fail and we recompute.
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return c
+}
+
+// Key derives a stable cache key from a transcript's identity. Any change to
+// the file's mtime or size produces a new key, so growth/edits invalidate.
+func (c *Cache) Key(id string, mtime time.Time, size int64) string {
+	h := sha256.Sum256([]byte(id + "|" + mtime.UTC().Format(time.RFC3339Nano) + "|" + itoa(size)))
+	return hex.EncodeToString(h[:])
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+func (c *Cache) path(key string) string {
+	return filepath.Join(c.dir, "report-"+key+".json")
+}
+
+// GetReport returns a cached report and true on hit; false on miss, disabled
+// cache, or any read/decode error.
+func (c *Cache) GetReport(key string) (SessionReport, bool) {
+	if !c.enabled {
+		return SessionReport{}, false
+	}
+	data, err := os.ReadFile(c.path(key))
+	if err != nil {
+		return SessionReport{}, false
+	}
+	var r SessionReport
+	if err := json.Unmarshal(data, &r); err != nil {
+		return SessionReport{}, false
+	}
+	return r, true
+}
+
+// PutReport writes a report to the cache. Errors are swallowed.
+func (c *Cache) PutReport(key string, r SessionReport) {
+	if !c.enabled {
+		return
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(c.path(key), data, 0o644)
+}
