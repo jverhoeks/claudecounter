@@ -57,6 +57,8 @@ func main() {
 	topN := flag.Int("top", 15, "how many worst sessions to list in corpus mode")
 	noCache := flag.Bool("no-cache", false, "ignore and do not write the on-disk cache")
 	refresh := flag.Bool("refresh", false, "recompute and overwrite cache entries")
+	llm := flag.Bool("llm", false, "run the local claude -p coaching pass on flagged sessions (costs ~$0.10/session)")
+	llmMax := flag.Int("llm-max", 10, "max sessions to send to the LLM judge")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -64,6 +66,7 @@ func main() {
 	}
 	table := loadPricing(*pricingPath)
 	th := insights.DefaultThresholds()
+	cache := insights.OpenCache(!*noCache)
 
 	// Per-session drill-down.
 	if *sessionFlag != "" {
@@ -86,6 +89,10 @@ func main() {
 		default:
 			writeSession(os.Stdout, r)
 		}
+		if *llm {
+			runLLM(os.Stdout, *root, table, th,
+				insights.CorpusReport{Sessions: []insights.SessionReport{r}}, cache, *refresh, *llmMax)
+		}
 		return
 	}
 
@@ -93,11 +100,12 @@ func main() {
 	// the counter we have no month-aligned aggregation to anchor to.
 	notBefore := windowStart(time.Now().Local(), *days)
 	fmt.Fprintf(os.Stderr, "scanning %s (last %d days) …\n", *root, *days)
-	cache := insights.OpenCache(!*noCache)
 	reports, err := insights.Scan(*root, table, th, notBefore, cache, *refresh)
 	if err != nil {
 		log.Fatalf("scan: %v", err)
 	}
+	// Cost-without-delivery: git-check only the expensive sessions.
+	insights.ApplyDelivery(reports, gitDelivery, deliveryMinUSD)
 	c := insights.BuildCorpus(reports)
 	switch {
 	case *jsonFlag:
@@ -106,5 +114,8 @@ func main() {
 		_ = writeCSV(os.Stdout, c)
 	default:
 		writeCorpus(os.Stdout, c, *topN)
+	}
+	if *llm {
+		runLLM(os.Stdout, *root, table, th, c, cache, *refresh, *llmMax)
 	}
 }

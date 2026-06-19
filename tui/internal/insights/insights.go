@@ -46,6 +46,7 @@ type SessionReport struct {
 	ToolCalls   int           `json:"tool_calls"`
 	PeakContext uint64        `json:"peak_context"`
 	CtxPct      float64       `json:"ctx_pct"`
+	HasPRLink   bool          `json:"has_pr_link"`
 	Findings    []Finding     `json:"findings"`
 	WasteUSD    float64       `json:"waste_usd"`
 	Score       float64       `json:"score"`
@@ -202,7 +203,21 @@ func abuseFindings(s *session.Session, th Thresholds) []Finding {
 		}
 		return rows[i].k.name+rows[i].k.target < rows[j].k.name+rows[j].k.target
 	})
-	for _, r := range rows {
+	// Cap the detailed rows — a hot session can repeat hundreds of distinct
+	// targets, which would flood every output. Keep the worst, roll up the rest.
+	for i, r := range rows {
+		if i >= maxAbuseRows {
+			extra := 0
+			for _, rr := range rows[i:] {
+				extra += rr.n
+			}
+			out = append(out, Finding{
+				Category: CatAbuse,
+				Detail:   fmt.Sprintf("…and %d more repeated-call pattern(s) (%d calls)", len(rows)-i, extra),
+				Count:    len(rows) - i,
+			})
+			break
+		}
 		out = append(out, Finding{
 			Category: CatAbuse,
 			Detail:   fmt.Sprintf("%s %q called %d×", r.k.name, trunc(r.k.target, 60), r.n),
@@ -211,6 +226,8 @@ func abuseFindings(s *session.Session, th Thresholds) []Finding {
 	}
 	return out
 }
+
+const maxAbuseRows = 8
 
 func skillFindings(s *session.Session) []Finding {
 	distinct := map[string]struct{}{}
@@ -306,6 +323,7 @@ func AnalyzeSession(s *session.Session, table pricing.Table, th Thresholds) Sess
 		Prompts:     s.Prompts,
 		ToolCalls:   len(s.ToolCalls),
 		PeakContext: s.PeakContext,
+		HasPRLink:   s.HasPRLink,
 	}
 
 	if win := EffectiveWindow(model, s.PeakContext); win > 0 {

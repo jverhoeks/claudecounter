@@ -65,6 +65,7 @@ type Session struct {
 	ToolCalls   []ToolCall
 	Turns       []Turn
 	UserPrompts []Prompt // real user prose (filtered), main transcript only
+	HasPRLink   bool     // a pr-link event was recorded (a PR was opened)
 	Tokens      pricing.Usage
 	PeakContext uint64 // max input+cache tokens of a single request
 }
@@ -277,6 +278,9 @@ func (st *parseState) apply(r *rawLine, sub bool) {
 	}
 	if s.Entrypoint == "" && r.Entrypoint != "" && !sub {
 		s.Entrypoint = r.Entrypoint
+	}
+	if r.Type == "pr-link" {
+		s.HasPRLink = true
 	}
 
 	// Real user prompt turns carry permissionMode; tool_result user events

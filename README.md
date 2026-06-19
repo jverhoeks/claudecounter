@@ -199,20 +199,37 @@ claudeinsights --days 30       # narrower window
 claudeinsights --session 1a2b  # drill into one session's findings
 claudeinsights --json          # full structured output
 claudeinsights --csv           # one row per finding
+claudeinsights --session 1a2b --digest   # compact JSON digest (LLM input / export)
 ```
 
 ```
-Corpus  $12,352 spent · $1,771 estimated waste · 847 sessions
+Corpus  $12,352 spent · $272 estimated waste · 847 sessions
 Worst sessions (top 15):
   session  project              $       waste$   findings  top finding
-  43b9d8b8 data-platform   $880.38   $391.52        328   waste: 267 failed tool call(s) …
+  43b9d8b8 data-platform   $880.38    $57.53        ...   waste: 8 failed tool call(s) …
 ```
 
-Findings are tiered by confidence; this binary ships the **structural** tier.
-A later release adds a Tier-2 coaching pass (corrections, CLAUDE.md/memory
-candidates, prompt advice) powered by your local `claude -p` CLI — no API
-token required. Build it with `make build-insights` (or `make build`, which
-now produces both binaries).
+Findings are tiered by confidence. The **structural** tier (waste, abuse,
+skill, context, loops, sprawl, model-routing) is always on. Waste $ counts only
+new tokens — cache-read reuse is not waste. Results are cached under
+`$XDG_CACHE_HOME/claudeinsights/` so re-runs are ~25× faster (`--no-cache` /
+`--refresh` to control).
+
+The **coaching** tier is opt-in and uses your local `claude -p` CLI (no API
+token required) to read the actual prompts and judge friction, corrections,
+loops, prompt clarity, and recurring **CLAUDE.md/memory candidates** per
+project. It runs only on the worst flagged sessions and caches every reply so
+you don't re-pay:
+
+```bash
+claudeinsights --llm                 # coach the worst flagged sessions (~$0.10 each)
+claudeinsights --llm --llm-max 5     # cap how many sessions get the LLM pass
+claudeinsights --session 1a2b --llm  # coach one specific session
+```
+
+Cost-without-delivery (high-$ sessions with no commit and no PR) is checked via
+git for expensive sessions. Build with `make build-insights` (or `make build`,
+which now produces both binaries).
 
 ## Mac menu bar preview
 

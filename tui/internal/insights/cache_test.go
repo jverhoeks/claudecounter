@@ -32,6 +32,36 @@ func TestCache_KeyInvalidation(t *testing.T) {
 	}
 }
 
+func TestCache_Judgment(t *testing.T) {
+	c := newCacheAt(t.TempDir(), true)
+	d := Digest{ID: "s1", Prompts: []string{"hi"}}
+	hash := DigestHash(d)
+	if _, ok := c.GetJudgment(hash); ok {
+		t.Fatal("expected miss")
+	}
+	c.PutJudgment(hash, Judgment{SessionID: "s1", Friction: 5, Available: true})
+	got, ok := c.GetJudgment(hash)
+	if !ok || got.Friction != 5 {
+		t.Errorf("judgment roundtrip: %+v ok=%v", got, ok)
+	}
+	// Unavailable judgments are not cached.
+	c.PutJudgment(DigestHash(Digest{ID: "s2"}), Judgment{Available: false})
+	if _, ok := c.GetJudgment(DigestHash(Digest{ID: "s2"})); ok {
+		t.Error("unavailable judgment should not be cached")
+	}
+}
+
+func TestCache_Mined(t *testing.T) {
+	c := newCacheAt(t.TempDir(), true)
+	hash := "abc"
+	c.PutMined(hash, ProjectMined{Project: "p", Available: true,
+		Candidates: []MemoryCandidate{{Suggestion: "run tests"}}})
+	got, ok := c.GetMined(hash)
+	if !ok || len(got.Candidates) != 1 {
+		t.Errorf("mined roundtrip: %+v ok=%v", got, ok)
+	}
+}
+
 func TestCache_Disabled(t *testing.T) {
 	c := newCacheAt(t.TempDir(), false)
 	key := c.Key("s1", time.Unix(1000, 0), 42)

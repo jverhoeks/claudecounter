@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -102,4 +103,71 @@ func (c *Cache) PutReport(key string, r SessionReport) {
 		return
 	}
 	_ = os.WriteFile(c.path(key), data, 0o644)
+}
+
+// DigestHash is the content hash of a digest, used as the LLM cache key base.
+func DigestHash(d Digest) string {
+	data, _ := json.Marshal(d)
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
+// llmPath names an LLM cache file. kind distinguishes judgments from mined
+// results; the prompt version is folded into the name so a prompt change
+// invalidates every stale entry without a manual purge.
+func (c *Cache) llmPath(kind, base string) string {
+	return filepath.Join(c.dir, fmt.Sprintf("llm-%s-v%d-%s.json", kind, judgePromptVersion, base))
+}
+
+// GetJudgment returns a cached per-session judgment (hash = DigestHash).
+func (c *Cache) GetJudgment(hash string) (Judgment, bool) {
+	if !c.enabled {
+		return Judgment{}, false
+	}
+	data, err := os.ReadFile(c.llmPath("judge", hash))
+	if err != nil {
+		return Judgment{}, false
+	}
+	var j Judgment
+	if err := json.Unmarshal(data, &j); err != nil {
+		return Judgment{}, false
+	}
+	return j, true
+}
+
+// PutJudgment caches a per-session judgment. Only successful ones are stored,
+// so a transient LLM failure isn't pinned. Errors swallowed.
+func (c *Cache) PutJudgment(hash string, j Judgment) {
+	if !c.enabled || !j.Available {
+		return
+	}
+	if data, err := json.Marshal(j); err == nil {
+		_ = os.WriteFile(c.llmPath("judge", hash), data, 0o644)
+	}
+}
+
+// GetMined / PutMined cache a project's CLAUDE.md candidates, keyed by a hash
+// of the project's combined digests.
+func (c *Cache) GetMined(hash string) (ProjectMined, bool) {
+	if !c.enabled {
+		return ProjectMined{}, false
+	}
+	data, err := os.ReadFile(c.llmPath("mine", hash))
+	if err != nil {
+		return ProjectMined{}, false
+	}
+	var m ProjectMined
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ProjectMined{}, false
+	}
+	return m, true
+}
+
+func (c *Cache) PutMined(hash string, m ProjectMined) {
+	if !c.enabled || !m.Available {
+		return
+	}
+	if data, err := json.Marshal(m); err == nil {
+		_ = os.WriteFile(c.llmPath("mine", hash), data, 0o644)
+	}
 }

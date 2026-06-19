@@ -143,6 +143,24 @@ func TestParse_PromptFilter(t *testing.T) {
 	}
 }
 
+func TestParse_PRLink(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.jsonl")
+	data := `{"type":"user","timestamp":"2026-06-01T10:00:00Z","permissionMode":"default","message":{"content":"ship it"}}
+{"type":"pr-link","timestamp":"2026-06-01T10:05:00Z","url":"https://github.com/x/y/pull/1"}
+`
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Parse(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasPRLink {
+		t.Error("HasPRLink should be true when a pr-link event is present")
+	}
+}
+
 func TestParse_StringContentAndJunk(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "x.jsonl")
