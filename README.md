@@ -186,6 +186,34 @@ Turn counts and token sums reuse the counter's `messageId:requestId`
 dedupe; tool calls dedupe by `tool_use` block id. Models missing from the
 pricing table are flagged as unpriced rather than silently counted as $0.
 
+## 🔎 Corpus insights (`claudeinsights`)
+
+A separate binary that scans the whole transcript corpus for **token waste,
+tool abuse, skill overload, context overload, and loop patterns** — ranking
+the worst sessions and projects so you can see where effort (and money) leaks.
+It reuses the same session parsing as the scorecard and runs entirely locally.
+
+```bash
+claudeinsights                 # ranked corpus leaderboard (last 90 days)
+claudeinsights --days 30       # narrower window
+claudeinsights --session 1a2b  # drill into one session's findings
+claudeinsights --json          # full structured output
+claudeinsights --csv           # one row per finding
+```
+
+```
+Corpus  $12,352 spent · $1,771 estimated waste · 847 sessions
+Worst sessions (top 15):
+  session  project              $       waste$   findings  top finding
+  43b9d8b8 data-platform   $880.38   $391.52        328   waste: 267 failed tool call(s) …
+```
+
+Findings are tiered by confidence; this binary ships the **structural** tier.
+A later release adds a Tier-2 coaching pass (corrections, CLAUDE.md/memory
+candidates, prompt advice) powered by your local `claude -p` CLI — no API
+token required. Build it with `make build-insights` (or `make build`, which
+now produces both binaries).
+
 ## Mac menu bar preview
 
 ```
