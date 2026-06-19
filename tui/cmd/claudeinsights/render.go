@@ -53,6 +53,9 @@ func writeCorpus(w io.Writer, c insights.CorpusReport, topN int) {
 		fmt.Fprintf(w, "  %-30s %9s · waste %9s · %d sessions · %d findings\n",
 			trimRunes(shortProj(p.Project), 30), ui.FormatUSD(p.USD), ui.FormatUSD(p.WasteUSD), p.Sessions, p.Findings)
 	}
+	fmt.Fprintln(w, strings.Repeat("─", 72))
+	fmt.Fprintln(w, "Notes: waste $ counts new tokens only (cache-read reuse is not waste).")
+	fmt.Fprintln(w, "       loop detection is back-to-back only — interleaved loops show as repeated-call 'abuse'.")
 }
 
 // writeSession renders one session's drill-down. Pure.

@@ -74,14 +74,27 @@ func DefaultThresholds() Thresholds {
 
 const skillOverloadDistinct = 3 // > this many distinct skills in one session is a smell
 
-// avgTurnUSD is the session's mean priced cost per counted turn (0 if none).
-func avgTurnUSD(s *session.Session, table pricing.Table) float64 {
+// newTokenUSD prices only the genuinely-new tokens of a turn (input +
+// cache-creation + output), excluding cache-read. Cache-read is the cheap,
+// intended path for continuing a long conversation — attributing it as "waste"
+// would flag every turn of a healthy cached session. All waste estimates use
+// this so the dollar figures reflect avoidable spend, not unavoidable reuse.
+func newTokenUSD(table pricing.Table, model string, u pricing.Usage) float64 {
+	return table.Cost(model, pricing.Usage{
+		InputTokens:              u.InputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+		OutputTokens:             u.OutputTokens,
+	})
+}
+
+// avgTurnNewUSD is the session's mean new-token cost per turn (0 if none).
+func avgTurnNewUSD(s *session.Session, table pricing.Table) float64 {
 	if len(s.Turns) == 0 {
 		return 0
 	}
 	var total float64
 	for _, t := range s.Turns {
-		total += table.Cost(t.Model, t.Usage)
+		total += newTokenUSD(table, t.Model, t.Usage)
 	}
 	return total / float64(len(s.Turns))
 }
@@ -101,7 +114,7 @@ func wasteFindings(s *session.Session, table pricing.Table, th Thresholds) []Fin
 			Category: CatWaste,
 			Detail:   fmt.Sprintf("%d failed tool call(s) — each burns a round-trip", failed),
 			Count:    failed,
-			USD:      avgTurnUSD(s, table) * float64(failed),
+			USD:      avgTurnNewUSD(s, table) * float64(failed),
 		})
 	}
 
@@ -128,20 +141,24 @@ func wasteFindings(s *session.Session, table pricing.Table, th Thresholds) []Fin
 		})
 	}
 
-	// 3. High-context / tiny-output turns.
+	// 3. High-NEW-context / tiny-output turns. Trigger on input+cache_create
+	// (the tokens freshly fed this turn), NOT cache_read — a turn that drags a
+	// big cached conversation forward while emitting a small tool-call block is
+	// the normal, healthy pattern, not waste. This fires only when a turn
+	// injects a lot of *new* content and gets almost nothing back.
 	hc := 0
 	var hcUSD float64
 	for _, t := range s.Turns {
-		ctx := t.Usage.InputTokens + t.Usage.CacheCreationInputTokens + t.Usage.CacheReadInputTokens
-		if ctx >= th.HighCtxTokens && t.Usage.OutputTokens <= th.TinyOutput {
+		newCtx := t.Usage.InputTokens + t.Usage.CacheCreationInputTokens
+		if newCtx >= th.HighCtxTokens && t.Usage.OutputTokens <= th.TinyOutput {
 			hc++
-			hcUSD += table.Cost(t.Model, t.Usage)
+			hcUSD += newTokenUSD(table, t.Model, t.Usage)
 		}
 	}
 	if hc > 0 {
 		out = append(out, Finding{
 			Category: CatWaste,
-			Detail:   fmt.Sprintf("%d turn(s) paid for big context but produced tiny output", hc),
+			Detail:   fmt.Sprintf("%d turn(s) injected big new context but produced tiny output", hc),
 			Count:    hc,
 			USD:      hcUSD,
 		})
@@ -246,8 +263,14 @@ func AnalyzeSession(s *session.Session, table pricing.Table, th Thresholds) Sess
 		PeakContext: s.PeakContext,
 	}
 
-	if win := ContextWindow(model); win > 0 {
+	if win := EffectiveWindow(model, s.PeakContext); win > 0 {
 		r.CtxPct = 100 * float64(s.PeakContext) / float64(win)
+		// A handful of usage lines aggregate internal iterations, so the
+		// per-line token sum can exceed the real window. Clamp rather than
+		// print an impossible >100% (the raw peak token count stays in JSON).
+		if r.CtxPct > 100 {
+			r.CtxPct = 100
+		}
 	}
 
 	r.Findings = append(r.Findings, wasteFindings(s, table, th)...)

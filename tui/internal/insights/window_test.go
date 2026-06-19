@@ -21,3 +21,22 @@ func TestContextWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveWindow(t *testing.T) {
+	cases := []struct {
+		model string
+		peak  uint64
+		want  uint64
+	}{
+		{"claude-opus-4-8", 150_000, 200_000},   // within nominal
+		{"claude-opus-4-8", 888_000, 1_000_000}, // 1M-beta recorded without [1m]; inferred from peak
+		{"claude-opus-4-8[1m]", 50_000, 1_000_000},
+		{"claude-sonnet-4-6", 300_000, 1_000_000},
+		{"", 0, 200_000},
+	}
+	for _, c := range cases {
+		if got := EffectiveWindow(c.model, c.peak); got != c.want {
+			t.Errorf("EffectiveWindow(%q, %d) = %d, want %d", c.model, c.peak, got, c.want)
+		}
+	}
+}
