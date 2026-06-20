@@ -59,7 +59,16 @@ func main() {
 	refresh := flag.Bool("refresh", false, "recompute and overwrite cache entries")
 	llm := flag.Bool("llm", false, "run the local claude -p coaching pass on flagged sessions (costs ~$0.10/session)")
 	llmMax := flag.Int("llm-max", 10, "max sessions to send to the LLM judge")
+	apply := flag.Bool("apply", false, "merge mined CLAUDE.md candidates into each project's CLAUDE.md (implies --llm; dry-run unless --write)")
+	write := flag.Bool("write", false, "with --apply: actually write the merged CLAUDE.md files (default is dry-run diff)")
 	flag.Parse()
+
+	if *apply {
+		*llm = true // --apply needs the mined candidates
+	}
+	if *write && !*apply {
+		log.Println("warning: --write has no effect without --apply; ignoring")
+	}
 
 	if _, err := os.Stat(*root); err != nil {
 		log.Fatalf("claude projects root not found: %s (%v)", *root, err)
@@ -90,8 +99,12 @@ func main() {
 			writeSession(os.Stdout, r)
 		}
 		if *llm {
-			runLLM(os.Stdout, *root, table, th,
-				insights.CorpusReport{Sessions: []insights.SessionReport{r}}, cache, *refresh, *llmMax)
+			judge := insights.NewCLIJudge()
+			one := insights.CorpusReport{Sessions: []insights.SessionReport{r}}
+			mined := runLLM(os.Stdout, *root, table, th, one, cache, *refresh, *llmMax, judge)
+			if *apply {
+				writeApply(os.Stdout, applyClaudeMd(one, mined, judge, *write), *write)
+			}
 		}
 		return
 	}
@@ -116,6 +129,10 @@ func main() {
 		writeCorpus(os.Stdout, c, *topN)
 	}
 	if *llm {
-		runLLM(os.Stdout, *root, table, th, c, cache, *refresh, *llmMax)
+		judge := insights.NewCLIJudge()
+		mined := runLLM(os.Stdout, *root, table, th, c, cache, *refresh, *llmMax, judge)
+		if *apply {
+			writeApply(os.Stdout, applyClaudeMd(c, mined, judge, *write), *write)
+		}
 	}
 }

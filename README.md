@@ -227,6 +227,20 @@ claudeinsights --llm --llm-max 5     # cap how many sessions get the LLM pass
 claudeinsights --session 1a2b --llm  # coach one specific session
 ```
 
+`--llm` also prints a **`══ Top actions ══`** list — the per-session advice rolled
+up into a deduped, prioritized "what to change in how you work" summary.
+
+Turn the mined CLAUDE.md candidates into real changes with `--apply`. It uses
+`claude -p` to merge them into each flagged project's `<cwd>/CLAUDE.md`,
+preserving your existing content and only appending a deduped
+`## Insights (auto-suggested)` section. **Dry-run by default** — it prints a diff
+and writes nothing; add `--write` to apply (atomically):
+
+```bash
+claudeinsights --llm --apply          # show the CLAUDE.md merge diffs (writes nothing)
+claudeinsights --llm --apply --write  # actually write the merged CLAUDE.md files
+```
+
 Cost-without-delivery (high-$ sessions with no commit and no PR) is checked via
 git for expensive sessions. Build with `make build-insights` (or `make build`,
 which now produces both binaries).

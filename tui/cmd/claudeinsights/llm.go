@@ -42,10 +42,13 @@ func gitDelivery(cwd string, start, end time.Time) (int, bool) {
 // runLLM judges the worst flagged sessions and mines their projects, honoring
 // the cache and the llmMax cap. It re-parses each flagged session to build its
 // digest. Progress + cost go to stderr; results are rendered to w.
+// runLLM judges flagged sessions, mines per-project CLAUDE.md candidates, and
+// synthesizes a consolidated action list. It returns the mined results (with
+// candidates) and the judge so the caller can optionally run --apply.
 func runLLM(w io.Writer, root string, table pricing.Table, th insights.Thresholds,
-	c insights.CorpusReport, cache *insights.Cache, refresh bool, llmMax int) {
+	c insights.CorpusReport, cache *insights.Cache, refresh bool, llmMax int,
+	judge insights.Judge) []insights.ProjectMined {
 
-	judge := insights.NewCLIJudge()
 	ctx := context.Background()
 
 	// Flagged = worst-first sessions with at least one finding, capped.
@@ -61,7 +64,7 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 	}
 	if len(flagged) == 0 {
 		fmt.Fprintln(w, "\nLLM coaching: no flagged sessions to judge.")
-		return
+		return nil
 	}
 
 	var totalCost float64
@@ -112,7 +115,50 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 		mined = append(mined, m)
 	}
 
+	// Consolidated action list: one synthesis call over the judgments, cached
+	// by the judged-session set.
+	var ids []string
+	for _, j := range judgments {
+		ids = append(ids, j.SessionID)
+	}
+	actHash := insights.DigestHash(insights.Digest{ID: "actions", Prompts: ids})
+	actions, hit := insights.ActionList{}, false
+	if !refresh {
+		actions, hit = cache.GetActions(actHash)
+	}
+	if !hit {
+		fmt.Fprintln(os.Stderr, "  llm synthesize actions …")
+		actions = insights.SynthesizeActions(ctx, judge, judgments)
+		cache.PutActions(actHash, actions)
+		totalCost += actions.CostUSD
+	}
+
 	writeLLM(w, judgments, mined, totalCost)
+	writeActions(w, actions)
+	return mined
+}
+
+// writeActions renders the consolidated "Top actions" section.
+func writeActions(w io.Writer, a insights.ActionList) {
+	fmt.Fprintln(w, "\n══ Top actions (what to change in how you work) ══")
+	if !a.Available {
+		fmt.Fprintf(w, "  unavailable (%s)\n", a.Err)
+		return
+	}
+	if len(a.Items) == 0 {
+		fmt.Fprintln(w, "  (no recurring actions found)")
+		return
+	}
+	for i, it := range a.Items {
+		seen := ""
+		if it.Sessions > 0 {
+			seen = fmt.Sprintf(" [seen in %d session(s)]", it.Sessions)
+		}
+		fmt.Fprintf(w, "  %d. %s%s\n", i+1, it.Action, seen)
+		if it.Why != "" {
+			fmt.Fprintf(w, "       ↳ %s\n", it.Why)
+		}
+	}
 }
 
 // collectProjectPrompts gathers real user prompts across all of a project's

@@ -171,3 +171,29 @@ func (c *Cache) PutMined(hash string, m ProjectMined) {
 		_ = os.WriteFile(c.llmPath("mine", hash), data, 0o644)
 	}
 }
+
+// GetActions / PutActions cache the synthesized action list, keyed by a hash of
+// the judged session set.
+func (c *Cache) GetActions(hash string) (ActionList, bool) {
+	if !c.enabled {
+		return ActionList{}, false
+	}
+	data, err := os.ReadFile(c.llmPath("actions", hash))
+	if err != nil {
+		return ActionList{}, false
+	}
+	var a ActionList
+	if err := json.Unmarshal(data, &a); err != nil {
+		return ActionList{}, false
+	}
+	return a, true
+}
+
+func (c *Cache) PutActions(hash string, a ActionList) {
+	if !c.enabled || !a.Available {
+		return
+	}
+	if data, err := json.Marshal(a); err == nil {
+		_ = os.WriteFile(c.llmPath("actions", hash), data, 0o644)
+	}
+}

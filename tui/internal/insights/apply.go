@@ -139,10 +139,10 @@ func MergeClaudeMd(ctx context.Context, j Judge, existing string, cands []Memory
 	return stripFence(text), cost, nil
 }
 
-// unifiedDiff renders a minimal line-based diff for human preview (not a
+// UnifiedDiff renders a minimal line-based diff for human preview (not a
 // patchable format). Common leading/trailing lines are trimmed; the remaining
 // old lines are shown with '-' and new lines with '+'.
-func unifiedDiff(oldText, newText, path string) string {
+func UnifiedDiff(oldText, newText, path string) string {
 	oldLines := splitLines(oldText)
 	newLines := splitLines(newText)
 

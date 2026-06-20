@@ -23,9 +23,11 @@ type CLIJudge struct {
 	Timeout time.Duration
 }
 
-// NewCLIJudge returns a CLIJudge with sensible defaults.
+// NewCLIJudge returns a CLIJudge with sensible defaults. The timeout is
+// generous: `claude -p` runs a full agent with a large system prompt, so big
+// prompts (session judgments, CLAUDE.md merges) routinely take 1–3 minutes.
 func NewCLIJudge() *CLIJudge {
-	return &CLIJudge{Bin: "claude", Timeout: 60 * time.Second}
+	return &CLIJudge{Bin: "claude", Timeout: 240 * time.Second}
 }
 
 // Ask pipes prompt to `<bin> -p --output-format=json` on stdin and parses the

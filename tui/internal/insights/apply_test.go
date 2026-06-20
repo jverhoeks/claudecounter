@@ -70,7 +70,7 @@ func TestMergeClaudeMd_Error(t *testing.T) {
 func TestUnifiedDiff(t *testing.T) {
 	old := "line1\nline2\n"
 	neu := "line1\nline2\nadded3\nadded4\n"
-	d := unifiedDiff(old, neu, "/p/CLAUDE.md")
+	d := UnifiedDiff(old, neu, "/p/CLAUDE.md")
 	if !strings.Contains(d, "/p/CLAUDE.md") {
 		t.Errorf("missing path: %s", d)
 	}
@@ -78,7 +78,7 @@ func TestUnifiedDiff(t *testing.T) {
 		t.Errorf("missing additions: %s", d)
 	}
 
-	same := unifiedDiff("a\nb\n", "a\nb\n", "/p")
+	same := UnifiedDiff("a\nb\n", "a\nb\n", "/p")
 	if strings.Contains(same, "\n+ ") || strings.Contains(same, "\n- ") {
 		t.Errorf("identical inputs should show no +/- lines: %s", same)
 	}
