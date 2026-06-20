@@ -193,6 +193,9 @@ tool abuse, skill overload, context overload, and loop patterns** — ranking
 the worst sessions and projects so you can see where effort (and money) leaks.
 It reuses the same session parsing as the scorecard and runs entirely locally.
 
+> 📖 **Full docs: [INSIGHTS.md](INSIGHTS.md)** — every flag, all finding
+> categories, the LLM coaching tier, and the `--apply` CLAUDE.md merge.
+
 ```bash
 claudeinsights                 # ranked corpus leaderboard (last 90 days)
 claudeinsights --days 30       # narrower window
