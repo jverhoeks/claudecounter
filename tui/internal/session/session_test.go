@@ -95,10 +95,69 @@ func TestParse_Basic(t *testing.T) {
 		t.Errorf("Turns = %d, want 3", len(s.Turns))
 	}
 
+	// Real user prose captured (both main prompts; subagent/tool_result excluded).
+	if len(s.UserPrompts) != 2 ||
+		s.UserPrompts[0].Text != "please do X" || s.UserPrompts[0].Mode != "default" ||
+		s.UserPrompts[1].Text != "now dangerously" {
+		t.Errorf("UserPrompts = %+v", s.UserPrompts)
+	}
+
 	start, _ := time.Parse(time.RFC3339, "2026-06-01T10:00:00Z")
 	end, _ := time.Parse(time.RFC3339, "2026-06-01T10:02:00Z")
 	if !s.Start.Equal(start) || !s.End.Equal(end) {
 		t.Errorf("window: %v – %v", s.Start, s.End)
+	}
+}
+
+func TestParse_PromptFilter(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.jsonl")
+	// real prose; injected task-notification; isMeta; tool_result (no PM);
+	// real prose with an embedded system-reminder to strip; text-block prompt.
+	data := `{"type":"user","timestamp":"2026-06-01T10:00:00Z","permissionMode":"default","message":{"content":"fix the bug"}}
+{"type":"user","timestamp":"2026-06-01T10:00:01Z","permissionMode":"default","message":{"content":"<task-notification> <task-id>b1</task-id>"}}
+{"type":"user","timestamp":"2026-06-01T10:00:02Z","permissionMode":"default","isMeta":true,"message":{"content":"meta junk"}}
+{"type":"user","timestamp":"2026-06-01T10:00:03Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"user","timestamp":"2026-06-01T10:00:04Z","permissionMode":"default","message":{"content":"keep this<system-reminder>drop me</system-reminder> part"}}
+{"type":"user","timestamp":"2026-06-01T10:00:05Z","permissionMode":"default","message":{"content":[{"type":"text","text":"block prompt"}]}}
+`
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Parse(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(s.UserPrompts))
+	for i, pr := range s.UserPrompts {
+		got[i] = pr.Text
+	}
+	want := []string{"fix the bug", "keep this part", "block prompt"}
+	if len(got) != len(want) {
+		t.Fatalf("UserPrompts = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("prompt[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParse_PRLink(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.jsonl")
+	data := `{"type":"user","timestamp":"2026-06-01T10:00:00Z","permissionMode":"default","message":{"content":"ship it"}}
+{"type":"pr-link","timestamp":"2026-06-01T10:05:00Z","url":"https://github.com/x/y/pull/1"}
+`
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Parse(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasPRLink {
+		t.Error("HasPRLink should be true when a pr-link event is present")
 	}
 }
 

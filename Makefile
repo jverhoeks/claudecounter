@@ -6,8 +6,10 @@
 # so go.mod / go.sum stay scoped to that subdir.
 
 BINARY      := claudecounter
+INSIGHTS    := claudeinsights
 TUI_DIR     := tui
 TUI_PKG     := ./cmd/claudecounter
+INSIGHTS_PKG := ./cmd/claudeinsights
 DIST        := dist
 VERSION     ?= dev
 LDFLAGS     := -s -w -X main.version=$(VERSION)
@@ -28,8 +30,12 @@ help: ## Show this help
 # ────────────────────── TUI (Go) ──────────────────────
 
 .PHONY: build
-build: ## Build the TUI binary for the current platform → ./claudecounter
+build: build-insights ## Build the TUI binary for the current platform → ./claudecounter
 	cd $(TUI_DIR) && go build -ldflags="$(LDFLAGS)" -o ../$(BINARY) $(TUI_PKG)
+
+.PHONY: build-insights
+build-insights: ## Build the analyzer binary → ./claudeinsights
+	cd $(TUI_DIR) && go build -ldflags="$(LDFLAGS)" -o ../$(INSIGHTS) $(INSIGHTS_PKG)
 
 .PHONY: install
 install: ## go install the TUI into $GOBIN

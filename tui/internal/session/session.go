@@ -45,6 +45,13 @@ type Turn struct {
 	Sub   bool
 }
 
+// Prompt is one real user prompt (filtered prose, main transcript only).
+type Prompt struct {
+	Time time.Time
+	Mode string
+	Text string
+}
+
 // Session is the parsed view of one session (main + subagent transcripts).
 type Session struct {
 	ID          string
@@ -57,19 +64,24 @@ type Session struct {
 	ModeChanges []ModeChange
 	ToolCalls   []ToolCall
 	Turns       []Turn
+	UserPrompts []Prompt // real user prose (filtered), main transcript only
+	HasPRLink   bool     // a pr-link event was recorded (a PR was opened)
 	Tokens      pricing.Usage
 	PeakContext uint64 // max input+cache tokens of a single request
 }
 
 // rawLine mirrors only the fields session parsing reads.
 type rawLine struct {
-	Type           string      `json:"type"`
-	Timestamp      time.Time   `json:"timestamp"`
-	Cwd            string      `json:"cwd"`
-	Entrypoint     string      `json:"entrypoint"`
-	PermissionMode string      `json:"permissionMode"`
-	RequestID      string      `json:"requestId"`
-	Message        *rawMessage `json:"message"`
+	Type             string      `json:"type"`
+	Timestamp        time.Time   `json:"timestamp"`
+	Cwd              string      `json:"cwd"`
+	Entrypoint       string      `json:"entrypoint"`
+	PermissionMode   string      `json:"permissionMode"`
+	RequestID        string      `json:"requestId"`
+	IsMeta           bool        `json:"isMeta"`
+	IsSidechain      bool        `json:"isSidechain"`
+	IsCompactSummary bool        `json:"isCompactSummary"`
+	Message          *rawMessage `json:"message"`
 }
 
 type rawMessage struct {
@@ -90,6 +102,7 @@ type rawBlock struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
+	Text      string          `json:"text"`
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
 	IsError   bool            `json:"is_error"`
@@ -111,6 +124,78 @@ func toolTarget(input []byte) string {
 		}
 	}
 	return ""
+}
+
+// injectedTagPrefixes are the leading tags Claude Code injects into user
+// turns — these are not real user prose and must be filtered out.
+var injectedTagPrefixes = []string{
+	"<task-notification>",
+	"<command-name>",
+	"<command-message>",
+	"<command-args>",
+	"<local-command-stdout>",
+	"<local-command-stderr>",
+	"<system-reminder>",
+	"<user-prompt-submit-hook>",
+}
+
+// isInjectedTag reports whether trimmed text begins with a known injected tag.
+func isInjectedTag(text string) bool {
+	for _, p := range injectedTagPrefixes {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripSystemReminders removes any <system-reminder>…</system-reminder> spans
+// embedded inside an otherwise-real prompt.
+func stripSystemReminders(text string) string {
+	const open, close = "<system-reminder>", "</system-reminder>"
+	for {
+		i := strings.Index(text, open)
+		if i < 0 {
+			return text
+		}
+		j := strings.Index(text[i:], close)
+		if j < 0 {
+			return text[:i] // unterminated: drop the rest
+		}
+		text = text[:i] + text[i+j+len(close):]
+	}
+}
+
+// promptText extracts plain text from a user message's content, which is
+// either a JSON string or an array of blocks (we join the "text" blocks).
+// ok=false for tool_result-only / image-only / empty content.
+func promptText(content json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(content))
+	if trimmed == "" {
+		return "", false
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(content, &s); err != nil {
+			return "", false
+		}
+		return s, s != ""
+	case '[':
+		var blocks []rawBlock
+		if err := json.Unmarshal(content, &blocks); err != nil {
+			return "", false
+		}
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		joined := strings.Join(parts, "\n")
+		return joined, joined != ""
+	}
+	return "", false
 }
 
 // parseState carries cross-file accumulators while parsing one session.
@@ -194,6 +279,9 @@ func (st *parseState) apply(r *rawLine, sub bool) {
 	if s.Entrypoint == "" && r.Entrypoint != "" && !sub {
 		s.Entrypoint = r.Entrypoint
 	}
+	if r.Type == "pr-link" {
+		s.HasPRLink = true
+	}
 
 	// Real user prompt turns carry permissionMode; tool_result user events
 	// don't. Mode accounting tracks the main transcript only — subagent
@@ -206,6 +294,19 @@ func (st *parseState) apply(r *rawLine, sub bool) {
 				Time: r.Timestamp, From: st.lastMode, To: r.PermissionMode,
 			})
 			st.lastMode = r.PermissionMode
+		}
+		// Capture real user prose for downstream coaching analysis. Skip
+		// machine/injected turns (meta, sidechain, compact summaries) and
+		// injected-tag bodies (task-notifications, command expansions, …).
+		if !r.IsMeta && !r.IsSidechain && !r.IsCompactSummary && r.Message != nil {
+			if text, ok := promptText(r.Message.Content); ok {
+				text = strings.TrimSpace(stripSystemReminders(text))
+				if text != "" && !isInjectedTag(text) {
+					s.UserPrompts = append(s.UserPrompts, Prompt{
+						Time: r.Timestamp, Mode: r.PermissionMode, Text: text,
+					})
+				}
+			}
 		}
 	}
 
