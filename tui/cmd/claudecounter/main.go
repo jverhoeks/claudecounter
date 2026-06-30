@@ -53,6 +53,7 @@ func main() {
 	scorecardFlag := flag.Bool("scorecard", false, "print a per-session scorecard and exit")
 	timelineFlag := flag.Bool("timeline", false, "print a per-session audit timeline and exit")
 	sessionFlag := flag.String("session", "", "session id prefix for --scorecard/--timeline (default: most recent session)")
+	phasesFlag := flag.Bool("phases", false, "print subagent spend by phase/language/model for this month and exit")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -63,6 +64,10 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *phasesFlag {
+		runPhases(*root, table)
 		return
 	}
 	if *scorecardFlag {
