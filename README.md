@@ -14,7 +14,7 @@ same dollars out, to the cent.
 | **Best for** | Power users, SSH sessions, scripting | "Glance and go" — always-on indicator |
 | **Languages** | Go (single static binary) | Swift / SwiftUI (`.app` bundle) |
 | **Platforms** | macOS · Linux · Windows | macOS 13+ on Apple Silicon |
-| **One-shot mode** | `claudecounter --once` | (use the TUI) |
+| **One-shot mode** | `claudecounter --once` · `--phases` · `--report` | (use the TUI) |
 | **Persists between runs?** | No | Yes (`~/Library/Application Support/...`) |
 | **Live updates** | fsnotify-driven | FSEventStream-driven |
 
@@ -186,6 +186,64 @@ Turn counts and token sums reuse the counter's `messageId:requestId`
 dedupe; tool calls dedupe by `tool_use` block id. Models missing from the
 pricing table are flagged as unpriced rather than silently counted as $0.
 
+## 📊 Monthly spend breakdown (`--phases`)
+
+Press **`claudecounter --phases`** for a full breakdown of where your monthly Claude Code spend goes — by subagent phase, language, model tier, project, and spawn depth — plus an orchestration token analysis that surfaces how much of each session is spent on **context re-reads** rather than actual work.
+
+```bash
+claudecounter --phases        # this month's breakdown (civil month scope)
+```
+
+```
+June 2026  ·  total $6,687  ·  main $5,235  ·  subagents $1,452
+──────────────────────────────────────────────────────────────────
+By phase (subagents):
+  build             $687.40    364 agents   $1.89/agent
+  review            $312.10    298 agents   $1.05/agent
+  research           $48.20     97 agents   $0.50/agent
+  test               $92.40     87 agents   $1.06/agent
+  plan               $62.80     47 agents   $1.34/agent
+  other             $249.10    201 agents   $1.24/agent
+  total           $1,452.00
+──────────────────────────────────────────────────────────────────
+By spawn depth (subagents):
+  depth 0   $1,310.00   876 agents   $1.50/agent   top-level (Task tool or Workflow)
+  depth 1     $142.00   219 agents   $0.65/agent   spawned from within a subagent
+──────────────────────────────────────────────────────────────────
+Orchestration (main sessions) — token cost breakdown:
+  cache-read    $3,508   67%  ← long context re-reads
+  output          $680   13%
+  cache-write   $1,047   20%
+  input            $0.3   0%
+  ⚠  cache-read ≥30% — sessions are accumulating large contexts
+     consider breaking long sessions into shorter focused ones
+
+  By project:
+  project-alpha                             $2,407.50    89 sessions
+    fable-5      $435.00
+    opus       $1,972.50
+  project-beta                              $1,578.00    61 sessions
+    opus       $1,578.00
+──────────────────────────────────────────────────────────────────
+Top 20 most expensive main sessions:
+  $407.40  project-alpha              06-12 16:14 1847rsp  opus:$316 cr:$314(77%)
+  $309.60  project-alpha              06-10 11:44  896rsp  fable-5:$309 cr:$251(81%)
+  $223.95  project-beta               06-18 15:47 1203rsp  opus:$224 cr:$165(74%)
+  $150.83  project-beta               06-02 12:10  741rsp  opus:$151 cr:$89(59%)
+```
+
+**Reading the output:**
+
+| Column | What it tells you |
+|---|---|
+| `Xrsp` | Number of unique model responses (API calls) in the session — a proxy for context depth |
+| `cr:$X(Y%)` | Dollar amount and % of that session's spend that went to cache-reads (re-reading accumulated context) |
+| `⚠ cache-read ≥30%` | Aggregate signal: sessions are carrying too much context across turns |
+
+A high `cr:%` on an individual session (>60%) means most of what you paid was Claude re-reading earlier turns, not doing new work. Sessions with 1,000+ responses and >70% cache-read are the primary cost-reduction target — breaking these into shorter focused sessions or using `/compact` between tasks is typically where the biggest savings come from.
+
+The **by-phase** breakdown identifies which kinds of subagent work are expensive per-agent (`build` at ~$1.89/agent vs `research` at ~$0.50/agent), while **by-spawn-depth** shows whether nested agents (depth 1+) are being used and at what cost.
+
 ## 🔎 Corpus insights (`claudeinsights`)
 
 A separate binary that scans the whole transcript corpus for **token waste,
@@ -294,6 +352,10 @@ full target list.
   success rates, duplicate reads, token/cost breakdown, and a full
   chronological audit log per session. See
   [scorecard & timeline](#-per-session-scorecard--timeline---scorecard----timeline).
+- 📊 **Monthly spend breakdown** (`--phases`) — subagent spend by phase,
+  language, model tier, project, and spawn depth; orchestration cache-read
+  waste per session with `cr:$X(Y%)` flags. See
+  [monthly spend breakdown](#-monthly-spend-breakdown---phases).
 - 🎯 **Token-first math** — cost is derived from accumulated token
   counts at snapshot time, never from running float sums. No
   accumulation drift; daily and monthly numbers are reproducible to
@@ -372,6 +434,33 @@ ground-truth reference throughout this calibration. We mirror their
 LiteLLM pricing source, their dedupe key, and their recursive scan.
 Numbers should match within rounding noise on every clean comparison.
 
+## 🗄️ Keeping more history (90+ day retention)
+
+claudecounter can only count transcripts that Claude Code still keeps on
+disk. By default Claude Code **deletes session JSONLs 30 days after their
+last activity**, which silently caps how far back the longer-window views
+can look — `claudecounter --report --days 90|180`, `--phases`, and
+`claudeinsights --days N` all stop at whatever history survives.
+
+To retain longer, raise `cleanupPeriodDays` in your Claude Code settings
+(`~/.claude/settings.json`):
+
+```json
+{
+  "cleanupPeriodDays": 180
+}
+```
+
+Set it to `90`, `180`, or higher (use a very large number to effectively
+keep everything). Notes:
+
+- The change only affects cleanup **going forward** — transcripts already
+  deleted are gone, so bump this *before* you want the history.
+- Retention is measured from each session's **last activity date**, not
+  its creation date, so reopening an old session resets its clock.
+- More history means a larger `~/.claude/projects` tree; claudeinsights'
+  on-disk cache (`$XDG_CACHE_HOME/claudeinsights/`) keeps re-scans fast.
+
 ## 🛠️ Pricing
 
 Both apps ship with a baked-in pricing table for the Claude 4.5 / 4.6
@@ -408,6 +497,7 @@ tui/                          ← Go TUI (`claudecounter` binary)
             agg,watcher,ui}/    · fsnotify wrapper · bubbletea views
   internal/{report,gitstat}/    git activity & ROI report
   internal/{safety,session}/    permission-mode report · per-session parser
+  internal/phases/              subagent phase/lang/tier scanner + session cache-read analysis
   go.mod                        module: github.com/jverhoeks/claudecounter/tui
 
 macapp/                       ← Swift menu bar app (ClaudeCounterBar.app)
