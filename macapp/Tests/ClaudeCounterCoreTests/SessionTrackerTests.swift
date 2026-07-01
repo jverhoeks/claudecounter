@@ -160,13 +160,28 @@ final class SessionTrackerTests: XCTestCase {
         XCTAssertFalse(s.warnings.contains(.context))
     }
 
-    func test_cacheWarning_firesAboveUSD() async {
+    func test_cacheWarning_firesOnRecentRate() async {
         let th = SessionThresholds(cacheWarnUSD: 2.00)
         let t = SessionTracker(pricing: .defaults)
-        // 1M opus cacheCreate = $6.25 > $2.
+        // 1M opus cacheCreate = $6.25 within the last 5 min → $6.25/5m > $2.
         await t.apply(ev(cacheCreate: 1_000_000, ts: Self.now.addingTimeInterval(-10)))
         let s = onlySession(await t.snapshot(now: Self.now, thresholds: th))
+        XCTAssertEqual(s.cacheCreate5mUSD, 6.25, accuracy: 1e-9)
         XCTAssertTrue(s.warnings.contains(.cache))
+    }
+
+    func test_cacheWarning_doesNotFireOnStaleCreation() async {
+        let th = SessionThresholds(cacheWarnUSD: 2.00)
+        let t = SessionTracker(pricing: .defaults)
+        // Big cache creation 10 min ago (out of the 5m rate window), plus a
+        // cheap recent turn to keep the session active. Cumulative cost is
+        // high, but the RATE is ~0 → no cache warning, no permanent red.
+        await t.apply(ev(cacheCreate: 1_000_000, ts: Self.now.addingTimeInterval(-600)))
+        await t.apply(ev(input: 1_000, ts: Self.now.addingTimeInterval(-30)))
+        let s = onlySession(await t.snapshot(now: Self.now, thresholds: th))
+        XCTAssertGreaterThan(s.cacheCreateCostUSD, 2.0, "cumulative total is still high")
+        XCTAssertEqual(s.cacheCreate5mUSD, 0.0, accuracy: 1e-9)
+        XCTAssertFalse(s.warnings.contains(.cache), "rate-based warning stays clear once thrash stops")
     }
 
     // MARK: - reset

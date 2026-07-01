@@ -6,7 +6,7 @@ final class NotificationsTests: XCTestCase {
     private func stat(_ id: String, warnings: SessionWarnings) -> SessionStat {
         SessionStat(
             sessionID: id, project: "-Users-me-src-proj", model: "claude-opus-4-8",
-            costUSD: 1, cost5mUSD: 0.5,
+            costUSD: 1, cost5mUSD: 0.5, cacheCreate5mUSD: 3.0,
             contextTokens: 180_000, contextWindow: 200_000, contextPct: 0.9,
             cacheCreateCostUSD: 3.0, turns: 10, ageSeconds: 120, warnings: warnings)
     }

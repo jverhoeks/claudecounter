@@ -31,7 +31,12 @@ public struct SessionThresholds: Sendable, Equatable {
     public var turnWarnCount: Int
     /// `.context` fires when context / window exceeds this fraction.
     public var contextWarnPct: Double
-    /// `.cache` fires when cache-creation cost exceeds this many USD.
+    /// `.cache` fires when cache-creation cost in the trailing 5 minutes
+    /// exceeds this many USD. A *rate*, not a session total — a healthy
+    /// session's cumulative cache-creation cost only ever grows, so a
+    /// cumulative threshold would pin the warning on permanently. The rate
+    /// instead flags a session actively thrashing its prompt cache and
+    /// clears once it settles.
     public var cacheWarnUSD: Double
 
     public init(activeWindow: TimeInterval = 15 * 60,
@@ -71,13 +76,17 @@ public struct SessionStat: Equatable, Sendable, Identifiable {
     public let costUSD: Double
     /// Cost of turns within the trailing 5 minutes.
     public let cost5mUSD: Double
+    /// Cache-creation cost within the trailing 5 minutes (the `.cache`
+    /// warning metric).
+    public let cacheCreate5mUSD: Double
     /// Latest main turn's context occupancy (input + cache read + cache create).
     public let contextTokens: UInt64
     /// Inferred window limit for the session's model(s).
     public let contextWindow: UInt64
     /// `contextTokens / contextWindow`, clamped to 0…1.
     public let contextPct: Double
-    /// Cost attributable to cache creation only.
+    /// Total cost attributable to cache creation over the whole session
+    /// (cumulative; shown for context, not used for the warning).
     public let cacheCreateCostUSD: Double
     /// Number of billable main (non-subagent) turns.
     public let turns: Int
@@ -86,7 +95,7 @@ public struct SessionStat: Equatable, Sendable, Identifiable {
     public let warnings: SessionWarnings
 
     public init(sessionID: String, project: String, model: String,
-                costUSD: Double, cost5mUSD: Double,
+                costUSD: Double, cost5mUSD: Double, cacheCreate5mUSD: Double,
                 contextTokens: UInt64, contextWindow: UInt64, contextPct: Double,
                 cacheCreateCostUSD: Double, turns: Int, ageSeconds: Int,
                 warnings: SessionWarnings) {
@@ -95,6 +104,7 @@ public struct SessionStat: Equatable, Sendable, Identifiable {
         self.model = model
         self.costUSD = costUSD
         self.cost5mUSD = cost5mUSD
+        self.cacheCreate5mUSD = cacheCreate5mUSD
         self.contextTokens = contextTokens
         self.contextWindow = contextWindow
         self.contextPct = contextPct
@@ -153,7 +163,7 @@ public actor SessionTracker {
         var latestMainTS: Date
         var latestMainContextTokens: UInt64
         var peakContextTokens: UInt64
-        var recent: [(ts: Date, usd: Double)]
+        var recent: [(ts: Date, usd: Double, cacheUSD: Double)]
     }
 
     /// Fold one event into its session. `ev` must already be de-duplicated.
@@ -187,7 +197,7 @@ public actor SessionTracker {
         s.totalCostUSD += usd
         s.cacheCreateCostUSD += cacheUSD
 
-        s.recent.append((ts: ev.timestamp, usd: usd))
+        s.recent.append((ts: ev.timestamp, usd: usd, cacheUSD: cacheUSD))
         // Prune trailing list against the newest timestamp seen so it stays
         // bounded even for a long-lived session.
         let cutoff = s.lastTS.addingTimeInterval(-Self.recentWindow)
@@ -223,6 +233,7 @@ public actor SessionTracker {
             guard now.timeIntervalSince(s.lastTS) <= thresholds.activeWindow else { continue }
 
             let cost5m = s.recent.reduce(0.0) { $0 + ($1.ts >= recentCutoff ? $1.usd : 0) }
+            let cacheCreate5m = s.recent.reduce(0.0) { $0 + ($1.ts >= recentCutoff ? $1.cacheUSD : 0) }
             let window = inferredContextWindow(peakContextTokens: s.peakContextTokens)
             let pct = window > 0
                 ? min(1.0, Double(s.latestMainContextTokens) / Double(window))
@@ -231,7 +242,7 @@ public actor SessionTracker {
             var w: SessionWarnings = []
             if s.mainTurns > thresholds.turnWarnCount { w.insert(.turns) }
             if pct > thresholds.contextWarnPct { w.insert(.context) }
-            if s.cacheCreateCostUSD > thresholds.cacheWarnUSD { w.insert(.cache) }
+            if cacheCreate5m > thresholds.cacheWarnUSD { w.insert(.cache) }
 
             out.append(SessionStat(
                 sessionID: s.sessionID,
@@ -239,6 +250,7 @@ public actor SessionTracker {
                 model: s.latestMainModel,
                 costUSD: s.totalCostUSD,
                 cost5mUSD: cost5m,
+                cacheCreate5mUSD: cacheCreate5m,
                 contextTokens: s.latestMainContextTokens,
                 contextWindow: window,
                 contextPct: pct,

@@ -119,7 +119,19 @@ rather than hardcoding per model.
 |---|---|---|---|
 | `.turns`   | `turns > turnWarnCount`          | 150   | no (in-app only) |
 | `.context` | `contextPct > contextWarnPct`    | 0.80  | yes |
-| `.cache`   | `cacheCreateCostUSD > cacheWarnUSD` | 2.00 | yes |
+| `.cache`   | `cacheCreate5mUSD > cacheWarnUSD` | 2.00 | yes |
+
+`.cache` uses a **5-minute rate**, not a cumulative session total: cache-creation
+cost only ever grows over a session, so a cumulative threshold would pin the
+warning (and the red menu bar) on permanently and fire a notification burst
+for every warm session on each app restart. The rate flags a session actively
+thrashing its prompt cache and clears once it settles.
+
+**Verified against real data:** main-session and subagent transcripts share
+the same `sessionId`, but their `messageId:requestId` sets are **disjoint**
+(0% overlap across 12 sampled sessions with subagents). So the Reader's
+subagent-first dedup does not steal main turns from the tracker — age-in-turns
+and the context gauge (both main-turn-only) are attributed correctly.
 
 ### 3. Dedup boundary
 

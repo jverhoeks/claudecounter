@@ -65,7 +65,7 @@ public func newlyTriggered(
                 post.append(SessionNotification(
                     sessionID: s.sessionID, condition: "cache",
                     title: "High cache-creation spend",
-                    body: "\(short) · \(String(format: "$%.2f", s.cacheCreateCostUSD)) creating cache"))
+                    body: "\(short) · \(String(format: "$%.2f", s.cacheCreate5mUSD))/5m creating cache"))
                 next.insert(key)
             }
         }

@@ -20,7 +20,8 @@ public struct AppSettings: Equatable, Sendable {
     public var turnWarnCount: Int
     /// Warn when context / window exceeds this fraction. Default 0.80.
     public var contextWarnPct: Double
-    /// Warn when cache-creation cost exceeds this many USD. Default 2.00.
+    /// Warn when cache-creation cost in the trailing 5 minutes (a rate,
+    /// not a session total) exceeds this many USD. Default 2.00.
     public var cacheWarnUSD: Double
     /// A session counts as "active" if its last turn is within this many
     /// minutes. Default 15.
