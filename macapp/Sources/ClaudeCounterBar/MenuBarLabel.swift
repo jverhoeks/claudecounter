@@ -35,18 +35,23 @@ struct MenuBarLabel: View {
             Text(labelText)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
                 .monospacedDigit()
+
+            // A warning triangle after the cost. Colour alone is unreliable
+            // in the menu bar (macOS templates the label and can drop the
+            // orange tint), but a filled-triangle SHAPE survives templating,
+            // so the alert is legible on every menu-bar theme.
+            if warned {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+            }
         }
-        // The system won't paint the status-item background, so when a
-        // live session is in a warning state we paint our own: a rounded
-        // red capsule with white content, making the alert impossible to
-        // miss even without opening the popover.
-        .foregroundStyle(warned ? AnyShapeStyle(.white)
+        // macOS renders the status-item label as its own view and ignores
+        // a custom background fill (the capsule never showed), so we signal
+        // a warning by tinting the glyph + text orange instead — matching
+        // the in-popover warning colour so the two surfaces read as the
+        // same severity. Orange overrides the normal primary/secondary tint.
+        .foregroundStyle(warned ? AnyShapeStyle(Color.orange)
                                  : AnyShapeStyle(isLoading ? .secondary : .primary))
-        .padding(.horizontal, warned ? 6 : 0)
-        .padding(.vertical, warned ? 2 : 0)
-        .background(
-            Capsule().fill(warned ? Color.red : Color.clear)
-        )
         .animation(.easeInOut(duration: 0.25), value: isLoading)
         .animation(.easeInOut(duration: 0.25), value: todayUSD())
         .animation(.easeInOut(duration: 0.25), value: warned)

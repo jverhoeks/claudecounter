@@ -24,7 +24,7 @@ public struct AppSettings: Equatable, Sendable {
     /// not a session total) exceeds this many USD. Default 2.00.
     public var cacheWarnUSD: Double
     /// A session counts as "active" if its last turn is within this many
-    /// minutes. Default 15.
+    /// minutes. Default 30.
     public var activeWindowMinutes: Int
 
     public static let defaults = AppSettings(
@@ -33,7 +33,7 @@ public struct AppSettings: Equatable, Sendable {
         turnWarnCount: 150,
         contextWarnPct: 0.80,
         cacheWarnUSD: 2.00,
-        activeWindowMinutes: 15
+        activeWindowMinutes: 30
     )
 
     public init(dockIconEnabled: Bool,
@@ -41,7 +41,7 @@ public struct AppSettings: Equatable, Sendable {
                 turnWarnCount: Int = 150,
                 contextWarnPct: Double = 0.80,
                 cacheWarnUSD: Double = 2.00,
-                activeWindowMinutes: Int = 15) {
+                activeWindowMinutes: Int = 30) {
         self.dockIconEnabled = dockIconEnabled
         self.notificationsEnabled = notificationsEnabled
         self.turnWarnCount = turnWarnCount

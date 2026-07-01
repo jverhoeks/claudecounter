@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ClaudeCounterCore
 
 /// Two-Column Hybrid popover (layout B from the design):
@@ -12,6 +13,16 @@ struct PopoverView: View {
     @ObservedObject var state: AppState
     @State private var refreshing: Bool = false
     @State private var showSettings: Bool = false
+
+    /// User-adjustable popover height, dragged via the grip at the bottom
+    /// and persisted so a relaunch keeps the chosen size. Clamped to
+    /// `heightRange` so it can never collapse the dashboard or grow past a
+    /// reasonable screen height.
+    @AppStorage("ClaudeCounterBar.popoverHeight") private var popoverHeight: Double = 700
+    /// Height captured at the start of a resize drag, so the gesture's
+    /// cumulative translation maps to an absolute height.
+    @State private var dragBaseHeight: Double? = nil
+    private let heightRange: ClosedRange<Double> = 460...1200
     /// Day (YYYY-MM-DD) the hourly chart is drilled into, set by
     /// clicking a bar in either monthly chart. `nil` → today. Stored
     /// as the day string (not an index) so it stays pinned to the same
@@ -70,7 +81,7 @@ struct PopoverView: View {
                     HStack(alignment: .top, spacing: 16) {
                         ByModelTable(month: state.totals.month, topN: topN, palette: palette)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        ByProjectTable(month: state.totals.monthProj, topN: topN)
+                        ByProjectTable(month: state.totals.monthProj)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     ActiveSessionsSection(sessions: state.activeSessions)
@@ -84,8 +95,21 @@ struct PopoverView: View {
                 refreshing: $refreshing,
                 showSettings: $showSettings
             )
+
+            // Drag grip: MenuBarExtra windows can't be OS-resized, so we
+            // give the user a handle to grow/shrink the popover. The height
+            // is persisted via @AppStorage.
+            ResizeGrip { delta in
+                let base = dragBaseHeight ?? popoverHeight
+                if dragBaseHeight == nil { dragBaseHeight = base }
+                popoverHeight = min(heightRange.upperBound,
+                                    max(heightRange.lowerBound, base + delta))
+            } onEnded: {
+                dragBaseHeight = nil
+            }
         }
         .padding(14)
+        .frame(width: 520, height: popoverHeight)
     }
 
     /// Toggle semantics: clicking the already-selected day (or today's
@@ -672,40 +696,54 @@ struct ByModelTable: View {
 
 struct ByProjectTable: View {
     let month: [String: ProjectDay]
-    var topN: Int = 8
+    /// Number of rows shown before the list becomes scrollable. Roughly
+    /// five two-line rows fit in `visibleHeight`; the rest are reachable by
+    /// scrolling inside this table (independent of the outer scroll view).
+    private let visibleRows = 5
+    private let rowHeight: CGFloat = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("By project · month (M / sub)")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            ForEach(rows, id: \.0) { name, total, main, sub in
-                HStack {
-                    Text(shortProject(name))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text(formatUSDCompact(total))
-                            .monospacedDigit()
-                        Text("M \(formatUSDCompact(main)) · sub \(formatUSDCompact(sub))")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
+            HStack(spacing: 6) {
+                Text("By project · month (M / sub)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if sortedRows.count > visibleRows {
+                    Text("\(sortedRows.count)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
-                .font(.system(size: 12))
             }
-            if rows.isEmpty {
+            if sortedRows.isEmpty {
                 Text("No projects yet this month")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-            }
-            if hiddenCount > 0 {
-                Text("+ \(hiddenCount) more")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(sortedRows, id: \.0) { name, total, main, sub in
+                            HStack {
+                                Text(shortProject(name))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 0) {
+                                    Text(formatUSDCompact(total))
+                                        .monospacedDigit()
+                                    Text("M \(formatUSDCompact(main)) · sub \(formatUSDCompact(sub))")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                }
+                            }
+                            .font(.system(size: 12))
+                        }
+                    }
+                }
+                // Cap the visible area at ~5 rows; scroll for the rest.
+                .frame(maxHeight: CGFloat(visibleRows) * rowHeight)
             }
         }
     }
@@ -716,9 +754,6 @@ struct ByProjectTable: View {
             .sorted { $0.total > $1.total }
             .map { ($0.name, $0.total, $0.main, $0.sub) }
     }
-
-    private var rows: [(String, Double, Double, Double)] { Array(sortedRows.prefix(topN)) }
-    private var hiddenCount: Int { max(0, sortedRows.count - topN) }
 
     private func shortProject(_ encoded: String) -> String {
         // Drop the leading parts that come from /Users/<u>/.... and show
@@ -844,13 +879,13 @@ struct ContextBar: View {
                     RoundedRectangle(cornerRadius: 1)
                         .fill(Color.gray.opacity(0.25))
                     RoundedRectangle(cornerRadius: 1)
-                        .fill(warn ? Color.red : Color.accentColor)
+                        .fill(warn ? Color.orange : Color.accentColor)
                         .frame(width: max(1, geo.size.width * CGFloat(min(1, max(0, pct)))))
                 }
             }
             .frame(width: 40, height: 5)
             Text("ctx \(Int((pct * 100).rounded()))%")
-                .foregroundStyle(warn ? .red : .secondary)
+                .foregroundStyle(warn ? .orange : .secondary)
         }
     }
 }
@@ -863,7 +898,7 @@ struct WarningGlyphs: View {
         HStack(spacing: 3) {
             if warnings.contains(.context) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.orange)
                     .help("Context nearly full")
             }
             if warnings.contains(.cache) {
@@ -981,6 +1016,37 @@ struct FooterRow: View {
         if secs < 60 { return "\(secs)s ago" }
         let mins = secs / 60
         return "\(mins)m ago"
+    }
+}
+
+// MARK: - Resize grip
+
+/// A slim handle pinned to the bottom of the popover. Dragging it
+/// vertically reports the cumulative translation so the parent can grow
+/// or shrink its persisted height. Pure vertical resize — the width is
+/// fixed. Shows a resize cursor on hover so the affordance is discoverable.
+struct ResizeGrip: View {
+    /// Called with the drag's cumulative vertical translation (points).
+    let onDrag: (Double) -> Void
+    /// Called when the drag ends, so the parent can reset its drag base.
+    let onEnded: () -> Void
+
+    var body: some View {
+        Capsule()
+            .fill(Color.secondary.opacity(0.35))
+            .frame(width: 40, height: 4)
+            .frame(maxWidth: .infinity)          // center the handle
+            .contentShape(Rectangle())           // enlarge the hit target
+            .padding(.top, 2)
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in onDrag(value.translation.height) }
+                    .onEnded { _ in onEnded() }
+            )
+            .help("Drag to resize")
     }
 }
 

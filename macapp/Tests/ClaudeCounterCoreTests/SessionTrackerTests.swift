@@ -116,9 +116,10 @@ final class SessionTrackerTests: XCTestCase {
     // MARK: - active filter & prune
 
     func test_activeFilter_excludesIdleBeyondWindow() async {
+        let th = SessionThresholds(activeWindow: 15 * 60)
         let t = SessionTracker(pricing: .defaults)
         await t.apply(ev(input: 1, ts: Self.now.addingTimeInterval(-20 * 60))) // 20m idle
-        let stats = await t.snapshot(now: Self.now, thresholds: .defaults) // 15m window
+        let stats = await t.snapshot(now: Self.now, thresholds: th) // explicit 15m window
         XCTAssertTrue(stats.isEmpty)
     }
 

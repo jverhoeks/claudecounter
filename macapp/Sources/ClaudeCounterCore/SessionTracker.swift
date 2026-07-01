@@ -39,7 +39,7 @@ public struct SessionThresholds: Sendable, Equatable {
     /// clears once it settles.
     public var cacheWarnUSD: Double
 
-    public init(activeWindow: TimeInterval = 15 * 60,
+    public init(activeWindow: TimeInterval = 30 * 60,
                 turnWarnCount: Int = 150,
                 contextWarnPct: Double = 0.80,
                 cacheWarnUSD: Double = 2.00) {

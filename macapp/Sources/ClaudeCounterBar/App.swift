@@ -11,17 +11,11 @@ struct ClaudeCounterBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
+            // Fixed width; height is user-adjustable via a drag grip at
+            // the bottom of the popover and persisted across launches.
+            // SwiftUI's MenuBarExtra window sizes to the content frame,
+            // so `PopoverView` owns its own `.frame(width:height:)`.
             PopoverView(state: delegate.appState)
-                // Fixed width + bounded height. SwiftUI's MenuBarExtra
-                // window opens at the size we declare here; without an
-                // explicit height it grows to the natural content size,
-                // and on shorter screens the top of the popover ends
-                // up clipped behind the menu bar overlay (you'd see
-                // the project list with the hero / chart pushed off
-                // the visible area). 700pt keeps the whole dashboard
-                // (hero + hourly + monthly USD + monthly tokens +
-                // tables + live tail + footer) on a 13" laptop.
-                .frame(width: 520, height: 700)
         } label: {
             MenuBarLabel(state: delegate.appState)
         }
