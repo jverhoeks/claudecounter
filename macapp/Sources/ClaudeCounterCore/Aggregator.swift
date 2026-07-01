@@ -256,13 +256,19 @@ public actor Aggregator {
     /// Record an event's contribution. Dedupe rule mirrors ccusage:
     /// the unique key is `messageID:requestID`; if either is missing the
     /// event is always counted (no dedup); first-seen wins.
-    public func apply(_ e: UsageEvent) {
+    ///
+    /// Returns `true` when the event was newly counted, `false` when it
+    /// was dropped as a duplicate. Callers that also drive a
+    /// `SessionTracker` use this so dedup stays a single source of truth
+    /// (the tracker is fed only on `true`), never double-counting turns.
+    @discardableResult
+    public func apply(_ e: UsageEvent) -> Bool {
         // 1) Dedupe.
         if !e.messageID.isEmpty && !e.requestID.isEmpty {
             let key = e.messageID + ":" + e.requestID
             if perMsg.contains(key) {
                 dupes += 1
-                return
+                return false
             }
             perMsg.insert(key)
         }
@@ -289,6 +295,8 @@ public actor Aggregator {
         let hour = hourOf(e.timestamp, calendar: calendar)
         let hk = HourBucketKey(day: cellKey.day, hour: hour, model: e.model)
         hourBuckets[hk, default: .zero] = (hourBuckets[hk] ?? .zero).adding(e.usage)
+
+        return true
     }
 
     /// Compute per-model and per-project totals for today and this month

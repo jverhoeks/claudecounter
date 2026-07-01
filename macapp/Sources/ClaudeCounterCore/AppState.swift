@@ -15,7 +15,12 @@ public final class AppState: ObservableObject {
     // MARK: Published state (UI binds to these)
 
     @Published public private(set) var totals: Totals = Totals()
-    @Published public private(set) var live: [LiveEvent] = []
+    /// Live sessions with activity inside the active window, sorted by
+    /// trailing-5-minute cost. Replaces the old per-event live tail.
+    @Published public private(set) var activeSessions: [SessionStat] = []
+    /// True when at least one active session is in any warning state —
+    /// drives the red menu-bar capsule.
+    @Published public private(set) var hasActiveWarning: Bool = false
     @Published public private(set) var pricing: PricingTable
     @Published public private(set) var status: Status = .starting
     @Published public private(set) var lastError: String? = nil
@@ -32,18 +37,21 @@ public final class AppState: ObservableObject {
 
     public let projectsRoot: String
     private let aggregator: Aggregator
+    private let tracker: SessionTracker
     private let reader: Reader
     private var watcher: Watcher?
     private let cacheStore: CacheStore
     private let dockIcon: DockIconController
     private let settingsStore: SettingsStore
+    private let notifier: SessionNotifier
     private let now: () -> Date
     private let calendar: Calendar
 
     // MARK: Internal state
 
-    private var liveBuffer = LiveEventBuffer(capacity: 50)
-    private var liveTailOpen: Bool = false   // gates LIVE buffer until backfill completes
+    /// Debounce keys (`"<sessionID>|<condition>"`) already notified, so a
+    /// session over threshold doesn't re-fire every turn.
+    private var notifiedKeys: Set<String> = []
     private var perFileOffsets: [String: Int64] = [:]
     private var dirty: Bool = false
     private var snapshotTask: Task<Void, Never>?
@@ -55,15 +63,23 @@ public final class AppState: ObservableObject {
                 reader: Reader = Reader(),
                 cacheStore: CacheStore,
                 pricing: PricingTable,
+                tracker: SessionTracker? = nil,
                 dockIcon: DockIconController? = nil,
                 settingsStore: SettingsStore? = nil,
+                notifier: SessionNotifier? = nil,
                 now: @escaping () -> Date = Date.init,
                 calendar: Calendar = .current) {
         self.projectsRoot = projectsRoot
         self.aggregator = aggregator
+        // Tracker shares the same pricing; production omits it and we build
+        // one here. Tests can inject a pre-seeded tracker.
+        self.tracker = tracker ?? SessionTracker(pricing: pricing)
         self.reader = reader
         self.cacheStore = cacheStore
         self.pricing = pricing
+        // Default to the no-op notifier so the test runner never touches
+        // UNUserNotificationCenter; production injects the real one.
+        self.notifier = notifier ?? NullSessionNotifier()
         // Production wiring resolves the optional deps here so that
         // existing tests (which don't pass dockIcon / settingsStore)
         // still compile and run against safe defaults — UserDefaults
@@ -124,7 +140,7 @@ public final class AppState: ObservableObject {
         do {
             let events = try await reader.initialScan(root: projectsRoot, notBefore: notBefore)
             for ev in events {
-                await aggregator.apply(ev)
+                if await aggregator.apply(ev) { await tracker.apply(ev) }
             }
             // Snapshot once at end of backfill.
             await publishSnapshot()
@@ -132,7 +148,6 @@ public final class AppState: ObservableObject {
         } catch {
             self.lastError = "Initial scan failed: \(error.localizedDescription)"
         }
-        self.liveTailOpen = true
         self.status = .live
 
         // Persist now so that even a crash a moment later keeps the
@@ -155,27 +170,25 @@ public final class AppState: ObservableObject {
     public func refresh() async {
         cacheStore.invalidate()
         await aggregator.reset()
+        await tracker.reset()
         await reader.resetAll()
         self.perFileOffsets = [:]
-        self.liveBuffer.clear()
-        self.live = []
+        self.notifiedKeys.removeAll()
         self.lastError = nil
         await publishSnapshot()
-        self.liveTailOpen = false
 
         self.status = .scanning
         let notBefore = scanCutoff(now: now(), cacheWrittenAt: nil, calendar: calendar)
         do {
             let events = try await reader.initialScan(root: projectsRoot, notBefore: notBefore)
             for ev in events {
-                await aggregator.apply(ev)
+                if await aggregator.apply(ev) { await tracker.apply(ev) }
             }
             await publishSnapshot()
             self.perFileOffsets = await reader.allOffsets()
         } catch {
             self.lastError = "Refresh failed: \(error.localizedDescription)"
         }
-        self.liveTailOpen = true
         self.status = .live
         await flushCache()
     }
@@ -184,6 +197,7 @@ public final class AppState: ObservableObject {
     public func updatePricing(_ table: PricingTable) async {
         self.pricing = table
         await aggregator.setPricing(table)
+        await tracker.setPricing(table)
         await publishSnapshot()
     }
 
@@ -208,18 +222,11 @@ public final class AppState: ObservableObject {
             do {
                 let events = try await reader.onChange(path: change.path)
                 for ev in events {
-                    await aggregator.apply(ev)
-                    if liveTailOpen {
-                        let live = LiveEvent.from(ev, pricing: self.pricing)
-                        self.liveBuffer.push(live)
-                    }
+                    if await aggregator.apply(ev) { await tracker.apply(ev) }
                 }
                 if !events.isEmpty {
                     self.dirty = true
                     self.scheduleSnapshotTick()
-                    if liveTailOpen {
-                        self.live = self.liveBuffer.items
-                    }
                 }
             } catch {
                 self.lastError = "Reader failed on \(change.path): \(error.localizedDescription)"
@@ -249,6 +256,23 @@ public final class AppState: ObservableObject {
         let snap = await aggregator.snapshot()
         self.totals = snap
         updateDockBadge()
+        await publishSessions()
+    }
+
+    /// Refresh the active-session panel, the red-capsule flag, and fire any
+    /// newly-crossed notifications (debounced per session+condition).
+    private func publishSessions() async {
+        let sessions = await tracker.snapshot(now: now(),
+                                              thresholds: settings.sessionThresholds)
+        self.activeSessions = sessions
+        self.hasActiveWarning = sessions.contains { !$0.warnings.isEmpty }
+
+        let (toPost, next) = newlyTriggered(active: sessions,
+                                            alreadyNotified: notifiedKeys)
+        self.notifiedKeys = next
+        if settings.notificationsEnabled {
+            for n in toPost { notifier.post(n) }
+        }
     }
 
     /// Stamp today's spend onto the dock badge. No-op when the user has
@@ -273,6 +297,12 @@ public final class AppState: ObservableObject {
         if enabled {
             updateDockBadge()
         }
+    }
+
+    /// Toggle session-warning notifications at runtime (⚙ menu).
+    public func setNotificationsEnabled(_ enabled: Bool) {
+        settings.notificationsEnabled = enabled
+        settingsStore.save(settings)
     }
 
     private func startPeriodicFlush() {

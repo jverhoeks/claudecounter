@@ -73,7 +73,7 @@ struct PopoverView: View {
                         ByProjectTable(month: state.totals.monthProj, topN: topN)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    LiveTailSection(events: state.live)
+                    ActiveSessionsSection(sessions: state.activeSessions)
                 }
             }
             .frame(maxHeight: .infinity)
@@ -731,74 +731,153 @@ struct ByProjectTable: View {
     }
 }
 
-// MARK: - Live tail
+// MARK: - Active sessions
 
-struct LiveTailSection: View {
-    let events: [LiveEvent]
+/// Live sessions (last turn within the active window), replacing the old
+/// per-event live tail. Each row is a two-line summary: identity + total
+/// cost on top, the glanceable metrics (context %, 5-minute cost, turns,
+/// wall-clock age) plus warning glyphs below.
+struct ActiveSessionsSection: View {
+    let sessions: [SessionStat]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Live")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("Active sessions")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if !sessions.isEmpty {
+                    Text("\(sessions.count)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
             ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(events.prefix(8)) { ev in
-                        LiveTailRow(event: ev)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(sessions.prefix(8)) { s in
+                        ActiveSessionRow(session: s)
                     }
-                    if events.isEmpty {
-                        Text("Waiting for activity…")
-                            .font(.system(size: 11, design: .monospaced))
+                    if sessions.isEmpty {
+                        Text("No active sessions")
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 2)
                     }
                 }
             }
-            .frame(maxHeight: 100)
+            .frame(maxHeight: 150)
         }
     }
 }
 
-struct LiveTailRow: View {
-    let event: LiveEvent
+struct ActiveSessionRow: View {
+    let session: SessionStat
+
+    private var warned: Bool { !session.warnings.isEmpty }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(formatTime(event.timestamp))
-                .foregroundStyle(.secondary)
-            Text(shortName(event.project))
-                .frame(width: 110, alignment: .leading)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text(shortModel(event.model))
-                .frame(width: 56, alignment: .leading)
-                .foregroundStyle(.secondary)
-            Text("+\(formatUSDFine(event.usd))")
-                .foregroundStyle(.green)
-                .monospacedDigit()
-            if event.isSubagent {
-                Text("(sub)")
+        VStack(alignment: .leading, spacing: 1) {
+            // Line 1: project · model · total cost.
+            HStack(spacing: 6) {
+                Text(shortProject(session.project))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.primary)
+                Text(shortModel(session.model))
                     .foregroundStyle(.secondary)
                     .font(.system(size: 10))
+                Spacer()
+                WarningGlyphs(warnings: session.warnings)
+                Text(formatUSDCompact(session.costUSD))
+                    .foregroundStyle(warned ? .orange : .secondary)
+                    .monospacedDigit()
             }
-            Spacer()
+            .font(.system(size: 12))
+
+            // Line 2: context %, 5-minute cost, turns, age.
+            HStack(spacing: 8) {
+                ContextBar(pct: session.contextPct,
+                           warn: session.warnings.contains(.context))
+                Text("5m \(formatUSDFine(session.cost5mUSD))")
+                    .foregroundStyle(session.cost5mUSD > 0 ? .green : .secondary)
+                Text("\(session.turns)t")
+                    .foregroundStyle(session.warnings.contains(.turns) ? .orange : .secondary)
+                Text(formatAge(session.ageSeconds))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .font(.system(size: 10, design: .rounded))
+            .monospacedDigit()
         }
-        .font(.system(size: 11, design: .monospaced))
     }
 
-    private func shortName(_ encoded: String) -> String {
-        if encoded.isEmpty { return "(?)" }
-        let trimmed = encoded.hasPrefix("-") ? String(encoded.dropFirst()) : encoded
-        let parts = trimmed.split(separator: "-")
-        if parts.count <= 4 { return trimmed }
-        return parts.dropFirst(4).joined(separator: "-")
+    private func shortProject(_ encoded: String) -> String {
+        shortProjectName(encoded)
     }
 
     private func shortModel(_ id: String) -> String {
         if id.contains("opus")   { return "opus" }
         if id.contains("sonnet") { return "sonnet" }
         if id.contains("haiku")  { return "haiku" }
+        if id.contains("fable")  { return "fable" }
         return id
+    }
+
+    /// "1h20m", "12m", "45s" — compact wall-clock age.
+    private func formatAge(_ secs: Int) -> String {
+        if secs >= 3600 { return "\(secs / 3600)h\((secs % 3600) / 60)m" }
+        if secs >= 60 { return "\(secs / 60)m" }
+        return "\(secs)s"
+    }
+}
+
+/// Thin proportional context-occupancy bar with an inline percentage.
+struct ContextBar: View {
+    let pct: Double
+    let warn: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.gray.opacity(0.25))
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(warn ? Color.red : Color.accentColor)
+                        .frame(width: max(1, geo.size.width * CGFloat(min(1, max(0, pct)))))
+                }
+            }
+            .frame(width: 40, height: 5)
+            Text("ctx \(Int((pct * 100).rounded()))%")
+                .foregroundStyle(warn ? .red : .secondary)
+        }
+    }
+}
+
+/// Warning badge glyphs shown at the right of a session's first line.
+struct WarningGlyphs: View {
+    let warnings: SessionWarnings
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if warnings.contains(.context) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .help("Context nearly full")
+            }
+            if warnings.contains(.cache) {
+                Image(systemName: "flame.fill")
+                    .foregroundStyle(.orange)
+                    .help("High cache-creation spend")
+            }
+            if warnings.contains(.turns) {
+                Image(systemName: "clock.badge.exclamationmark.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Session running long (many turns)")
+            }
+        }
+        .font(.system(size: 10))
     }
 }
 
@@ -845,6 +924,10 @@ struct FooterRow: View {
                 Toggle("Show dock icon with spend", isOn: Binding(
                     get: { state.settings.dockIconEnabled },
                     set: { newValue in state.setDockIconEnabled(newValue) }
+                ))
+                Toggle("Session alerts (notifications)", isOn: Binding(
+                    get: { state.settings.notificationsEnabled },
+                    set: { newValue in state.setNotificationsEnabled(newValue) }
                 ))
                 Divider()
                 Button("Refresh pricing from LiteLLM") {
@@ -922,10 +1005,4 @@ func formatUSDFine(_ usd: Double) -> String {
 func formatPct(_ pct: Double) -> String {
     if pct >= 0.10 { return String(format: "%.0f%%", pct * 100) }
     return String(format: "%.1f%%", pct * 100)
-}
-
-private func formatTime(_ d: Date) -> String {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm:ss"
-    return f.string(from: d)
 }

@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             applicationIconImage: dockIconImage
         )
         let settingsStore = UserDefaultsSettingsStore()
+        self.notifier = UserNotificationsNotifier()
         self.appState = AppState(
             projectsRoot: projectsRoot,
             aggregator: agg,
@@ -61,10 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cacheStore: CacheStore(url: cacheURL),
             pricing: pricing,
             dockIcon: dockIcon,
-            settingsStore: settingsStore
+            settingsStore: settingsStore,
+            notifier: notifier
         )
         super.init()
     }
+
+    private let notifier: UserNotificationsNotifier
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // No icon-image juggling here — the dock controller installs
@@ -74,6 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the artwork; macOS resets some dock-tile state when the
         // activation policy flips and a one-shot launch-time install
         // wouldn't survive that.
+        // Ask for notification permission once. Denied/undetermined is
+        // fine — session alerts silently no-op and the in-app warnings +
+        // red menu-bar capsule still work.
+        notifier.requestAuthorization()
         Task { await appState.start() }
     }
 
