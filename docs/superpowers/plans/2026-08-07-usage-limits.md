@@ -2999,7 +2999,18 @@ definition, and why Grok gets a percentage but never a dollar figure."
 
 **Deviation from the spec, stated:** the spec says to read `unified.jsonl` tail-first. Task 4 scans forward and keeps the newest match, guarded by a substring pre-filter. On a 3 MB log with ~105 billing lines this parses well under 1% of lines and avoids reverse-seek complexity, satisfying the spec's intent (cheap scan, newest observation) without its exact mechanism.
 
-**Placeholder scan:** no `TBD` / `TODO` / "handle edge cases" / "similar to Task N". Three implementer notes point at real existing symbols to look up (`scanOnce`, `DailyTotal`, `FormatUSD`) rather than leaving behaviour unspecified.
+**Placeholder scan:** no `TBD` / `TODO` / "handle edge cases" / "similar to Task N".
+
+**Symbols verified against the codebase, not assumed:**
+
+| Symbol | Reality | Effect on the plan |
+|---|---|---|
+| `scanOnce` | **does not exist** — `runOnce` (`main.go:101-131`) inlines its scan | Task 6 specifies extracting `scanSnapshot` first, with the code |
+| `ui.FormatUSD` | exists, `tui/internal/ui/format.go:9` | used as-is in Task 5 |
+| `formatUSD` (Swift) | free function, `PopoverView.swift:1055`, same target as `GaugesView` | Task 9 uses the lowercase name, no import |
+| `DailyTotal` (Swift) | `Aggregator.swift:71`; 3 extra members, all defaulted | `DailyTotal(day:usd:tokens:)` compiles in Tasks 7 and 10 |
+| `BurntSushi/toml` | already in `tui/go.mod` v1.6.0 | Task 1 adds no dependency |
+| `.copy("Fixtures")` | already in `Package.swift` test target | Tasks 8 and 10 need no manifest change |
 
 **Type consistency:** `Gauge`/`PlanGauge` fields align (`Vendor`/`vendor`, `WindowLbl`/`windowLabel`, `Stale`/`stale`). `Row`/`GaugeRow` align. `limits.State.String()` and `LimitState.rawValue` both produce `unset|ok|warn|over`, which Task 10 compares as strings. `Window.String()` returns `daily`/`wk`; the Go parity test maps the fixture's `day`/`week` via `windowKey`, while Swift's `LimitWindow.rawValue` is `day`/`week` directly — both compared against the same fixture field.
 
