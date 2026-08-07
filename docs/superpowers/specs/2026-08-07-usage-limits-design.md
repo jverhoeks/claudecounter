@@ -238,10 +238,33 @@ type Row struct {
     NotApplicable string             // reason, e.g. "weekly only"
 }
 
+func BuildRows(band Band, st []limits.Status, gs []planlimits.Gauge) []Row
 func renderGaugeGroup(title string, rows []Row) string
 ```
 
+Two orderings are load-bearing and both are specified, because they can disagree:
+
+- **Display order** is fixed per group — `claude`, `codex`, `grok` — regardless of
+  value. `BuildRows` synthesises the dimmed `n/a` row when a vendor has no
+  observation in that band, so the row set is stable and a vendor never silently
+  vanishes between refreshes.
+- **Glyph escalation order** is by descending `Pct` across **non-stale** rows in
+  both groups; the worst one drives the menu bar colour.
+
+Display order is deterministic and part of the cross-language parity contract;
+escalation order is value-dependent. Conflating them is how the menu bar ends up
+contradicting the popover.
+
 Two groups: **short window** and **weekly**.
+
+**A group title is a rough duration band, not a shared window definition.** The
+weekly group holds three genuinely different weeks — ISO Mon–Sun, Codex's 7-day
+rolling, and Grok's Thursday-20:00-UTC billing period — and the short group holds
+a local calendar day beside a 5-hour rolling window. Each row's own window is
+authoritative, so `WindowLbl` is **always rendered, including on budget rows**:
+`claude daily` must read as an explicitly calendar-day row sitting next to
+`codex 5h`. Without that, the grouping invites exactly the "these numbers
+disagree, it's a bug" reading this design is trying to prevent.
 
 ```
 ── short window ────────────────────
