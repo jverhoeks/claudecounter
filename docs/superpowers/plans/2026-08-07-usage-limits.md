@@ -204,7 +204,7 @@ to 80 when absent."
 
 **Interfaces:**
 - Consumes: `limits.Config` (Task 1); `agg.DailyTotal{Day string; USD float64; Tokens uint64}` where `Day` is `YYYY-MM-DD` in local time.
-- Produces: `limits.Window` (`WindowDay`, `WindowWeek`) with `String()`; `limits.State` (`StateUnset`, `StateOK`, `StateWarn`, `StateOver`) with `String()`; `limits.Status{Window; SpentUSD, LimitUSD, Pct float64; State; ResetsAt time.Time}`; `limits.Evaluate(daily []agg.DailyTotal, cfg Config, now time.Time) []Status` returning exactly two entries, `WindowDay` first.
+- Produces: `limits.Window` (`WindowDay`, `WindowWeek`) with `String()` (display label: `daily`/`wk`) **and** `Key()` (stable identity: `day`/`week`); `limits.State` (`StateUnset`, `StateOK`, `StateWarn`, `StateOver`) with `String()`; `limits.Status{Window; SpentUSD, LimitUSD, Pct float64; State; ResetsAt time.Time}`; `limits.Evaluate(daily []agg.DailyTotal, cfg Config, now time.Time) []Status` returning exactly two entries, `WindowDay` first.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -335,11 +335,23 @@ const (
 	WindowWeek
 )
 
+// String is the DISPLAY label, rendered in the gauge rows.
 func (w Window) String() string {
 	if w == WindowWeek {
 		return "wk"
 	}
 	return "daily"
+}
+
+// Key is the stable IDENTITY of the window, independent of how it is
+// displayed. The cross-language parity fixture compares Key, not String:
+// if the two were the same value, someone retuning a display label would
+// silently keep the parity test green while changing what users see.
+func (w Window) Key() string {
+	if w == WindowWeek {
+		return "week"
+	}
+	return "day"
 }
 
 // State is how a window's spend compares to its limit.
@@ -2350,6 +2362,10 @@ public struct GaugeRow: Equatable, Sendable, Identifiable {
     public var plan: PlanGauge?
     public var notApplicable: String?
 
+    /// SwiftUI requires this to be unique within a rendered band, or
+    /// ForEach misbehaves. It holds because a vendor contributes at most
+    /// one row per distinct window label, and labels are derived from
+    /// distinct window_minutes values.
     public var id: String { vendor + "/" + windowLabel }
 
     /// The percentage this row displays, whatever its source.
@@ -2742,8 +2758,10 @@ func TestParityFixture(t *testing.T) {
 			}
 			for i, want := range c.Expect {
 				g := got[i]
-				if g.Window.String() != windowKey(want.Window) {
-					t.Errorf("[%d] window = %q, want %q", i, g.Window.String(), windowKey(want.Window))
+				// Compare Key (identity), not String (display label), so
+				// this asserts the same field Swift's rawValue does.
+				if g.Window.Key() != want.Window {
+					t.Errorf("[%d] window = %q, want %q", i, g.Window.Key(), want.Window)
 				}
 				if math.Abs(g.SpentUSD-want.SpentUSD) > 0.0001 {
 					t.Errorf("[%d] SpentUSD = %v, want %v", i, g.SpentUSD, want.SpentUSD)
@@ -2757,14 +2775,6 @@ func TestParityFixture(t *testing.T) {
 			}
 		})
 	}
-}
-
-// windowKey maps the fixture's window names onto Window.String().
-func windowKey(s string) string {
-	if s == "week" {
-		return "wk"
-	}
-	return "daily"
 }
 ```
 
