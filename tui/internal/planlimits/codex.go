@@ -110,6 +110,14 @@ func ScanCodex(root string, now time.Time) ([]Gauge, error) {
 				}
 			}
 		}
+		// A scanner error — e.g. a line larger than the 16 MiB buffer
+		// above — ends Scan() early: any rate-limit lines physically
+		// after the bad one in this file are unreadable and lost. That
+		// is a partial read, not a fatal one: earlier lines already
+		// found in this file, and every other file, still count. Per
+		// ScanCodex's "optional input" contract this is never surfaced
+		// to the caller as an error.
+		_ = sc.Err()
 		fh.Close()
 	}
 

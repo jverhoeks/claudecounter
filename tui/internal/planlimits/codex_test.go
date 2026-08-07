@@ -3,6 +3,7 @@ package planlimits
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,6 +104,47 @@ func TestScanCodexMissingRootIsNotAnError(t *testing.T) {
 	}
 	if len(gs) != 0 {
 		t.Fatalf("absent root must yield no gauges, got %+v", gs)
+	}
+}
+
+// A line larger than the scanner's 16 MiB buffer must not silently
+// swallow later, valid rate-limit lines in the same file: it should
+// truncate the read at the oversized line, so only observations before
+// it are seen. This pins the actual observed behaviour so a future
+// change to buffer handling is visible.
+func TestScanCodexOversizedLineDoesNotSilentlyTruncate(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "2026", "08", "07")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	before := `{"timestamp":"2026-08-07T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{},"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":50.0,"window_minutes":300,"resets_at":4102444800},"secondary":null}}}`
+	oversized := strings.Repeat("x", 17*1024*1024) // exceeds the 16 MiB max buffer
+	after := `{"timestamp":"2026-08-07T11:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{},"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":99.0,"window_minutes":300,"resets_at":4102444800},"secondary":null}}}`
+	body := strings.Join([]string{before, oversized, after}, "\n") + "\n"
+
+	dst := filepath.Join(dir, "rollout-oversized.jsonl")
+	if err := os.WriteFile(dst, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := now().Add(-time.Hour)
+	if err := os.Chtimes(dst, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	gs, err := ScanCodex(root, now())
+	if err != nil {
+		t.Fatalf("ScanCodex: %v", err)
+	}
+	m := byLabel(gs)
+	if len(m) != 1 {
+		t.Fatalf("want 1 window, got %d: %+v", len(m), gs)
+	}
+	// The oversized line ends the scan of this file: the second
+	// rate-limit line (99%), which comes after it, is never read.
+	if m["5h"].Pct != 50 {
+		t.Fatalf("5h Pct = %v, want 50 (line after the oversized one must not be read)", m["5h"].Pct)
 	}
 }
 
