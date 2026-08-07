@@ -3022,7 +3022,7 @@ definition, and why Grok gets a percentage but never a dollar figure."
 | `BurntSushi/toml` | already in `tui/go.mod` v1.6.0 | Task 1 adds no dependency |
 | `.copy("Fixtures")` | already in `Package.swift` test target | Tasks 8 and 10 need no manifest change |
 
-**Type consistency:** `Gauge`/`PlanGauge` fields align (`Vendor`/`vendor`, `WindowLbl`/`windowLabel`, `Stale`/`stale`). `Row`/`GaugeRow` align. `limits.State.String()` and `LimitState.rawValue` both produce `unset|ok|warn|over`, which Task 10 compares as strings. `Window.String()` returns `daily`/`wk`; the Go parity test maps the fixture's `day`/`week` via `windowKey`, while Swift's `LimitWindow.rawValue` is `day`/`week` directly — both compared against the same fixture field.
+**Type consistency:** `Gauge`/`PlanGauge` fields align (`Vendor`/`vendor`, `WindowLbl`/`windowLabel`, `Stale`/`stale`). `Row`/`GaugeRow` align. `limits.State.String()` and `LimitState.rawValue` both produce `unset|ok|warn|over`, which Task 10 compares as strings. Window has two accessors on purpose: `String()`/`label` is the display text (`daily`/`wk`), `Key()`/`rawValue` is the identity (`day`/`week`). Task 10 compares **identity** in both languages, so a display-label change is caught by the renderer golden tests rather than silently passing parity.
 
 ---
 
