@@ -55,7 +55,7 @@ func ScanCodex(root string, now time.Time) ([]Gauge, error) {
 	if root == "" {
 		return nil, nil
 	}
-	files, err := codexFiles(root)
+	files, err := codexFiles(root, now)
 	if err != nil || len(files) == 0 {
 		return nil, nil
 	}
@@ -127,18 +127,13 @@ func ScanCodex(root string, now time.Time) ([]Gauge, error) {
 
 // codexFiles lists session transcripts newest-first, dropping anything
 // older than the longest window Codex reports.
-//
-// The age cutoff is anchored to the newest file's own mtime rather than
-// to wall-clock time: ScanCodex's `now` parameter is a caller-supplied
-// evaluation reference used only to decide whether a window has closed,
-// and tests legitimately pass a synthetic value far from the present to
-// exercise that without changing which files on disk count as recent.
-func codexFiles(root string) ([]string, error) {
+func codexFiles(root string, now time.Time) ([]string, error) {
 	type entry struct {
 		path string
 		mod  time.Time
 	}
 	var entries []entry
+	cutoff := now.Add(-codexScanMaxAge)
 
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -148,7 +143,7 @@ func codexFiles(root string) ([]string, error) {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil {
+		if err != nil || info.ModTime().Before(cutoff) {
 			return nil
 		}
 		entries = append(entries, entry{p, info.ModTime()})
@@ -157,20 +152,7 @@ func codexFiles(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) == 0 {
-		return nil, nil
-	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].mod.After(entries[j].mod) })
-
-	cutoff := entries[0].mod.Add(-codexScanMaxAge)
-	trimmed := entries[:0]
-	for _, e := range entries {
-		if e.mod.Before(cutoff) {
-			continue
-		}
-		trimmed = append(trimmed, e)
-	}
-	entries = trimmed
 	if len(entries) > codexScanMaxFiles {
 		entries = entries[:codexScanMaxFiles]
 	}

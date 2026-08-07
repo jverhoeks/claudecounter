@@ -81,9 +81,12 @@ func TestScanCodexNewLayoutWeeklyInPrimary(t *testing.T) {
 }
 
 func TestScanCodexMarksExpiredWindowStale(t *testing.T) {
-	root := copyFixture(t, "codex_new_layout.jsonl", now().Add(-time.Hour))
 	// resets_at in the fixture is far future; evaluate as if now is later.
 	future := time.Unix(4102444800, 0).Add(time.Hour)
+	// Pin the fixture's mtime to the same timeline as `future`, so the
+	// age-bounded walk includes it — mtime and evaluation time must never
+	// come from different clocks.
+	root := copyFixture(t, "codex_new_layout.jsonl", future.Add(-time.Hour))
 	gs, err := ScanCodex(root, future)
 	if err != nil {
 		t.Fatalf("ScanCodex: %v", err)
