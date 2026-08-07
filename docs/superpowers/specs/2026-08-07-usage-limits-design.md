@@ -11,12 +11,18 @@ no configured ceiling, so a number like `Month $5,676.51` carries no signal abou
 whether that is fine or alarming. Separately, the Codex and Grok CLIs both run
 against plan limits that can hard-stop work, and nothing surfaces those either.
 
-This spec adds two distinct things that must not be conflated:
+This spec adds two kinds of number:
 
-1. **A budget gauge** — a user-configured USD limit per day and per week, with a
-   stacked bar showing spend against it.
-2. **Plan gauges** — vendor-reported utilisation percentages, read from the
-   vendors' own local logs. Not configured, not stackable, not in USD.
+1. **Budget** — a user-configured USD limit per day and per week, with a stacked
+   bar showing spend against it.
+2. **Plan** — vendor-reported utilisation percentages, read from the vendors' own
+   local logs. Not configured, not in USD, windows defined by the vendor.
+
+They are **displayed together, grouped by window duration**, because that is how
+the question gets asked — "how close am I to a wall in the next few hours?"
+spans both kinds. They are **never arithmetically combined**: a budget percentage
+and a plan percentage are different measurements over different windows, and the
+detail column beside each bar is what keeps them distinguishable.
 
 ## Data reality
 
@@ -144,7 +150,8 @@ Pure evaluation over an existing snapshot. No I/O on the hot path.
 ```go
 type Config struct{ Daily, Weekly float64; WarnPct int }
 
-type State int // Unset | OK | Warn | Over
+type Window int // Day | Week
+type State  int // Unset | OK | Warn | Over
 
 type Status struct {
     Window             Window  // Day | Week
@@ -196,7 +203,22 @@ yields no gauges and no error surface — these are optional inputs.
 Scanning is on demand, off the live counting path, following the precedent set by
 `report` and `safety`.
 
+**Scan cost is a real constraint, not a detail.** The local corpus is large — 67
+Codex session files, individual Grok transcripts over 100 MB, and a 3 MB
+`unified.jsonl`. Because both scanners want only the *newest* observation:
+
+- Walk candidate files newest-first by mtime and stop as soon as every window has
+  an observation newer than its own `resets_at`.
+- Read `unified.jsonl` tail-first and stop at the first `billing:` line.
+- Skip any file whose mtime predates the oldest window still being sought.
+- Never parse Grok's `sessions/**/updates.jsonl` at all — it holds no billing
+  data, and it is where all the size is.
+
 ### Renderer — `tui/internal/ui/charts.go`
+
+Rows are grouped by **window duration**, not by gauge type. A reader comparing
+"how close am I to a wall right now" wants the short windows together, regardless
+of whether the number came from a configured budget or from a vendor.
 
 ```go
 type Segment struct {
@@ -205,25 +227,48 @@ type Segment struct {
     Style lipgloss.Style
 }
 
-func renderLimitGauge(st limits.Status, segs []Segment) string
-func renderPlanGauges(gs []planlimits.Gauge) string
+// A Row is one rendered line. Exactly one of Budget / Plan is set;
+// NotApplicable renders the dimmed "n/a" placeholder.
+type Row struct {
+    Vendor        string
+    WindowLbl     string // "daily" | "5h" | "wk" | "7d"
+    Budget        *limits.Status
+    Segments      []Segment          // stacked fill, budget rows only
+    Plan          *planlimits.Gauge
+    NotApplicable string             // reason, e.g. "weekly only"
+}
+
+func renderGaugeGroup(title string, rows []Row) string
 ```
 
-`renderLimitGauge` is built stacked from the start. Spec 1 passes a single Claude
-segment; **Spec 2 appends a Codex segment and the renderer does not change** —
-only its input does. This is the whole reason the stacking work happens now
-rather than later.
-
-Target output:
+Two groups: **short window** and **weekly**.
 
 ```
- daily  $ / limit $50          78%
-  ██████████████░░░░░  Claude $31.20
- ── plan limits ─────────────────────
-  codex  5h  █████████░  92%  ↻ 2h14m
-  codex  7d  ██████████ 100% ⚠
-  grok   wk  █░░░░░░░░░  14%  ↻ Thu
+── short window ────────────────────
+ claude daily  ███████░░░  78%  $39/$50
+ codex  5h     █████████░  92%  ↻ 2h14m
+ grok   —      n/a (weekly only)
+── weekly ──────────────────────────
+ claude wk     █████░░░░░  52%  $130/$250
+ codex  7d     ██████████ 100% ⚠
+ grok   wk     █░░░░░░░░░  14%  ↻ Thu
 ```
+
+Every row displays a percentage, so the bars are visually comparable — but the
+percentages have **two different meanings**, and the detail column is what
+distinguishes them. A budget row shows `$spent/$limit`; a plan row shows its
+reset time. This is deliberate: it lets a reader scan the bars for urgency while
+keeping the provenance of each number legible.
+
+Grok has no short window (all observed billing periods were weekly), so its
+short-window row is a dimmed `n/a` placeholder rather than an omission. Showing
+the gap explicitly is better than a silently missing row that reads as "no usage".
+
+**Stacking and Spec 2.** `Segments` is stacked from the start. In Spec 1 the
+budget rows carry a single Claude segment and are labelled `claude`. When Spec 2
+adds Codex USD it becomes a second segment in those same rows, which relabel to
+`spend` — the renderer does not change, only its input does. This is the whole
+reason the stacking work happens now rather than later.
 
 ### Surfaces
 
@@ -231,9 +276,19 @@ Target output:
 `claudecounter --limits` for one-shot/scripted use.
 
 **macapp** — `Limits.swift` and `PlanLimits.swift` in `ClaudeCounterCore`,
-mirroring the Go logic and reading the same `~/.config/claudecounter/limits.toml`.
-Gauges render in the popover. The menu bar glyph goes amber at `warn_pct` and red
-at 100%, reusing the warning-glyph machinery from `38219a5` / `1eb8c10`.
+mirroring the Go logic and reading the same `~/.config/claudecounter/limits.toml`
+and the same vendor logs. The popover shows the identical two groups — short
+window, then weekly — with the same rows, the same `n/a` placeholder, and the same
+`$spent/$limit` vs reset-time detail column. SwiftUI `ProgressView`-style bars
+replace the block characters; the information and its order do not change.
+
+The menu bar glyph escalates on the **worst row in either group**, budget or plan:
+amber at `warn_pct`, red at 100%. This reuses the warning-glyph machinery from
+`38219a5` / `1eb8c10`. Stale rows never drive the glyph — an expired window must
+not paint the menu bar red.
+
+macapp lands in the same spec as the TUI rather than a follow-up, because the
+cross-language parity test below is only meaningful if both sides exist.
 
 ## Error handling
 
@@ -242,9 +297,11 @@ at 100%, reusing the warning-glyph machinery from `38219a5` / `1eb8c10`.
 | Config file missing | Limits unconfigured; budget gauge hidden. **Not** a zero limit. |
 | Config malformed | Logged once; treated as unset. Never crashes the counting path. |
 | `daily`/`weekly` ≤ 0 | That window is unset; the other still applies. |
-| Vendor dir/log absent | No gauges for that vendor. Not an error. |
+| Vendor dir/log absent | Vendor's rows omitted entirely. Not an error. |
 | Vendor log unparseable | Skip the line, keep scanning. Partial data beats none. |
-| `ResetsAt` in the past | Gauge renders dimmed and labelled stale. |
+| `ResetsAt` in the past | Row renders dimmed and labelled stale; never drives the menu bar glyph. |
+| Vendor has no such window | Dimmed `n/a` row with the reason (Grok short window). |
+| Both budget limits unset | Budget rows omitted; plan rows still render. The gauge is useful without any config. |
 
 The governing rule: **nothing here may break cost counting.** Limits and plan
 gauges are strictly additive; every failure degrades to "gauge not shown".
@@ -262,11 +319,15 @@ values, a Grok billing line, and an expired-period Grok line that must come back
 `Stale: true`. The old/new Codex layouts are the regression guard on the
 key-by-`window_minutes` rule.
 
-**Renderer** — golden strings, including the zero-segment and over-100% cases.
+**Renderer** — golden strings covering: both groups fully populated, over-100%,
+the Grok `n/a` placeholder, a stale row, budget rows absent (no config), and
+plan rows absent (no vendors installed).
 
-**Cross-language parity** — shared fixture inputs must yield identical `Pct` and
-`State` in Go and Swift. This is the test that stops the two apps drifting, and it
-is the one that must not be skipped when the macapp side is ported.
+**Cross-language parity** — shared fixture inputs must yield identical `Pct`,
+`State`, `Stale` and **row order** in Go and Swift. Row order is part of the
+contract, not a rendering detail: the two apps disagreeing about which row is
+worst would make the menu bar glyph contradict the popover. This is the test that
+stops the two apps drifting, and it is the one that must not be skipped.
 
 ## Deferred to Spec 2
 
