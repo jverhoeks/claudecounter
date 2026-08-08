@@ -73,6 +73,13 @@ type Status struct {
 //
 // It always returns exactly two entries, WindowDay first, so callers can
 // index without checking length.
+// NOTE: this hardcodes time.Local — there is no *time.Location seam, so
+// the parity fixture (parity_test.go) only agrees with Swift's
+// UTC-pinned LimitsParityTests.swift when this process's TZ is UTC (the
+// Makefile's `test`/`test-v`/`cover` targets force that). Giving
+// Evaluate a location parameter, mirroring Swift's `calendar`, is the
+// real fix, but it changes a signature several callers and the parity
+// test depend on — deliberately deferred (final-review.md M-2).
 func Evaluate(daily []agg.DailyTotal, cfg Config, now time.Time) []Status {
 	lt := now.Local()
 	todayKey := lt.Format("2006-01-02")
