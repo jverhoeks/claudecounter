@@ -198,7 +198,11 @@ func renderBudgetRow(label string, r Row) string {
 	// The detail column is what distinguishes a budget percentage from a
 	// plan percentage: money on one, a reset clock on the other.
 	detail := fmt.Sprintf("%s/%s", FormatUSD(r.Budget.SpentUSD), FormatUSD(r.Budget.LimitUSD))
-	pctText := stateColor(r.Budget.State).Render(fmt.Sprintf("%3.0f%%", pct))
+	// Width 4, not 3: a budget row is exactly where pct can exceed 100
+	// (spend past the limit), and %3.0f only reserves room up to 99% —
+	// at 100+ it grows past the field and shoves the detail column
+	// right, misaligning against every row above and below it.
+	pctText := stateColor(r.Budget.State).Render(fmt.Sprintf("%4.0f%%", pct))
 	line := label + " " + stackedBar(r.Segments, r.Budget.LimitUSD) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
@@ -224,7 +228,7 @@ func renderPlanRow(label string, r Row, warnPct int) string {
 		// over-threshold glyph: both would wrongly imply the window is
 		// still open.
 		detail := "stale · ended " + shortWhen(r.Plan.ResetsAt)
-		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail))
+		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %4.0f%%  %s", pct, detail))
 	}
 	// A plan row has no segments to colour, so its bar keeps the
 	// threshold colouring it always had. Its percentage text carries
@@ -232,7 +236,7 @@ func renderPlanRow(label string, r Row, warnPct int) string {
 	// via pctColor rather than stateColor — see renderBudgetRow's
 	// comment for why that pairing still agrees.
 	detail := "↻ " + shortWhen(r.Plan.ResetsAt)
-	pctText := pctColor(pct, warnPct).Render(fmt.Sprintf("%3.0f%%", pct))
+	pctText := pctColor(pct, warnPct).Render(fmt.Sprintf("%4.0f%%", pct))
 	line := label + " " + bar(pct, warnPct) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
@@ -374,20 +378,32 @@ func shortWhen(t time.Time) string {
 	}
 }
 
-// WorstPct is the highest utilisation across every non-stale row in both
-// bands. This drives menu bar escalation, and it is deliberately a
-// different ordering from displayOrder: an expired window must never
-// paint the menu bar red.
+// WorstPct is the highest utilisation across every non-stale row that
+// BuildRows would actually display, in both bands. This drives menu bar
+// escalation.
+//
+// It deliberately reads BuildRows' own output rather than re-scanning
+// st/gs itself: displayOrder is a closed list ("claude", "codex",
+// "grok"), and BuildRows already drops anything outside it — an unknown
+// vendor's gauge, or (subtly) a Vendor: "claude" plan gauge, since the
+// displayOrder loop's "claude" slot only ever looks at budget Status,
+// never at gs. Iterating st/gs directly here, as this used to, would
+// let such a gauge escalate the menu bar to red with no row on screen
+// explaining why — harmless today because only codex/grok emit gauges
+// and both are in displayOrder, but a real gap the moment a fourth
+// vendor (or a Vendor: "claude" gauge) appears. Reading BuildRows makes
+// "cannot be displayed" and "cannot escalate" the same guarantee by
+// construction, so they cannot drift apart again.
 func WorstPct(st []limits.Status, gs []planlimits.Gauge) float64 {
 	worst := 0.0
-	for _, s := range st {
-		if s.State != limits.StateUnset && s.Pct > worst {
-			worst = s.Pct
-		}
-	}
-	for _, g := range gs {
-		if !g.Stale && g.Pct > worst {
-			worst = g.Pct
+	for _, band := range []Band{BandShort, BandWeekly} {
+		for _, r := range BuildRows(band, st, gs) {
+			if r.Budget != nil && r.Budget.Pct > worst {
+				worst = r.Budget.Pct
+			}
+			if r.Plan != nil && !r.Plan.Stale && r.Plan.Pct > worst {
+				worst = r.Plan.Pct
+			}
 		}
 	}
 	return worst

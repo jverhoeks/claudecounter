@@ -104,6 +104,26 @@ func TestWorstPctIgnoresStale(t *testing.T) {
 	}
 }
 
+// A gauge that BuildRows can never turn into a row must never be able
+// to escalate the menu bar either — otherwise the bar can go red with
+// no row on screen explaining why. Two ways a gauge is undisplayable
+// today: a vendor outside displayOrder (BuildRows only ever iterates
+// displayOrder), and a plan gauge tagged "claude" (the displayOrder
+// loop's "claude" branch only ever looks at budget Status, never at
+// gs, for that vendor slot). This is the same "harmless until a fourth
+// vendor or a Vendor: claude gauge shows up" pattern the final review
+// flagged (deferred-list T5) — Spec 2's Codex USD stacking touches
+// exactly this area.
+func TestWorstPctIgnoresGaugesBuildRowsWouldNeverDisplay(t *testing.T) {
+	gs := []planlimits.Gauge{
+		{Vendor: "gemini", WindowLbl: "5h", Pct: 100},
+		{Vendor: "claude", WindowLbl: "5h", Pct: 100},
+	}
+	if got := WorstPct(nil, gs); got != 0 {
+		t.Fatalf("WorstPct = %v, want 0 (neither gauge is ever rendered as a row)", got)
+	}
+}
+
 // A stale plan window must render once, dimmed, with no live reset
 // countdown and no over-threshold glyph — either would wrongly imply the
 // window is still open. (Fixes: renderRow previously built the stale
@@ -294,7 +314,7 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		Segments:  warnSeg,
 	}
 	out := renderRow(warnRow, limits.DefaultWarnPct)
-	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
+	if want := styleBarWarn.Render("  85%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 85%% missing warn-styled percentage %q:\n%q", want, out)
 	}
 	// Pin the bar to the exact byte sequence stackedBar produces (segment
@@ -315,7 +335,7 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		Segments:  overSeg,
 	}
 	out = renderRow(overRow, limits.DefaultWarnPct)
-	if want := styleBarOver.Render("105%"); !strings.Contains(out, want) {
+	if want := styleBarOver.Render(" 105%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 105%% missing over-styled percentage %q:\n%q", want, out)
 	}
 	if wantBar := stackedBar(overSeg, 50); !strings.Contains(out, wantBar) {
@@ -328,7 +348,7 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		Plan:      &planlimits.Gauge{Vendor: "codex", WindowLbl: "5h", Pct: 85, ResetsAt: time.Now().Add(time.Hour)},
 	}
 	out = renderRow(planRow, limits.DefaultWarnPct)
-	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
+	if want := styleBarWarn.Render("  85%"); !strings.Contains(out, want) {
 		t.Fatalf("plan row at 85%% missing warn-styled percentage %q:\n%q", want, out)
 	}
 }
@@ -349,7 +369,7 @@ func TestBudgetRowColorFollowsConfiguredWarnPctViaState(t *testing.T) {
 		Segments:  []Segment{{Label: "claude", USD: 32.5, Style: styleBarFill}},
 	}
 	out := renderRow(row, limits.DefaultWarnPct)
-	if want := styleBarWarn.Render(" 65%"); !strings.Contains(out, want) {
+	if want := styleBarWarn.Render("  65%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 65%% with State=warn missing warn-styled percentage %q:\n%q", want, out)
 	}
 }
@@ -369,12 +389,12 @@ func TestRenderGaugesPlanRowUsesConfiguredWarnPct(t *testing.T) {
 	}
 
 	outLowThreshold := RenderGauges(nil, gs, 60)
-	if want := styleBarWarn.Render(" 65%"); !strings.Contains(outLowThreshold, want) {
+	if want := styleBarWarn.Render("  65%"); !strings.Contains(outLowThreshold, want) {
 		t.Fatalf("plan row at 65%% with warnPct=60 missing warn-styled percentage %q:\n%q", want, outLowThreshold)
 	}
 
 	outDefaultThreshold := RenderGauges(nil, gs, limits.DefaultWarnPct)
-	if want := styleBarWarn.Render(" 65%"); strings.Contains(outDefaultThreshold, want) {
+	if want := styleBarWarn.Render("  65%"); strings.Contains(outDefaultThreshold, want) {
 		t.Fatalf("plan row at 65%% with warnPct=80 must NOT be warn-styled:\n%q", outDefaultThreshold)
 	}
 }
@@ -401,7 +421,7 @@ func TestRenderGaugesWarnPctFromRealLoadOfMissingConfig(t *testing.T) {
 		{Vendor: "codex", WindowLbl: "5h", Pct: 10, ResetsAt: time.Now().Add(time.Hour)},
 	}
 	out := RenderGauges(nil, gs, cfg.WarnPct)
-	if want := styleBarWarn.Render(" 10%"); strings.Contains(out, want) {
+	if want := styleBarWarn.Render("  10%"); strings.Contains(out, want) {
 		t.Fatalf("plan row at 10%% with warnPct from Load() of a missing config must NOT be warn-styled "+
 			"(got WarnPct=%d — an un-clamped 0 would make this fail):\n%q", cfg.WarnPct, out)
 	}
