@@ -102,6 +102,20 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	fmt.Fprintf(os.Stderr, "scanning %s …\n", root)
 	start := time.Now()
 
+	snap, dupes, parseErrors := scanSnapshot(root, table)
+
+	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
+
+	if pricingWarn != "" {
+		fmt.Println(pricingWarn)
+	}
+	printSummary(snap, dupes, parseErrors)
+}
+
+// scanSnapshot does a single full scan and returns the aggregated
+// totals plus the reader/aggregator's dupe and parse-error counters.
+// Shared by --once and --limits so both see identical numbers.
+func scanSnapshot(root string, table pricing.Table) (agg.Totals, int, int) {
 	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
@@ -120,14 +134,7 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	}
 	close(evCh)
 	<-done
-
-	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
-
-	snap := a.Snapshot()
-	if pricingWarn != "" {
-		fmt.Println(pricingWarn)
-	}
-	printSummary(snap, a.Dupes(), r.ParseErrors())
+	return a.Snapshot(), a.Dupes(), r.ParseErrors()
 }
 
 func printSummary(snap agg.Totals, dupes, parseErrors int) {
