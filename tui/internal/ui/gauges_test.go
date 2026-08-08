@@ -227,8 +227,14 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 85%% missing warn-styled percentage %q:\n%q", want, out)
 	}
-	if wantBar := styleBarWarn.Render(stackedBar(warnSeg, 50)); strings.Contains(out, wantBar) {
-		t.Fatalf("budget row bar must not be re-coloured by the pct threshold, only the segment's own Style:\n%q", out)
+	// Pin the bar to the exact byte sequence stackedBar produces (segment
+	// Style only, no threshold override) — not merely "doesn't equal one
+	// particular wrong answer". A rejected alternative implementation
+	// that dispatches to bar(pct) for a single segment would produce
+	// styleBarWarn.Render(plainBar(85)) instead, which is a different
+	// byte string and would fail this assertion.
+	if wantBar := stackedBar(warnSeg, 50); !strings.Contains(out, wantBar) {
+		t.Fatalf("budget row bar must be exactly stackedBar's own-Style output %q, got:\n%q", wantBar, out)
 	}
 
 	overSeg := []Segment{{Label: "claude", USD: 52.5, Style: styleBarFill}}
@@ -241,6 +247,9 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 	out = renderRow(overRow)
 	if want := styleBarOver.Render("105%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 105%% missing over-styled percentage %q:\n%q", want, out)
+	}
+	if wantBar := stackedBar(overSeg, 50); !strings.Contains(out, wantBar) {
+		t.Fatalf("budget row bar must be exactly stackedBar's own-Style output %q, got:\n%q", wantBar, out)
 	}
 
 	planRow := Row{
