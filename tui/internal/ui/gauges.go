@@ -177,12 +177,20 @@ func renderRow(r Row) string {
 // scalar percentage. That is what lets a later spec stack a second
 // (Codex USD) segment onto these same rows without changing this
 // function — only its input, BuildRows, changes.
+//
+// The bar's segments always keep their own per-vendor Style, even past
+// the warn/over thresholds: colour-per-vendor must keep working
+// regardless of how many segments are stacked. The threshold signal
+// instead lives on the percentage text via pctColor, which is what a
+// plan row's percentage also uses — see renderPlanRow — so the two row
+// kinds agree on what colour means.
 func renderBudgetRow(label string, r Row) string {
 	pct := r.Budget.Pct
 	// The detail column is what distinguishes a budget percentage from a
 	// plan percentage: money on one, a reset clock on the other.
 	detail := fmt.Sprintf("%s/%s", FormatUSD(r.Budget.SpentUSD), FormatUSD(r.Budget.LimitUSD))
-	line := label + " " + stackedBar(r.Segments, r.Budget.LimitUSD) + fmt.Sprintf(" %3.0f%%  %s", pct, detail)
+	pctText := pctColor(pct).Render(fmt.Sprintf("%3.0f%%", pct))
+	line := label + " " + stackedBar(r.Segments, r.Budget.LimitUSD) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
 	}
@@ -201,12 +209,34 @@ func renderPlanRow(label string, r Row) string {
 		detail := "stale · ended " + shortWhen(r.Plan.ResetsAt)
 		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail))
 	}
+	// A plan row has no segments to colour, so its bar keeps the
+	// threshold colouring it always had. Its percentage text also
+	// carries the same threshold colour as a budget row's, via
+	// pctColor — see renderBudgetRow's comment for why that pairing
+	// matters.
 	detail := "↻ " + shortWhen(r.Plan.ResetsAt)
-	line := label + " " + bar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail)
+	pctText := pctColor(pct).Render(fmt.Sprintf("%3.0f%%", pct))
+	line := label + " " + bar(pct) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
 	}
 	return line
+}
+
+// pctColor is the single source of truth for the warn/over threshold
+// colour, applied to the percentage text of both budget and plan rows.
+// It is deliberately never applied to bar segments: a segment's colour
+// identifies its vendor, and must mean the same thing whether one
+// vendor is stacked or five.
+func pctColor(pct float64) lipgloss.Style {
+	switch {
+	case pct >= 100:
+		return styleBarOver
+	case pct >= 80:
+		return styleBarWarn
+	default:
+		return lipgloss.NewStyle()
+	}
 }
 
 func bar(pct float64) string {

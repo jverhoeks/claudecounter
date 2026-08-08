@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/jverhoeks/claudecounter/tui/internal/limits"
 	"github.com/jverhoeks/claudecounter/tui/internal/planlimits"
 )
@@ -172,5 +175,131 @@ func TestStackedBarSingleSegmentMatchesPlainBar(t *testing.T) {
 	want := styleBarFill.Render(plainBar(78))
 	if got != want {
 		t.Fatalf("stackedBar single-segment = %q, want %q (byte-identical to plain bar)", got, want)
+	}
+}
+
+// pctColor is the single source of the warn/over threshold colour. Every
+// existing assertion up to this point sits below 80%, so this is the
+// only place that actually crosses both thresholds.
+func TestPctColorThresholds(t *testing.T) {
+	cases := []struct {
+		pct  float64
+		want lipgloss.Style
+	}{
+		{0, lipgloss.NewStyle()},
+		{79.9, lipgloss.NewStyle()},
+		{80, styleBarWarn},
+		{99.9, styleBarWarn},
+		{100, styleBarOver},
+		{150, styleBarOver},
+	}
+	for _, c := range cases {
+		if got := pctColor(c.pct).GetForeground(); got != c.want.GetForeground() {
+			t.Errorf("pctColor(%v).GetForeground() = %v, want %v", c.pct, got, c.want.GetForeground())
+		}
+	}
+}
+
+// The percentage text is where the warn/over threshold signal lives —
+// not the bar. A budget row's bar segments must keep their own
+// per-vendor Style even past 80%/100%, since that colour identifies the
+// vendor and must mean the same thing regardless of how many segments
+// are stacked; a plan row's bar (which has no segments) keeps its
+// existing threshold colouring unchanged. Both row kinds' percentage
+// text carries the same threshold colour, which is what fixes the
+// budget-vs-plan colour inconsistency the reviewer flagged.
+//
+// lipgloss emits no ANSI codes when stdout isn't a terminal (confirmed
+// empirically in the round-1 report), so this test forces a colour
+// profile to make the styling observable in the rendered string.
+func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	warnSeg := []Segment{{Label: "claude", USD: 42.5, Style: styleBarFill}}
+	warnRow := Row{
+		Vendor:    "claude",
+		WindowLbl: "daily",
+		Budget:    &limits.Status{SpentUSD: 42.5, LimitUSD: 50, Pct: 85, State: limits.StateWarn},
+		Segments:  warnSeg,
+	}
+	out := renderRow(warnRow)
+	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
+		t.Fatalf("budget row at 85%% missing warn-styled percentage %q:\n%q", want, out)
+	}
+	if wantBar := styleBarWarn.Render(stackedBar(warnSeg, 50)); strings.Contains(out, wantBar) {
+		t.Fatalf("budget row bar must not be re-coloured by the pct threshold, only the segment's own Style:\n%q", out)
+	}
+
+	overSeg := []Segment{{Label: "claude", USD: 52.5, Style: styleBarFill}}
+	overRow := Row{
+		Vendor:    "claude",
+		WindowLbl: "daily",
+		Budget:    &limits.Status{SpentUSD: 52.5, LimitUSD: 50, Pct: 105, State: limits.StateOver},
+		Segments:  overSeg,
+	}
+	out = renderRow(overRow)
+	if want := styleBarOver.Render("105%"); !strings.Contains(out, want) {
+		t.Fatalf("budget row at 105%% missing over-styled percentage %q:\n%q", want, out)
+	}
+
+	planRow := Row{
+		Vendor:    "codex",
+		WindowLbl: "5h",
+		Plan:      &planlimits.Gauge{Vendor: "codex", WindowLbl: "5h", Pct: 85, ResetsAt: time.Now().Add(time.Hour)},
+	}
+	out = renderRow(planRow)
+	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
+		t.Fatalf("plan row at 85%% missing warn-styled percentage %q:\n%q", want, out)
+	}
+}
+
+// A naive implementation that rounds each segment's cell count
+// independently would give [3,3,3] here (each 10/30 = 33.3% rounds down
+// to 3 cells) and lose a whole cell versus a single 30 USD bar. The
+// cumulative algorithm must instead give [3,4,3], which sums to the same
+// 10 cells a non-stacked bar shows for 30/30 = 100%.
+func TestSegmentCellsCumulativeRoundingMatchesTotal(t *testing.T) {
+	segs := []Segment{
+		{Label: "a", USD: 10, Style: styleBarFill},
+		{Label: "b", USD: 10, Style: styleBarWarn},
+		{Label: "c", USD: 10, Style: styleBarOver},
+	}
+	cells := segmentCells(segs, 30)
+	if len(cells) != 3 || cells[0] != 3 || cells[1] != 4 || cells[2] != 3 {
+		t.Fatalf("segmentCells = %v, want [3 4 3] (cumulative rounding, not independent)", cells)
+	}
+	sum := cells[0] + cells[1] + cells[2]
+	if want := filledCells(30, 30); sum != want {
+		t.Fatalf("segment cell sum = %d, want %d (matches a single 30 USD segment)", sum, want)
+	}
+}
+
+// When segments sum past the limit, the bar must clamp to gaugeCells
+// rather than overflow — no negative remainder, no strings.Repeat count
+// exceeding the bar width.
+func TestSegmentCellsClampsWhenSegmentsExceedLimit(t *testing.T) {
+	segs := []Segment{
+		{Label: "a", USD: 60, Style: styleBarFill},
+		{Label: "b", USD: 20, Style: styleBarWarn},
+	}
+	cells := segmentCells(segs, 50)
+	sum := 0
+	for _, n := range cells {
+		if n < 0 {
+			t.Fatalf("segmentCells = %v, negative cell count", cells)
+		}
+		sum += n
+	}
+	if sum != gaugeCells {
+		t.Fatalf("segment cell sum = %d, want %d (clamped to bar width)", sum, gaugeCells)
+	}
+
+	out := stackedBar(segs, 50)
+	if got := strings.Count(out, "█"); got != gaugeCells {
+		t.Fatalf("stackedBar filled = %d, want %d (clamped, no overflow)", got, gaugeCells)
+	}
+	if got := strings.Count(out, "░"); got != 0 {
+		t.Fatalf("stackedBar empty = %d, want 0 (fully clamped)", got)
 	}
 }
