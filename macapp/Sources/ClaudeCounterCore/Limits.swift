@@ -59,6 +59,7 @@ public enum Limits {
             line = line.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("[") {
+                guard line.hasSuffix("]") else { throw LimitsError.malformed(line) }
                 inSection = (line == "[limits]")
                 continue
             }
@@ -90,7 +91,18 @@ public enum Limits {
     public static func evaluate(daily: [DailyTotal],
                                 config: LimitsConfig,
                                 now: Date,
-                                calendar: Calendar) -> [LimitStatus] {
+                                calendar callerCalendar: Calendar) -> [LimitStatus] {
+        // Force ISO week semantics (Monday-first, ISO identifier)
+        // regardless of what the caller passes: week grouping below and
+        // the week-reset countdown in nextWeekStart both read `.weekOfYear`
+        // off this same calendar, so normalising once here is what keeps
+        // them from silently disagreeing with each other. Only the time
+        // zone stays caller-controlled — DailyTotal.day is a local
+        // calendar day, so tests (and production) must be able to pin it.
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = callerCalendar.timeZone
+        calendar.firstWeekday = 2
+
         let f = DateFormatter()
         f.calendar = calendar
         f.timeZone = calendar.timeZone
@@ -104,7 +116,7 @@ public enum Limits {
         var daySpent = 0.0, weekSpent = 0.0
         for d in daily {
             if d.day == todayKey { daySpent += d.usd }
-            guard let t = f.date(from: d.day) else { continue }
+            guard let t = parseDay(d.day, formatter: f) else { continue }
             // Compare ISO week AND the ISO week-year: a week straddling
             // 31 Dec belongs to one bucket, not two.
             if calendar.component(.weekOfYear, from: t) == nowWeek,
@@ -117,6 +129,17 @@ public enum Limits {
             build(.day, daySpent, config.daily, config.warnPct, nextMidnight(now, calendar)),
             build(.week, weekSpent, config.weekly, config.warnPct, nextWeekStart(now, calendar)),
         ]
+    }
+
+    /// Parses a day key the way Go's `time.ParseInLocation("2006-01-02", ...)`
+    /// does: exactly four-digit year / two-digit month / two-digit day, and
+    /// no rollover of an out-of-range day (so "2026-02-30" is rejected, not
+    /// silently normalised to March 2). DateFormatter's own parsing is
+    /// lenient about both; round-tripping the parsed date back through the
+    /// same formatter and requiring an exact string match closes both gaps.
+    private static func parseDay(_ s: String, formatter: DateFormatter) -> Date? {
+        guard let d = formatter.date(from: s), formatter.string(from: d) == s else { return nil }
+        return d
     }
 
     private static func build(_ window: LimitWindow,
@@ -138,11 +161,12 @@ public enum Limits {
         cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)) ?? now
     }
 
+    /// `cal` must already be normalised to Monday-first ISO week rules
+    /// (see `evaluate`) — this does not re-force `firstWeekday` itself, so
+    /// that grouping and the reset countdown always agree.
     private static func nextWeekStart(_ now: Date, _ cal: Calendar) -> Date {
-        var c = cal
-        c.firstWeekday = 2 // Monday, matching ISO-8601 and Go's ISOWeek
-        let startOfWeek = c.dateInterval(of: .weekOfYear, for: now)?.start ?? c.startOfDay(for: now)
-        return c.date(byAdding: .day, value: 7, to: startOfWeek) ?? now
+        let startOfWeek = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? cal.startOfDay(for: now)
+        return cal.date(byAdding: .day, value: 7, to: startOfWeek) ?? now
     }
 }
 
