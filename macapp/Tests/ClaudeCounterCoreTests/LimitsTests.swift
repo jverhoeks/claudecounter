@@ -208,12 +208,14 @@ final class LimitsTests: XCTestCase {
     }
 
     // A CRLF limits.toml (e.g. saved by a Windows editor) leaves a
-    // trailing "\r" on every line once split on "\n" alone — "\r" is not
-    // in CharacterSet.whitespaces, so it survives trimming. That turns
-    // "[ limits ]\r" into a hasSuffix("]") failure (malformed) and a
-    // value line's trailing "\r" into a non-numeric parse failure (also
-    // malformed), even though Go's TOML parser reads the same bytes
-    // fine. Trimming on .whitespacesAndNewlines instead closes both.
+    // trailing "\r" on every line. Swift's Character is an extended
+    // grapheme cluster: "\r\n" is a single Character equal to neither
+    // "\n" nor "\r" alone, so splitting on "\n" leaves the trailing "\r"
+    // intact. That turns "[ limits ]\r" into a hasSuffix("]") failure
+    // (malformed) and a value line's trailing "\r" into a non-numeric
+    // parse failure (also malformed), even though Go's TOML parser reads
+    // the same bytes fine. Splitting on isNewline instead handles "\n",
+    // "\r", and "\r\n" each as one line ending.
     func test_load_acceptsCRLFLineEndings() throws {
         let path = NSTemporaryDirectory() + "/limits-\(UUID().uuidString).toml"
         try "[ limits ]\r\ndaily = 50.0\r\nweekly = 250.0\r\nwarn_pct = 70\r\n"

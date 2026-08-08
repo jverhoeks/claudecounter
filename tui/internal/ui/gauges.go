@@ -25,8 +25,9 @@ const (
 )
 
 // displayOrder is the fixed vendor order within every band. It does not
-// depend on values, so rows never reorder between refreshes. Glyph
-// escalation uses a different, value-dependent order — see WorstPct.
+// depend on values, so rows never reorder between refreshes. BuildRows
+// and WorstPct both read displayOrder — WorstPct iterates the rows
+// BuildRows creates, so a row that cannot be displayed cannot escalate.
 var displayOrder = []string{"claude", "codex", "grok"}
 
 const gaugeCells = 10
