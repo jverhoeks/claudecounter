@@ -173,6 +173,58 @@ final class LimitsTests: XCTestCase {
         XCTAssertEqual(cfg.warnPct, LimitsConfig.defaultWarnPct)
     }
 
+    // "[ limits ]" is valid TOML — whitespace inside the brackets is
+    // permitted — but the old code compared the trimmed line against the
+    // literal "[limits]", so this set inSection = false, left daily/
+    // weekly at their zero default, and did NOT throw (the line still
+    // passes the hasPrefix("[")/hasSuffix("]") guard). The macapp showed
+    // no budget rows and no error while the TUI (a real TOML parser)
+    // read the same file fine — see config_test.go's
+    // TestLoadAcceptsSpacedTableHeader for the Go-side pin of the same
+    // case (final-review.md M-1).
+    func test_load_acceptsSpacedTableHeader() throws {
+        let path = NSTemporaryDirectory() + "/limits-\(UUID().uuidString).toml"
+        try "[ limits ]\ndaily = 50.0\nweekly = 250.0\nwarn_pct = 70\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let cfg = try Limits.load(path: path)
+        XCTAssertEqual(cfg.daily, 50)
+        XCTAssertEqual(cfg.weekly, 250)
+        XCTAssertEqual(cfg.warnPct, 70)
+    }
+
+    // Leading/trailing spaces around a key or its value already work —
+    // both halves of the "=" split are trimmed with .whitespaces before
+    // being read. Pinned here so a future refactor of the split can't
+    // silently drop that trim without a test catching it.
+    func test_load_toleratesSpacesAroundKeyAndValue() throws {
+        let path = NSTemporaryDirectory() + "/limits-\(UUID().uuidString).toml"
+        try "[limits]\n  daily   =   50.0  \nweekly= 250.0\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let cfg = try Limits.load(path: path)
+        XCTAssertEqual(cfg.daily, 50)
+        XCTAssertEqual(cfg.weekly, 250)
+    }
+
+    // A CRLF limits.toml (e.g. saved by a Windows editor) leaves a
+    // trailing "\r" on every line once split on "\n" alone — "\r" is not
+    // in CharacterSet.whitespaces, so it survives trimming. That turns
+    // "[ limits ]\r" into a hasSuffix("]") failure (malformed) and a
+    // value line's trailing "\r" into a non-numeric parse failure (also
+    // malformed), even though Go's TOML parser reads the same bytes
+    // fine. Trimming on .whitespacesAndNewlines instead closes both.
+    func test_load_acceptsCRLFLineEndings() throws {
+        let path = NSTemporaryDirectory() + "/limits-\(UUID().uuidString).toml"
+        try "[ limits ]\r\ndaily = 50.0\r\nweekly = 250.0\r\nwarn_pct = 70\r\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let cfg = try Limits.load(path: path)
+        XCTAssertEqual(cfg.daily, 50)
+        XCTAssertEqual(cfg.weekly, 250)
+        XCTAssertEqual(cfg.warnPct, 70)
+    }
+
     // "A malformed file throws" is an explicit constraint — a typo must
     // not be silently read as "no limits set". Cover the four ways a
     // limits.toml can be malformed.

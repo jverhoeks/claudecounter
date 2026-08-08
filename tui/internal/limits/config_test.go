@@ -76,3 +76,21 @@ func TestLoadMalformedReturnsError(t *testing.T) {
 		t.Fatal("malformed TOML must return an error so the caller can log it once")
 	}
 }
+
+// "[ limits ]" is valid TOML — whitespace inside the brackets is
+// permitted — and BurntSushi/toml (a real parser) accepts it. Swift's
+// hand-rolled Limits.load used to compare the trimmed line against the
+// literal "[limits]" and silently miss this, treating the whole file as
+// having no [limits] table (see LimitsTests.swift's matching case).
+// This pins the Go side of that parity so a future regression on either
+// side shows up as a cross-language disagreement, not just a Swift one.
+func TestLoadAcceptsSpacedTableHeader(t *testing.T) {
+	p := writeTemp(t, "[ limits ]\ndaily = 50.0\nweekly = 250.0\nwarn_pct = 70\n")
+	got, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Daily != 50.0 || got.Weekly != 250.0 || got.WarnPct != 70 {
+		t.Fatalf("got %+v, want spaced table header to parse like \"[limits]\"", got)
+	}
+}

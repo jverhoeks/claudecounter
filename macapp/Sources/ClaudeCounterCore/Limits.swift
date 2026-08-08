@@ -53,14 +53,29 @@ public enum Limits {
         }
         var daily = 0.0, weekly = 0.0, warn = 0
         var inSection = false
-        for rawLine in body.split(separator: "\n", omittingEmptySubsequences: false) {
+        // Split on Character.isNewline, not separator: "\n": Swift's
+        // Character is an extended grapheme cluster, so "\r\n" in a
+        // CRLF file is a SINGLE Character equal to neither "\n" nor
+        // "\r" alone — separator: "\n" would then match nothing in a
+        // CRLF file and read the whole file as one "line". isNewline
+        // treats "\n", "\r" and "\r\n" each as one line ending.
+        for rawLine in body.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline }) {
             var line = String(rawLine)
             if let hash = line.firstIndex(of: "#") { line = String(line[line.startIndex..<hash]) }
             line = line.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("[") {
                 guard line.hasSuffix("]") else { throw LimitsError.malformed(line) }
-                inSection = (line == "[limits]")
+                // Trim whitespace INSIDE the brackets too: "[ limits ]"
+                // is valid TOML (whitespace there is permitted), but
+                // comparing the whole bracketed token verbatim used to
+                // miss it — inSection silently stayed false, daily/
+                // weekly stayed at their zero default, and this did NOT
+                // throw, so the file looked "unconfigured" rather than
+                // malformed. See LimitsTests.swift's
+                // test_load_acceptsSpacedTableHeader.
+                let name = line.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
+                inSection = (name == "limits")
                 continue
             }
             guard inSection else { continue }

@@ -11,9 +11,28 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
-// parityFixture is shared verbatim with the Swift suite. It lives under
-// the macapp test bundle because SwiftPM must copy it as a resource;
-// Go reads the same bytes so the two implementations cannot drift.
+// parityFixture is shared verbatim with the Swift suite (see
+// LimitsParityTests.swift). It lives under the macapp test bundle
+// because SwiftPM must copy it as a resource; Go reads the same bytes
+// here so both languages evaluate identical (now, config, daily totals)
+// inputs and are pinned to agree on the result.
+//
+// Scope: this pins Evaluate() only — the pure window-boundary /
+// threshold arithmetic exercised by TestParityFixture below. It does
+// NOT pin Load() (Go uses BurntSushi/toml, a real TOML parser; Swift's
+// Limits.load is a hand-rolled line reader — see config_test.go's
+// TestLoadAcceptsSpacedTableHeader and LimitsTests.swift's matching
+// case for one place they used to diverge), the Codex/Grok vendor
+// scanners, row construction (BuildRows vs
+// GaugeRows.build), or rendering. A change in any of those can still
+// make the two surfaces disagree even while this fixture stays green.
+//
+// To add a case: append an object to the top-level "cases" array in
+// limits_parity.json with a "now" (RFC3339), the configured limits,
+// a "daily" array of {day, usd} totals, and the "expect" statuses both
+// languages must produce. Both TestParityFixture (here) and
+// LimitsParityTests.swift read the same file, so one addition covers
+// both languages.
 const parityFixture = "../../../macapp/Tests/ClaudeCounterCoreTests/Fixtures/limits_parity.json"
 
 type parityCase struct {
