@@ -117,7 +117,7 @@ macapp-publish: ## Tag macapp-VERSION + push (CI builds + creates GitHub Release
 # ────────────────────── meta ──────────────────────
 
 .PHONY: test-all
-test-all: test macapp-test ## Run Go + Swift test suites
+test-all: test macapp-test ## Run Go + Swift test suites (includes the cross-language limits parity fixture)
 
 .PHONY: clean
 clean: ## Remove built artefacts (both apps)
