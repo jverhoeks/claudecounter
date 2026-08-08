@@ -163,42 +163,55 @@ func renderRow(r Row) string {
 		return styleStale.Render(label + " n/a (" + r.NotApplicable + ")")
 	}
 
-	var pct float64
-	var detail string
-	var stale bool
 	switch {
 	case r.Budget != nil:
-		pct = r.Budget.Pct
-		// The detail column is what distinguishes a budget percentage
-		// from a plan percentage: money on one, a reset clock on the other.
-		detail = fmt.Sprintf("%s/%s", FormatUSD(r.Budget.SpentUSD), FormatUSD(r.Budget.LimitUSD))
+		return renderBudgetRow(label, r)
 	case r.Plan != nil:
-		pct = r.Plan.Pct
-		stale = r.Plan.Stale
-		if stale {
-			detail = "stale · ended " + shortWhen(r.Plan.ResetsAt)
-		} else {
-			detail = "↻ " + shortWhen(r.Plan.ResetsAt)
-		}
+		return renderPlanRow(label, r)
 	default:
 		return label
 	}
+}
 
-	line := label + " " + bar(pct, stale) + fmt.Sprintf(" %3.0f%%  %s", pct, detail)
-	if stale {
-		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail))
-	}
+// renderBudgetRow draws a budget row's bar from Segments rather than a
+// scalar percentage. That is what lets a later spec stack a second
+// (Codex USD) segment onto these same rows without changing this
+// function — only its input, BuildRows, changes.
+func renderBudgetRow(label string, r Row) string {
+	pct := r.Budget.Pct
+	// The detail column is what distinguishes a budget percentage from a
+	// plan percentage: money on one, a reset clock on the other.
+	detail := fmt.Sprintf("%s/%s", FormatUSD(r.Budget.SpentUSD), FormatUSD(r.Budget.LimitUSD))
+	line := label + " " + stackedBar(r.Segments, r.Budget.LimitUSD) + fmt.Sprintf(" %3.0f%%  %s", pct, detail)
 	if pct >= 100 {
 		line += " ⚠"
 	}
 	return line
 }
 
-func bar(pct float64, stale bool) string {
+// renderPlanRow draws a plan row, built once for either the live or the
+// stale case — never both — so a future change to stale styling can't
+// silently apply to a string nobody returns.
+func renderPlanRow(label string, r Row) string {
+	pct := r.Plan.Pct
+	if r.Plan.Stale {
+		// A stale window shows no live reset countdown and no
+		// over-threshold glyph: both would wrongly imply the window is
+		// still open.
+		detail := "stale · ended " + shortWhen(r.Plan.ResetsAt)
+		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail))
+	}
+	detail := "↻ " + shortWhen(r.Plan.ResetsAt)
+	line := label + " " + bar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail)
+	if pct >= 100 {
+		line += " ⚠"
+	}
+	return line
+}
+
+func bar(pct float64) string {
 	s := plainBar(pct)
 	switch {
-	case stale:
-		return styleStale.Render(s)
 	case pct >= 100:
 		return styleBarOver.Render(s)
 	case pct >= 80:
@@ -208,7 +221,63 @@ func bar(pct float64, stale bool) string {
 	}
 }
 
-func plainBar(pct float64) string {
+// stackedBar draws one bar as a sequence of styled runs, one per
+// segment, each sized by its own share of gaugeCells. With a single
+// segment this is byte-identical to a plain threshold-coloured bar over
+// the same percentage — see TestStackedBarSingleSegmentMatchesPlainBar —
+// which is what proves stacking a second segment later needs no change
+// here.
+func stackedBar(segments []Segment, limitUSD float64) string {
+	cells := segmentCells(segments, limitUSD)
+	filled := 0
+	var b strings.Builder
+	for i, seg := range segments {
+		n := cells[i]
+		filled += n
+		if n > 0 {
+			b.WriteString(seg.Style.Render(strings.Repeat("█", n)))
+		}
+	}
+	b.WriteString(strings.Repeat("░", gaugeCells-filled))
+	return b.String()
+}
+
+// segmentCells splits gaugeCells across segments proportional to each
+// segment's USD share of limitUSD. It rounds the running cumulative
+// total and takes the difference from the previous cumulative count,
+// rather than rounding each segment independently, so the per-segment
+// counts always sum to the same total a single non-stacked bar would
+// show for that total USD.
+func segmentCells(segments []Segment, limitUSD float64) []int {
+	out := make([]int, len(segments))
+	var total float64
+	for _, seg := range segments {
+		total += seg.USD
+	}
+	totalFilled := filledCells(total, limitUSD)
+
+	var running float64
+	prev := 0
+	for i, seg := range segments {
+		running += seg.USD
+		cum := filledCells(running, limitUSD)
+		if cum > totalFilled {
+			cum = totalFilled
+		}
+		out[i] = cum - prev
+		prev = cum
+	}
+	return out
+}
+
+func filledCells(usd, limitUSD float64) int {
+	if limitUSD <= 0 {
+		return 0
+	}
+	return filledCellsFromPct(100 * usd / limitUSD)
+}
+
+func filledCellsFromPct(pct float64) int {
 	filled := int(pct/100*gaugeCells + 0.5)
 	if filled < 0 {
 		filled = 0
@@ -216,6 +285,11 @@ func plainBar(pct float64) string {
 	if filled > gaugeCells {
 		filled = gaugeCells
 	}
+	return filled
+}
+
+func plainBar(pct float64) string {
+	filled := filledCellsFromPct(pct)
 	return strings.Repeat("█", filled) + strings.Repeat("░", gaugeCells-filled)
 }
 
