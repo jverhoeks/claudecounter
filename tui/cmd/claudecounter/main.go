@@ -250,31 +250,34 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 	liveTail := make(chan struct{})
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
 
-	// Gauges run on their own slow ticker rather than piggybacking on
-	// the aggregator's dirty flush — see gaugeRefreshInterval. A
-	// malformed limits.toml is logged and otherwise ignored here: the
-	// live counting path must never go down over a config typo. (The
-	// one-shot --limits, by contrast, exits non-zero on the same error
-	// — see runLimits.)
-	go func() {
-		refresh := func() {
-			if out, ok := tuiGauges(limitsCfgPath, a.Snapshot().Daily, time.Now()); ok {
-				prog.Send(ui.GaugesMsg{Gauges: out})
-			}
-		}
-		refresh()
-		ticker := time.NewTicker(gaugeRefreshInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			refresh()
-		}
-	}()
-
 	// NOTE: bubbletea's program.Send blocks on an unbuffered channel
 	// until prog.Run() is reading. Anything that calls Send must run
 	// in a goroutine that will only fire AFTER Run has started — the
-	// pipeline ticker (250 ms) and the backfill completion send below
-	// both satisfy that. Don't send synchronously from this point.
+	// pipeline ticker (250 ms), the gauge ticker below (fires no sooner
+	// than gaugeRefreshInterval), and the backfill completion send
+	// (which only runs after InitialScan) all satisfy that. Don't send
+	// synchronously from this point.
+
+	// refreshGauges re-scans budgets and vendor plan logs and pushes the
+	// result to the UI (see gaugeRefreshInterval for why this runs on
+	// its own cadence rather than piggybacking on the aggregator's
+	// dirty flush). A malformed limits.toml is carried in GaugesMsg.Err
+	// rather than logged or exited: the live counting path must never
+	// go down, or spam stderr under the alt screen, over a config typo.
+	// The model turns Err into a footer warning and leaves the
+	// last-good gauge block on screen. Contrast runLimits, the
+	// one-shot, which exits non-zero on the same error.
+	refreshGauges := func() {
+		out, err := gatherGauges(limitsCfgPath, a.Snapshot().Daily, time.Now())
+		prog.Send(ui.GaugesMsg{Gauges: out, Err: err})
+	}
+	go func() {
+		ticker := time.NewTicker(gaugeRefreshInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			refreshGauges()
+		}
+	}()
 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
@@ -294,14 +297,18 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 			log.Printf("initial scan: %v", err)
 		}
 		wg.Wait()
-		// Push the post-backfill snapshot once, then unblock the live
-		// tail and tell the UI to drop the spinner.
+		// Push the post-backfill snapshot once, then run the first gauge
+		// refresh from real (fully backfilled) totals — not before, or
+		// a configured budget would briefly show a confident but wrong
+		// 0% off an empty Daily series — then unblock the live tail and
+		// tell the UI to drop the spinner.
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
+		refreshGauges()
 		prog.Send(ui.BackfillDoneMsg{})
 		close(liveTail)
 	}()

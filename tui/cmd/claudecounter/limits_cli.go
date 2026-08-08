@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -34,25 +33,13 @@ func gatherGauges(cfgPath string, daily []agg.DailyTotal, now time.Time) (string
 	return ui.RenderGauges(st, gs), nil
 }
 
-// tuiGauges is the live TUI's gauge refresh. Unlike runLimits it never
-// exits on a bad config: the counting path must survive a typo in
-// limits.toml. A load error is logged once and reported to the caller
-// as ok=false, meaning "leave whatever gauge block is already showing
-// alone" — never a crash, never a blank overwrite mid-session.
-func tuiGauges(cfgPath string, daily []agg.DailyTotal, now time.Time) (out string, ok bool) {
-	out, err := gatherGauges(cfgPath, daily, now)
-	if err != nil {
-		log.Printf("limits config: %v (leaving gauges as-is)", err)
-		return "", false
-	}
-	return out, true
-}
-
 // runLimits is the --limits one-shot: scan, print the gauges, exit. A
 // malformed limits.toml is fatal here — this is a one-shot command, and
 // exiting non-zero with the parse error is more useful than silently
-// showing no gauges. Contrast runTUI's gauge refresh, which must never
-// take the live counting path down over a config typo.
+// showing no gauges. Contrast runTUI's gauge refresh (main.go), which
+// routes the same error into the model as a footer warning instead:
+// the live counting path must never exit, or spam the alt screen, over
+// a config typo.
 func runLimits(root string, table pricing.Table, cfgPath string) {
 	snap, _, _ := scanSnapshot(root, table)
 	out, err := gatherGauges(cfgPath, snap.Daily, time.Now())
@@ -62,7 +49,7 @@ func runLimits(root string, table pricing.Table, cfgPath string) {
 	}
 	if out == "" {
 		fmt.Println("No limits configured and no vendor plan data found.")
-		fmt.Println("Set limits in " + limits.DefaultConfigPath())
+		fmt.Println("Set limits in " + cfgPath)
 		return
 	}
 	fmt.Print(out)

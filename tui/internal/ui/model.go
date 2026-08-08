@@ -50,8 +50,14 @@ type BackfillDoneMsg struct{}
 // gauge scan walks vendor log directories, which is too costly to run
 // on the aggregator's sub-second dirty-flush cadence without risking
 // the live counting pipeline.
+//
+// Err is set instead of Gauges when limits.toml is malformed. It must
+// never crash or halt the live TUI: the model turns it into a footer
+// warning and leaves whatever gauge block was already showing in
+// place, rather than replacing it with a blank one.
 type GaugesMsg struct {
 	Gauges string
+	Err    error
 }
 
 // ReportMsg delivers a freshly gathered git-activity report (or an error).
@@ -92,6 +98,7 @@ type Model struct {
 	parseErrors int
 	pricingWarn string
 	gauges      string
+	limitsWarn  string // set from GaugesMsg.Err; cleared on the next successful refresh
 	width       int
 	height      int
 
@@ -279,7 +286,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case BackfillDoneMsg:
 		m.loading = false
 	case GaugesMsg:
-		m.gauges = msg.Gauges
+		if msg.Err != nil {
+			// Leave m.gauges untouched — the last-good render (if any)
+			// stays on screen — and surface the error as a footer
+			// warning instead of a log line, since the alt screen owns
+			// the terminal and nothing writes to stderr while it does.
+			m.limitsWarn = "⚠ limits config: " + msg.Err.Error()
+		} else {
+			m.limitsWarn = ""
+			m.gauges = msg.Gauges
+		}
 	case ReportMsg:
 		m.reportLoading = false
 		m.reportLoaded = true
@@ -359,6 +375,13 @@ func (m Model) View() string {
 	}
 	for _, w := range m.warns {
 		footer = w + "\n" + footer
+	}
+	// limitsWarn is a single persistent field, not appended to m.warns
+	// (which collectWarns fully rebuilds on every SnapshotMsg), so a
+	// repeatedly-failing config refresh renders one line, not one per
+	// attempt.
+	if m.limitsWarn != "" {
+		footer = m.limitsWarn + "\n" + footer
 	}
 	return header + body + "\n" + footer + "\n"
 }

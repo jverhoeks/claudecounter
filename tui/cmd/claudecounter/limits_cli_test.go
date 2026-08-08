@@ -66,67 +66,36 @@ func TestGatherGaugesMalformedConfigErrors(t *testing.T) {
 	}
 }
 
-// TestTUIGaugesSurvivesMalformedConfig is the live-TUI-side counterpart
-// to TestGatherGaugesMalformedConfigErrors: gatherGauges surfacing the
-// error is fine, but the TUI's own wrapper around it must swallow that
-// error rather than propagate it — a malformed limits.toml must never
-// take the live counting path down. runLimits (the --limits one-shot),
-// by contrast, is expected to fail loudly; that path is exercised by
-// exit-code assertions elsewhere, not here.
-func TestTUIGaugesSurvivesMalformedConfig(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "limits.toml")
-	if err := os.WriteFile(cfg, []byte("[limits]\ndaily = = =\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, ok := tuiGauges(cfg, nil, time.Now())
-	if ok {
-		t.Fatal("malformed config must report ok=false")
-	}
-	if out != "" {
-		t.Fatalf("malformed config must report empty output, got %q", out)
-	}
-}
-
-// A well-formed config must still flow through tuiGauges unchanged.
-func TestTUIGaugesRendersConfiguredBudget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "limits.toml")
-	if err := os.WriteFile(cfg, []byte("[limits]\ndaily = 50.0\nweekly = 250.0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
-	daily := []agg.DailyTotal{{Day: "2026-08-07", USD: 39}}
-
-	out, ok := tuiGauges(cfg, daily, now)
-	if !ok {
-		t.Fatal("valid config must report ok=true")
-	}
-	if !strings.Contains(out, "78%") {
-		t.Fatalf("output missing expected percentage:\n%s", out)
-	}
-}
+// The live TUI no longer has a separate tuiGauges wrapper: main.go's
+// refreshGauges calls gatherGauges directly and forwards both Gauges
+// and Err into ui.GaugesMsg. The "never crashes, never exits, never
+// spams" guarantee now lives in ui.Model's handling of GaugesMsg.Err —
+// see model_test.go in internal/ui — rather than in a cmd/claudecounter
+// wrapper function.
 
 // TestRunLimitsUnconfiguredPrintsFallback exercises runLimits (not just
 // gatherGauges) with no config and no vendor logs, so the whole --limits
 // one-shot's "nothing to show" branch — not just the string it depends
-// on — is under test.
+// on — is under test. It also pins the fallback message to point at the
+// --limits-config path it was actually given, not the package default:
+// a prior version of this line hardcoded limits.DefaultConfigPath(),
+// which told a user who passed a custom --limits-config to go create a
+// file this run would never read.
 func TestRunLimitsUnconfiguredPrintsFallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "projects")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	cfgPath := filepath.Join(t.TempDir(), "custom-limits.toml")
 
 	out := captureStdout(t, func() {
-		runLimits(root, pricing.Defaults(), filepath.Join(t.TempDir(), "nonexistent.toml"))
+		runLimits(root, pricing.Defaults(), cfgPath)
 	})
 	if !strings.Contains(out, "No limits configured") {
 		t.Fatalf("expected fallback message, got:\n%s", out)
+	}
+	if !strings.Contains(out, cfgPath) {
+		t.Fatalf("expected fallback message to point at the given --limits-config path %q, got:\n%s", cfgPath, out)
 	}
 }
