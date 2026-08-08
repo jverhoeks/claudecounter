@@ -137,26 +137,32 @@ func budgetFor(band Band, st []limits.Status) *limits.Status {
 // RenderGauges draws both bands. Rows are grouped by duration because
 // "how close am I to a wall in the next few hours" spans both budget and
 // plan numbers.
-func RenderGauges(st []limits.Status, gs []planlimits.Gauge) string {
+//
+// warnPct is the user's configured amber threshold (limits.Config.WarnPct,
+// itself limits.DefaultWarnPct when unconfigured). It is threaded through
+// to plan rows only — a budget row's colour instead comes from its own
+// Status.State, which limits.Evaluate already computed against this same
+// warnPct. See pctColor and stateColor.
+func RenderGauges(st []limits.Status, gs []planlimits.Gauge, warnPct int) string {
 	var b strings.Builder
-	b.WriteString(renderGaugeGroup("short window", BuildRows(BandShort, st, gs)))
-	b.WriteString(renderGaugeGroup("weekly", BuildRows(BandWeekly, st, gs)))
+	b.WriteString(renderGaugeGroup("short window", BuildRows(BandShort, st, gs), warnPct))
+	b.WriteString(renderGaugeGroup("weekly", BuildRows(BandWeekly, st, gs), warnPct))
 	return b.String()
 }
 
-func renderGaugeGroup(title string, rows []Row) string {
+func renderGaugeGroup(title string, rows []Row, warnPct int) string {
 	if len(rows) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString(styleDim.Render("── "+title+" ") + "\n")
 	for _, r := range rows {
-		b.WriteString(renderRow(r) + "\n")
+		b.WriteString(renderRow(r, warnPct) + "\n")
 	}
 	return b.String()
 }
 
-func renderRow(r Row) string {
+func renderRow(r Row, warnPct int) string {
 	label := fmt.Sprintf(" %-7s %-5s", r.Vendor, r.WindowLbl)
 
 	if r.NotApplicable != "" {
@@ -167,7 +173,7 @@ func renderRow(r Row) string {
 	case r.Budget != nil:
 		return renderBudgetRow(label, r)
 	case r.Plan != nil:
-		return renderPlanRow(label, r)
+		return renderPlanRow(label, r, warnPct)
 	default:
 		return label
 	}
@@ -181,15 +187,18 @@ func renderRow(r Row) string {
 // The bar's segments always keep their own per-vendor Style, even past
 // the warn/over thresholds: colour-per-vendor must keep working
 // regardless of how many segments are stacked. The threshold signal
-// instead lives on the percentage text via pctColor, which is what a
-// plan row's percentage also uses — see renderPlanRow — so the two row
-// kinds agree on what colour means.
+// instead lives on the percentage text via stateColor, which reads
+// r.Budget.State — the verdict limits.Evaluate already computed against
+// the configured warnPct — rather than re-comparing Pct against a
+// threshold here. A plan row's percentage carries the same threshold
+// colour via a different mechanism, pctColor — see renderPlanRow — so
+// the two row kinds still agree on what colour a given warnPct means.
 func renderBudgetRow(label string, r Row) string {
 	pct := r.Budget.Pct
 	// The detail column is what distinguishes a budget percentage from a
 	// plan percentage: money on one, a reset clock on the other.
 	detail := fmt.Sprintf("%s/%s", FormatUSD(r.Budget.SpentUSD), FormatUSD(r.Budget.LimitUSD))
-	pctText := pctColor(pct).Render(fmt.Sprintf("%3.0f%%", pct))
+	pctText := stateColor(r.Budget.State).Render(fmt.Sprintf("%3.0f%%", pct))
 	line := label + " " + stackedBar(r.Segments, r.Budget.LimitUSD) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
@@ -200,7 +209,15 @@ func renderBudgetRow(label string, r Row) string {
 // renderPlanRow draws a plan row, built once for either the live or the
 // stale case — never both — so a future change to stale styling can't
 // silently apply to a string nobody returns.
-func renderPlanRow(label string, r Row) string {
+//
+// A planlimits.Gauge is vendor-reported and carries no State (unlike
+// limits.Status), so it has no engine verdict to read the way
+// renderBudgetRow does. It re-derives colour from warnPct directly, via
+// pctColor/bar — applying the user's configured threshold to a plan row
+// is a deliberate display convention, not a second engine, but it keeps
+// a plan row's colour meaning the same threshold a budget row's State
+// was computed against.
+func renderPlanRow(label string, r Row, warnPct int) string {
 	pct := r.Plan.Pct
 	if r.Plan.Stale {
 		// A stale window shows no live reset countdown and no
@@ -210,41 +227,61 @@ func renderPlanRow(label string, r Row) string {
 		return styleStale.Render(label + " " + plainBar(pct) + fmt.Sprintf(" %3.0f%%  %s", pct, detail))
 	}
 	// A plan row has no segments to colour, so its bar keeps the
-	// threshold colouring it always had. Its percentage text also
-	// carries the same threshold colour as a budget row's, via
-	// pctColor — see renderBudgetRow's comment for why that pairing
-	// matters.
+	// threshold colouring it always had. Its percentage text carries
+	// the same threshold colour a budget row's would for this warnPct,
+	// via pctColor rather than stateColor — see renderBudgetRow's
+	// comment for why that pairing still agrees.
 	detail := "↻ " + shortWhen(r.Plan.ResetsAt)
-	pctText := pctColor(pct).Render(fmt.Sprintf("%3.0f%%", pct))
-	line := label + " " + bar(pct) + " " + pctText + "  " + detail
+	pctText := pctColor(pct, warnPct).Render(fmt.Sprintf("%3.0f%%", pct))
+	line := label + " " + bar(pct, warnPct) + " " + pctText + "  " + detail
 	if pct >= 100 {
 		line += " ⚠"
 	}
 	return line
 }
 
-// pctColor is the single source of truth for the warn/over threshold
-// colour, applied to the percentage text of both budget and plan rows.
+// pctColor is a plan row's warn/over threshold colour, applied to its
+// percentage text. Unlike stateColor, it takes warnPct as an argument
+// rather than reading it off an engine-computed State — a plan gauge has
+// no State to read (see renderPlanRow) — so a caller that forgets to
+// plumb the configured value gets a compile error, not a silent 80.
 // It is deliberately never applied to bar segments: a segment's colour
 // identifies its vendor, and must mean the same thing whether one
 // vendor is stacked or five.
-func pctColor(pct float64) lipgloss.Style {
+func pctColor(pct float64, warnPct int) lipgloss.Style {
 	switch {
 	case pct >= 100:
 		return styleBarOver
-	case pct >= 80:
+	case pct >= float64(warnPct):
 		return styleBarWarn
 	default:
 		return lipgloss.NewStyle()
 	}
 }
 
-func bar(pct float64) string {
+// stateColor is a budget row's warn/over threshold colour, driven
+// entirely by the engine's State. limits.Evaluate already compared Pct
+// against the configured warnPct to produce State, so this function
+// never re-compares Pct against a threshold itself — that is what keeps
+// a budget row's colour and its Status.State from being able to drift
+// apart.
+func stateColor(s limits.State) lipgloss.Style {
+	switch s {
+	case limits.StateOver:
+		return styleBarOver
+	case limits.StateWarn:
+		return styleBarWarn
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
+func bar(pct float64, warnPct int) string {
 	s := plainBar(pct)
 	switch {
 	case pct >= 100:
 		return styleBarOver.Render(s)
-	case pct >= 80:
+	case pct >= float64(warnPct):
 		return styleBarWarn.Render(s)
 	default:
 		return styleBarFill.Render(s)

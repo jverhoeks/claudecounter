@@ -7,6 +7,11 @@ import ClaudeCounterCore
 struct GaugesView: View {
     let statuses: [LimitStatus]
     let gauges: [PlanGauge]
+    /// The user's configured amber threshold (`LimitsConfig.warnPct`,
+    /// itself `LimitsConfig.defaultWarnPct` when unconfigured). Required,
+    /// not defaulted — see `GaugeRows.tint`'s doc for why a plan row
+    /// needs this plumbed through rather than falling back silently.
+    let warnPct: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -17,7 +22,7 @@ struct GaugesView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                     ForEach(rows) { row in
-                        GaugeRowView(row: row)
+                        GaugeRowView(row: row, warnPct: warnPct)
                     }
                 }
             }
@@ -27,6 +32,7 @@ struct GaugesView: View {
 
 private struct GaugeRowView: View {
     let row: GaugeRow
+    let warnPct: Int
 
     var body: some View {
         HStack(spacing: 6) {
@@ -55,11 +61,16 @@ private struct GaugeRowView: View {
         .opacity(row.isStale ? 0.45 : 1)
     }
 
+    // Colour category comes from GaugeRows.tint — a budget row's from its
+    // engine-computed LimitState, a plan row's from re-deriving against
+    // warnPct — never from comparing row.pct against a hardcoded 80 here.
     private var tint: Color {
-        if row.isStale { return .gray }
-        if row.pct >= 100 { return .red }
-        if row.pct >= Double(LimitsConfig.defaultWarnPct) { return .orange }
-        return .green
+        switch GaugeRows.tint(for: row, warnPct: warnPct) {
+        case .stale: return .gray
+        case .over: return .red
+        case .warn: return .orange
+        case .ok: return .green
+        }
     }
 
     private var detail: String {

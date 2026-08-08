@@ -83,7 +83,7 @@ func TestBuildRowsOmitsUnsetBudget(t *testing.T) {
 // own window label, because the weekly band mixes an ISO week, a 7-day
 // rolling window and a Thu-Thu billing period.
 func TestRenderGaugesAlwaysLabelsWindows(t *testing.T) {
-	out := RenderGauges(statuses(), gauges())
+	out := RenderGauges(statuses(), gauges(), limits.DefaultWarnPct)
 	for _, want := range []string{"short window", "weekly", "daily", "5h", "7d", "wk", "$39", "$50"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -111,7 +111,7 @@ func TestRenderGaugesStaleRowHasNoLiveMarkers(t *testing.T) {
 	stale := []planlimits.Gauge{
 		{Vendor: "codex", WindowLbl: "5h", Pct: 100, Stale: true, ResetsAt: time.Now().Add(-time.Hour)},
 	}
-	out := RenderGauges(statuses(), stale)
+	out := RenderGauges(statuses(), stale, limits.DefaultWarnPct)
 	if !strings.Contains(out, "stale · ended") {
 		t.Fatalf("stale row missing %q:\n%s", "stale · ended", out)
 	}
@@ -158,7 +158,7 @@ func TestRenderRowRendersMultipleSegments(t *testing.T) {
 			{Label: "codex", USD: 10, Style: styleBarWarn},
 		},
 	}
-	out := renderRow(row)
+	out := renderRow(row, limits.DefaultWarnPct)
 	if got := strings.Count(out, "█"); got != 8 {
 		t.Fatalf("filled cells = %d, want 8 (40/50 = 80%%):\n%s", got, out)
 	}
@@ -178,24 +178,55 @@ func TestStackedBarSingleSegmentMatchesPlainBar(t *testing.T) {
 	}
 }
 
-// pctColor is the single source of the warn/over threshold colour. Every
-// existing assertion up to this point sits below 80%, so this is the
-// only place that actually crosses both thresholds.
+// pctColor is a plan row's warn/over threshold colour, driven by the
+// caller-supplied warnPct rather than a hardcoded value — a plan gauge
+// carries no engine State (see stateColor), so it re-derives colour
+// against the same configured threshold the engine used elsewhere. The
+// over threshold (100) is never configurable, in either table below.
 func TestPctColorThresholds(t *testing.T) {
 	cases := []struct {
-		pct  float64
-		want lipgloss.Style
+		pct     float64
+		warnPct int
+		want    lipgloss.Style
 	}{
-		{0, lipgloss.NewStyle()},
-		{79.9, lipgloss.NewStyle()},
-		{80, styleBarWarn},
-		{99.9, styleBarWarn},
-		{100, styleBarOver},
-		{150, styleBarOver},
+		{0, limits.DefaultWarnPct, lipgloss.NewStyle()},
+		{79.9, limits.DefaultWarnPct, lipgloss.NewStyle()},
+		{80, limits.DefaultWarnPct, styleBarWarn},
+		{99.9, limits.DefaultWarnPct, styleBarWarn},
+		{100, limits.DefaultWarnPct, styleBarOver},
+		{150, limits.DefaultWarnPct, styleBarOver},
+		// A non-default configured threshold (60) must move the warn
+		// boundary with it, not stay pinned at 80.
+		{59.9, 60, lipgloss.NewStyle()},
+		{60, 60, styleBarWarn},
+		{79.9, 60, styleBarWarn},
+		{100, 60, styleBarOver},
 	}
 	for _, c := range cases {
-		if got := pctColor(c.pct).GetForeground(); got != c.want.GetForeground() {
-			t.Errorf("pctColor(%v).GetForeground() = %v, want %v", c.pct, got, c.want.GetForeground())
+		if got := pctColor(c.pct, c.warnPct).GetForeground(); got != c.want.GetForeground() {
+			t.Errorf("pctColor(%v, %v).GetForeground() = %v, want %v", c.pct, c.warnPct, got, c.want.GetForeground())
+		}
+	}
+}
+
+// stateColor is a budget row's threshold colour, driven entirely by the
+// engine's State — never by re-comparing Pct against a threshold here.
+// This is what makes a budget row automatically honour whatever warnPct
+// limits.Evaluate was given, with no threshold plumbed into this package
+// at all for that row kind.
+func TestStateColorFollowsEngineState(t *testing.T) {
+	cases := []struct {
+		state limits.State
+		want  lipgloss.Style
+	}{
+		{limits.StateUnset, lipgloss.NewStyle()},
+		{limits.StateOK, lipgloss.NewStyle()},
+		{limits.StateWarn, styleBarWarn},
+		{limits.StateOver, styleBarOver},
+	}
+	for _, c := range cases {
+		if got := stateColor(c.state).GetForeground(); got != c.want.GetForeground() {
+			t.Errorf("stateColor(%v).GetForeground() = %v, want %v", c.state, got, c.want.GetForeground())
 		}
 	}
 }
@@ -208,6 +239,12 @@ func TestPctColorThresholds(t *testing.T) {
 // existing threshold colouring unchanged. Both row kinds' percentage
 // text carries the same threshold colour, which is what fixes the
 // budget-vs-plan colour inconsistency the reviewer flagged.
+//
+// The two row kinds now get there by different mechanisms — a budget
+// row's colour comes from stateColor(r.Budget.State), a plan row's from
+// pctColor(pct, warnPct) — but both still agree on what colour a given
+// warnPct means, since a budget row's State was itself computed by
+// limits.Evaluate against that same warnPct.
 //
 // lipgloss emits no ANSI codes when stdout isn't a terminal (confirmed
 // empirically in the round-1 report), so this test forces a colour
@@ -223,7 +260,7 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		Budget:    &limits.Status{SpentUSD: 42.5, LimitUSD: 50, Pct: 85, State: limits.StateWarn},
 		Segments:  warnSeg,
 	}
-	out := renderRow(warnRow)
+	out := renderRow(warnRow, limits.DefaultWarnPct)
 	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 85%% missing warn-styled percentage %q:\n%q", want, out)
 	}
@@ -244,7 +281,7 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		Budget:    &limits.Status{SpentUSD: 52.5, LimitUSD: 50, Pct: 105, State: limits.StateOver},
 		Segments:  overSeg,
 	}
-	out = renderRow(overRow)
+	out = renderRow(overRow, limits.DefaultWarnPct)
 	if want := styleBarOver.Render("105%"); !strings.Contains(out, want) {
 		t.Fatalf("budget row at 105%% missing over-styled percentage %q:\n%q", want, out)
 	}
@@ -257,9 +294,55 @@ func TestPercentTextCarriesThresholdColorOnBothRowKinds(t *testing.T) {
 		WindowLbl: "5h",
 		Plan:      &planlimits.Gauge{Vendor: "codex", WindowLbl: "5h", Pct: 85, ResetsAt: time.Now().Add(time.Hour)},
 	}
-	out = renderRow(planRow)
+	out = renderRow(planRow, limits.DefaultWarnPct)
 	if want := styleBarWarn.Render(" 85%"); !strings.Contains(out, want) {
 		t.Fatalf("plan row at 85%% missing warn-styled percentage %q:\n%q", want, out)
+	}
+}
+
+// A budget row must colour its percentage text from the engine's State,
+// not from re-comparing Pct against a hardcoded 80. A Status at 65% with
+// State: StateWarn simulates a user-configured warn_pct of 60: the old
+// pctColor(65) — hardcoded to an 80 threshold — would render this green,
+// contradicting the engine's own verdict for the same row.
+func TestBudgetRowColorFollowsConfiguredWarnPctViaState(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	row := Row{
+		Vendor:    "claude",
+		WindowLbl: "daily",
+		Budget:    &limits.Status{SpentUSD: 32.5, LimitUSD: 50, Pct: 65, State: limits.StateWarn},
+		Segments:  []Segment{{Label: "claude", USD: 32.5, Style: styleBarFill}},
+	}
+	out := renderRow(row, limits.DefaultWarnPct)
+	if want := styleBarWarn.Render(" 65%"); !strings.Contains(out, want) {
+		t.Fatalf("budget row at 65%% with State=warn missing warn-styled percentage %q:\n%q", want, out)
+	}
+}
+
+// A plan row has no engine State, so RenderGauges must plumb the actual
+// configured warnPct through to its colour decision rather than a
+// hardcoded 80. At warnPct=60, a 65% plan gauge must render warn; at the
+// default warnPct=80, the identical 65% gauge must NOT render warn. Both
+// directions are asserted so a fix that merely lowers the hardcoded
+// constant (rather than threading the argument) cannot pass.
+func TestRenderGaugesPlanRowUsesConfiguredWarnPct(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	gs := []planlimits.Gauge{
+		{Vendor: "codex", WindowLbl: "5h", Pct: 65, ResetsAt: time.Now().Add(time.Hour)},
+	}
+
+	outLowThreshold := RenderGauges(nil, gs, 60)
+	if want := styleBarWarn.Render(" 65%"); !strings.Contains(outLowThreshold, want) {
+		t.Fatalf("plan row at 65%% with warnPct=60 missing warn-styled percentage %q:\n%q", want, outLowThreshold)
+	}
+
+	outDefaultThreshold := RenderGauges(nil, gs, limits.DefaultWarnPct)
+	if want := styleBarWarn.Render(" 65%"); strings.Contains(outDefaultThreshold, want) {
+		t.Fatalf("plan row at 65%% with warnPct=80 must NOT be warn-styled:\n%q", outDefaultThreshold)
 	}
 }
 

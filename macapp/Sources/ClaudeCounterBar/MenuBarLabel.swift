@@ -28,7 +28,11 @@ struct MenuBarLabel: View {
         // red — only a live budget or plan gauge can.
         let worst = state.worstUtilisationPct
         let overLimit = worst >= 100
-        let warned = state.hasActiveWarning || worst >= Double(LimitsConfig.defaultWarnPct)
+        // state.warnPct is the configured threshold (limits.toml's
+        // warn_pct, or LimitsConfig.defaultWarnPct when unconfigured) —
+        // not the hardcoded default, so a user who lowers warn_pct sees
+        // the menu bar escalate at their threshold, not at 80.
+        let warned = state.hasActiveWarning || worst >= Double(state.warnPct)
         HStack(spacing: 4) {
             CashRegisterGlyph(pulsing: isLoading)
                 // Match the visual weight of the menu-bar text. SF

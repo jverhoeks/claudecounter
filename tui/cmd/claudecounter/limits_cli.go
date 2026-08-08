@@ -30,7 +30,7 @@ func gatherGauges(cfgPath string, daily []agg.DailyTotal, now time.Time) (string
 	if grok, err := planlimits.ScanGrok(planlimits.DefaultGrokLog(), now); err == nil {
 		gs = append(gs, grok...)
 	}
-	return ui.RenderGauges(st, gs), nil
+	return ui.RenderGauges(st, gs, cfg.WarnPct), nil
 }
 
 // runLimits is the --limits one-shot: scan, print the gauges, exit. A

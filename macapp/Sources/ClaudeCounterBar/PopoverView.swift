@@ -71,7 +71,7 @@ struct PopoverView: View {
             // surface and must always be visible.
             HeroRow(state: state)
             if hasGaugeRows {
-                GaugesView(statuses: state.limitStatuses, gauges: state.displayPlanGauges)
+                GaugesView(statuses: state.limitStatuses, gauges: state.displayPlanGauges, warnPct: state.warnPct)
             }
             HourlyChartRow(
                 day: shown?.day ?? "",

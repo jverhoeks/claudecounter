@@ -86,4 +86,50 @@ public enum GaugeRows {
         for g in gauges where !g.stale { worst = max(worst, g.pct) }
         return worst
     }
+
+    // MARK: - Tint
+
+    /// The warn/over/stale colour category a row renders as. Mirrors
+    /// Go's stateColor/pctColor split in gauges.go: a budget row's tint
+    /// comes from `LimitStatus.state` (see `budgetTint`), a plan row's
+    /// from re-deriving against `warnPct` (see `planTint`) — `.stale`
+    /// has no Go analog there since the TUI handles plan staleness as an
+    /// early return in `renderPlanRow`, not a colour category, but the
+    /// popover needs one value covering every row `GaugeRowView` draws.
+    public enum Tint: Equatable, Sendable {
+        case ok, warn, over, stale
+    }
+
+    /// A budget row's tint, read directly off the engine's `LimitState`
+    /// — the verdict `Limits.evaluate` already computed against the
+    /// configured `warnPct` — never by re-comparing `pct` against a
+    /// threshold here. Mirrors Go's `stateColor`.
+    public static func budgetTint(_ state: LimitState) -> Tint {
+        switch state {
+        case .over: return .over
+        case .warn: return .warn
+        case .ok, .unset: return .ok
+        }
+    }
+
+    /// A plan gauge carries no `LimitState` (see `PlanGauge`), so it
+    /// re-derives tint against `warnPct` directly. Applying the user's
+    /// configured threshold to a plan row is a deliberate display
+    /// convention, not a second engine — but it is what keeps a plan
+    /// row's colour meaning the same threshold a budget row's State was
+    /// computed against. Mirrors Go's `pctColor`. The over threshold
+    /// (100) is never configurable.
+    public static func planTint(pct: Double, warnPct: Int) -> Tint {
+        if pct >= 100 { return .over }
+        if pct >= Double(warnPct) { return .warn }
+        return .ok
+    }
+
+    /// The tint for one row, combining staleness, budget state and plan
+    /// pct into the single decision `GaugeRowView` renders.
+    public static func tint(for row: GaugeRow, warnPct: Int) -> Tint {
+        if row.isStale { return .stale }
+        if let budget = row.budget { return budgetTint(budget.state) }
+        return planTint(pct: row.pct, warnPct: warnPct)
+    }
 }

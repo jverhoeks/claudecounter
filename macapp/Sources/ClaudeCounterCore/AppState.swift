@@ -31,6 +31,13 @@ public final class AppState: ObservableObject {
     /// Vendor-reported plan utilisation (Codex, Grok). Empty when neither
     /// vendor is installed.
     @Published public private(set) var planGauges: [PlanGauge] = []
+    /// The amber threshold from `limits.toml`'s `warn_pct`
+    /// (`LimitsConfig.defaultWarnPct` when unconfigured or the file is
+    /// malformed). This is what `GaugesView` and `MenuBarLabel` render
+    /// their warn colour against — see `refreshGauges` — so a configured
+    /// threshold takes effect on both surfaces without either hardcoding
+    /// 80.
+    @Published public private(set) var warnPct: Int = LimitsConfig.defaultWarnPct
 
     public enum Status: Equatable, Sendable {
         case starting
@@ -299,6 +306,7 @@ public final class AppState: ObservableObject {
             var cal = Calendar(identifier: .iso8601)
             cal.timeZone = .current
             statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
+            self.warnPct = cfg.warnPct
             // A fixed limits.toml shouldn't leave a stale error banner
             // up until the next manual Refresh — but only clear it if
             // it's still the error WE set; some other subsystem may have
@@ -310,11 +318,16 @@ public final class AppState: ObservableObject {
             self.lastError = message
             lastLimitsError = message
             statuses = []
+            // An unusable config falls back to the same default the TUI
+            // uses for a missing file — never left at a stale, possibly
+            // stricter, value from the last good load.
+            self.warnPct = LimitsConfig.defaultWarnPct
         } catch {
             let message = "Failed to load limits.toml: \(error)"
             self.lastError = message
             lastLimitsError = message
             statuses = []
+            self.warnPct = LimitsConfig.defaultWarnPct
         }
         let gauges = await Task.detached(priority: .utility) { () -> [PlanGauge] in
             PlanLimits.scanCodex(root: PlanLimits.defaultCodexRoot(), now: now)
