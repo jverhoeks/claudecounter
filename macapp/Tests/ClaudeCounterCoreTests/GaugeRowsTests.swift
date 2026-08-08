@@ -61,6 +61,25 @@ final class GaugeRowsTests: XCTestCase {
         XCTAssertEqual(GaugeRows.worstPct(statuses: statuses, gauges: stale), 78, accuracy: 0.0001)
     }
 
+    // A gauge that `build` can never turn into a row must never be able
+    // to escalate the menu bar either — otherwise the bar can go red
+    // with no row on screen explaining why. Two ways a gauge is
+    // undisplayable today: a vendor outside displayOrder (`build` only
+    // ever iterates displayOrder), and a plan gauge tagged "claude" (the
+    // displayOrder loop's "claude" branch only ever looks at
+    // `statuses`, never at `gauges`, for that vendor slot). Mirrors
+    // Go's TestWorstPctIgnoresGaugesBuildRowsWouldNeverDisplay
+    // (gauges_test.go) — final-review.md's deferred-list T5.
+    func test_worstPct_ignoresGaugesBuildWouldNeverDisplay() {
+        let undisplayable = [
+            PlanGauge(vendor: "gemini", windowLabel: "5h", pct: 100,
+                      resetsAt: Date().addingTimeInterval(3600), observed: Date(), stale: false, plan: "plus"),
+            PlanGauge(vendor: "claude", windowLabel: "5h", pct: 100,
+                      resetsAt: Date().addingTimeInterval(3600), observed: Date(), stale: false, plan: "plus"),
+        ]
+        XCTAssertEqual(GaugeRows.worstPct(statuses: [], gauges: undisplayable), 0, accuracy: 0.0001)
+    }
+
     // The no-config/no-vendors case: this must degrade to "no rows", not
     // a crash, and must never make the menu bar look alarmed. This is the
     // baseline every user with no limits.toml and no Codex/Grok installed

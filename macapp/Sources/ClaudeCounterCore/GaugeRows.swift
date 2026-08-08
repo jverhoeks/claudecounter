@@ -78,12 +78,30 @@ public enum GaugeRows {
         g.windowLabel.hasSuffix("h") ? .short : .weekly
     }
 
-    /// Highest utilisation across every non-stale row. Drives menu bar
-    /// escalation — deliberately a different ordering from displayOrder.
+    /// Highest utilisation across every non-stale row that `build` would
+    /// actually display, in both bands. Drives menu bar escalation.
+    ///
+    /// Reads `build`'s own output rather than re-scanning
+    /// statuses/gauges itself, mirroring Go's `WorstPct` (gauges.go):
+    /// `displayOrder` is a closed list, and `build` already drops
+    /// anything outside it — an unknown vendor's gauge, or (subtly) a
+    /// `vendor: "claude"` plan gauge, since the `displayOrder` loop's
+    /// "claude" slot only ever looks at `statuses`, never at `gauges`,
+    /// for that vendor. Iterating statuses/gauges directly, as this used
+    /// to, would let such a gauge escalate the menu bar to red with no
+    /// row on screen explaining why — harmless today because only
+    /// codex/grok emit gauges and both are in `displayOrder`, but a real
+    /// gap the moment a fourth vendor (or a `vendor: "claude"` gauge)
+    /// appears. Reading `build`'s rows makes "cannot be displayed" and
+    /// "cannot escalate" the same guarantee by construction.
     public static func worstPct(statuses: [LimitStatus], gauges: [PlanGauge]) -> Double {
         var worst = 0.0
-        for s in statuses where s.state != .unset { worst = max(worst, s.pct) }
-        for g in gauges where !g.stale { worst = max(worst, g.pct) }
+        for band: GaugeBand in [.short, .weekly] {
+            for row in build(band: band, statuses: statuses, gauges: gauges) {
+                if let budget = row.budget { worst = max(worst, budget.pct) }
+                if let plan = row.plan, !plan.stale { worst = max(worst, plan.pct) }
+            }
+        }
         return worst
     }
 
