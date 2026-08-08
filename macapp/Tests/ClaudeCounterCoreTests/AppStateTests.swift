@@ -145,6 +145,96 @@ final class AppStateTests: XCTestCase {
         await app.stop()
     }
 
+    // MARK: - Budget vs. vendor-scan cadence split (final-review.md I-1)
+
+    /// `refreshBudgets` is the cheap half of what used to be a single
+    /// `refreshGauges`: a `limits.toml` read plus the pure
+    /// `Limits.evaluate`, no filesystem walk. It must update
+    /// `limitStatuses`/`warnPct` from the config it's given, and must
+    /// NOT touch `planGauges` — that's the whole point of splitting it
+    /// out, so the periodic loop can call this every tick (60s) without
+    /// paying for the vendor rescan every tick too.
+    func test_refreshBudgets_updatesStatusesAndWarnPct_leavesPlanGaugesUntouched() async throws {
+        let root = NSTemporaryDirectory() + "as-lim-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/projects", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-lim-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let configPath = NSTemporaryDirectory() + "limits-\(UUID().uuidString).toml"
+        try "[limits]\ndaily = 50.0\nweekly = 250.0\nwarn_pct = 70\n"
+            .write(toFile: configPath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: configPath) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore()
+        )
+        await app.start()
+        // Whatever start()'s own full rescan found (real machine state,
+        // not asserted on) — refreshBudgets below must leave it exactly
+        // as it is.
+        let gaugesBeforeBudgetRefresh = app.planGauges
+
+        await app.refreshBudgets(configPath: configPath)
+
+        XCTAssertEqual(app.warnPct, 70)
+        XCTAssertEqual(app.limitStatuses.count, 2)
+        XCTAssertTrue(app.limitStatuses.contains { $0.window == .day && $0.limitUSD == 50 })
+        XCTAssertTrue(app.limitStatuses.contains { $0.window == .week && $0.limitUSD == 250 })
+        XCTAssertEqual(app.planGauges, gaugesBeforeBudgetRefresh,
+                       "refreshBudgets must not touch planGauges — that's rescanPlanGauges' job")
+
+        await app.stop()
+    }
+
+    /// `rescanPlanGauges` is the expensive half: the vendor filesystem
+    /// walk. It must not touch `limitStatuses` — that's `refreshBudgets`'
+    /// job, called on a different (faster) cadence by the periodic loop.
+    func test_rescanPlanGauges_leavesLimitStatusesUntouched() async throws {
+        let root = NSTemporaryDirectory() + "as-scan-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/projects", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-scan-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let configPath = NSTemporaryDirectory() + "limits-\(UUID().uuidString).toml"
+        try "[limits]\ndaily = 50.0\nweekly = 250.0\nwarn_pct = 70\n"
+            .write(toFile: configPath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: configPath) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore()
+        )
+        await app.start()
+        await app.refreshBudgets(configPath: configPath)
+        let statusesBeforeRescan = app.limitStatuses
+
+        await app.rescanPlanGauges()
+
+        XCTAssertEqual(app.limitStatuses, statusesBeforeRescan,
+                       "rescanPlanGauges must not touch limitStatuses — that's refreshBudgets' job")
+
+        await app.stop()
+    }
+
     // MARK: - Dock icon wiring
 
     /// Boot AppState with `dockIconEnabled = true` (the default) and an

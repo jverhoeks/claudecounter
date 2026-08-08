@@ -34,7 +34,7 @@ public final class AppState: ObservableObject {
     /// The amber threshold from `limits.toml`'s `warn_pct`
     /// (`LimitsConfig.defaultWarnPct` when unconfigured or the file is
     /// malformed). This is what `GaugesView` and `MenuBarLabel` render
-    /// their warn colour against — see `refreshGauges` — so a configured
+    /// their warn colour against — see `refreshBudgets` — so a configured
     /// threshold takes effect on both surfaces without either hardcoding
     /// 80.
     @Published public private(set) var warnPct: Int = LimitsConfig.defaultWarnPct
@@ -218,12 +218,21 @@ public final class AppState: ObservableObject {
         await publishSnapshot()
     }
 
-    /// How often `refreshGauges` does the expensive part: a recursive
-    /// filesystem walk of `~/.codex/sessions` (up to 50 whole-file reads)
-    /// plus the Grok log. 10 minutes of percentage staleness is an
-    /// acceptable trade against redoing that I/O every periodic-flush
-    /// tick; staleness itself does NOT wait this long — see
-    /// `displayPlanGauges`.
+    /// How often `rescanPlanGauges` walks the filesystem: a recursive
+    /// walk of `~/.codex/sessions` (up to 50 whole-file reads) plus the
+    /// Grok log. 10 minutes of vendor-plan staleness is an acceptable
+    /// trade against redoing that I/O every periodic-flush tick.
+    ///
+    /// This does NOT gate `refreshBudgets` — budgets re-evaluate every
+    /// tick (60s), since that's a small `limits.toml` read plus the pure
+    /// `Limits.evaluate`, no directory walk. Before this split, both
+    /// were bundled into one `refreshGauges` call gated behind this
+    /// constant, which meant a budget crossing `warn_pct` or 100%
+    /// mid-session could keep a green menu bar for up to 10 minutes
+    /// (final-review.md I-1) — the fix that introduced this constant
+    /// correctly decoupled the vendor walk from per-tick staleness
+    /// (`displayPlanGauges`), but left budget re-evaluation riding along
+    /// with the expensive walk instead.
     private static let gaugeRescanEveryNTicks = 10
 
     /// Ticks (60s each, one per periodic-flush loop iteration) since the
@@ -233,7 +242,7 @@ public final class AppState: ObservableObject {
     /// `gaugeRescanEveryNTicks`-tick interval away, not immediate.
     private var gaugeRescanTickCount = 0
 
-    /// Mirrors whatever `lastError` `refreshGauges` itself most recently
+    /// Mirrors whatever `lastError` `refreshBudgets` itself most recently
     /// set (nil once it last succeeded). Lets a later successful config
     /// load clear `lastError` WITHOUT clobbering an unrelated error set
     /// by another path (initial scan, reader, refresh, cache write) that
@@ -269,9 +278,12 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Re-evaluates budgets and rescans the vendor logs. Scanning walks
-    /// the filesystem, so it stays off the main actor; only the
-    /// assignment hops back.
+    /// Re-evaluates budgets against `limits.toml`. Cheap: one small file
+    /// read plus the pure `Limits.evaluate` — no filesystem walk. Safe
+    /// to call every periodic-flush tick (60s), which is what closes
+    /// final-review.md I-1: a budget crossing `warn_pct` or 100%
+    /// mid-session now shows up within one tick instead of waiting for
+    /// `rescanPlanGauges`'s much slower cadence.
     ///
     /// A malformed `limits.toml` degrades the budget rows to "no rows",
     /// never a crash or a stalled UI, but surfaces via `lastError` so the
@@ -280,23 +292,16 @@ public final class AppState: ObservableObject {
     /// `lastLimitsError`), so a fixed typo doesn't leave a stale error
     /// banner up until the next manual Refresh. A missing config file is
     /// NOT an error — `Limits.load` returns zero limits for that case,
-    /// which is the normal unconfigured state. Vendor scans never throw
-    /// either: `PlanLimits.scanCodex` / `scanGrok` treat a missing or
-    /// unreadable log as "no rows" for that vendor, not a failure.
+    /// which is the normal unconfigured state.
     ///
-    /// Called from `start()` (first paint) and `refresh()` (the
-    /// popover's manual refresh button) — both do a full rescan. The
-    /// periodic-flush loop also calls this, but only every
-    /// `gaugeRescanEveryNTicks` ticks; the loop's other ticks force a
-    /// UI redraw (via `objectWillChange`) so `displayPlanGauges` picks
-    /// up newly-expired windows every minute without any filesystem
-    /// access. Piggybacking on the existing periodic loop avoids adding
-    /// a second timer.
-    public func refreshGauges(now: Date = Date()) async {
+    /// `configPath` defaults to `Limits.defaultConfigPath()`; the
+    /// parameter exists so tests can point at a temp file instead of the
+    /// user's real `~/.config/claudecounter/limits.toml`.
+    public func refreshBudgets(now: Date = Date(), configPath: String = Limits.defaultConfigPath()) async {
         let daily = totals.daily
         let statuses: [LimitStatus]
         do {
-            let cfg = try Limits.load(path: Limits.defaultConfigPath())
+            let cfg = try Limits.load(path: configPath)
             // ISO-8601 identifier for Monday-first week numbering matching
             // Go's ISOWeek, but the CURRENT time zone — `DailyTotal.day` is a
             // local calendar day, so evaluating in UTC would misalign the day
@@ -329,13 +334,35 @@ public final class AppState: ObservableObject {
             statuses = []
             self.warnPct = LimitsConfig.defaultWarnPct
         }
+        self.limitStatuses = statuses
+    }
+
+    /// Rescans the vendor plan logs (Codex, Grok). Expensive: a
+    /// recursive filesystem walk of `~/.codex/sessions` (up to 50
+    /// whole-file reads) plus reading the Grok log, so it stays off the
+    /// main actor; only the assignment hops back. Runs far less often
+    /// than `refreshBudgets` — see `gaugeRescanEveryNTicks`.
+    ///
+    /// Vendor scans never throw: `PlanLimits.scanCodex` / `scanGrok`
+    /// treat a missing or unreadable log as "no rows" for that vendor,
+    /// not a failure.
+    public func rescanPlanGauges(now: Date = Date()) async {
         let gauges = await Task.detached(priority: .utility) { () -> [PlanGauge] in
             PlanLimits.scanCodex(root: PlanLimits.defaultCodexRoot(), now: now)
                 + PlanLimits.scanGrok(path: PlanLimits.defaultGrokLog(), now: now)
         }.value
-
-        self.limitStatuses = statuses
         self.planGauges = gauges
+    }
+
+    /// Full gauge refresh: budgets + vendor rescan together. Used where
+    /// both are wanted unconditionally — `start()`'s first paint and the
+    /// popover's manual Refresh — as opposed to the periodic-flush loop,
+    /// which calls `refreshBudgets` every tick and `rescanPlanGauges`
+    /// only every `gaugeRescanEveryNTicks` ticks (see
+    /// `startPeriodicFlush`).
+    private func refreshGauges(now: Date = Date()) async {
+        await refreshBudgets(now: now)
+        await rescanPlanGauges(now: now)
     }
 
     // MARK: Watcher loop
@@ -447,6 +474,12 @@ public final class AppState: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
                 guard let self else { return }
+                // Cheap: a limits.toml read plus the pure Limits.evaluate,
+                // no filesystem walk. Every tick, so a budget crossing
+                // warn_pct or 100% escalates within one minute rather
+                // than waiting for the vendor rescan below
+                // (final-review.md I-1).
+                await self.refreshBudgets()
                 // Force a redraw every tick so `displayPlanGauges` (which
                 // re-derives staleness from `resetsAt` against "now" on
                 // every access — see its doc comment) gets re-evaluated
@@ -458,9 +491,9 @@ public final class AppState: ObservableObject {
                 if self.gaugeRescanTickCount >= Self.gaugeRescanEveryNTicks {
                     self.gaugeRescanTickCount = 0
                     // The expensive part: walks ~/.codex/sessions and
-                    // reads the Grok log. Runs far less often than the
-                    // staleness redraw above needs.
-                    await self.refreshGauges()
+                    // reads the Grok log. Runs far less often than
+                    // refreshBudgets above needs.
+                    await self.rescanPlanGauges()
                 }
                 await self.flushCache()
             }

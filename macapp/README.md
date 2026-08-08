@@ -79,11 +79,22 @@ for the full explanation and the `limits.toml` format.
 Limits are read from the same `~/.config/claudecounter/limits.toml` the
 TUI reads, so the two apps always agree on your budgets and threshold.
 
-The popover rescans `~/.codex/sessions` and the Grok log every 10
-minutes — that walk is comparatively expensive — but re-derives each
-row's `stale` flag against the clock every minute. So if a window's
-reset time passes, the row dims to stale within a minute even though
-the percentage behind it can be up to 10 minutes stale itself.
+Three different refresh cadences feed this block, and they are not all
+the same:
+- **`claude` budget rows** (day/week spend vs. `limits.toml`) re-read
+  the config file and re-evaluate every **minute** — a plain `Limits.load`
+  plus the pure `Limits.evaluate`, no filesystem walk, so it's cheap
+  enough to do on every periodic tick. A budget crossing `warn_pct` or
+  100% shows up (and escalates the menu bar) within a minute.
+- **`codex`/`grok` plan rows'** percentages come from rescanning
+  `~/.codex/sessions` and the Grok log — a comparatively expensive walk
+  — every **10 minutes**.
+- Every row's `stale` flag, for either kind, re-derives against the
+  clock every **minute**, independent of the walk above. So if a
+  window's reset time passes, the row dims to stale within a minute
+  even though a plan row's percentage behind it can be up to 10 minutes
+  stale itself. (A budget row has no separate staleness concept — it's
+  either a current window's spend or not shown at all.)
 
 A couple of things the popover renders differently from the TUI, worth
 knowing if you use both:
@@ -178,7 +189,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 171 unit tests
+swift test                       # 177 unit tests
 ```
 
 ### Requirements
@@ -322,7 +333,7 @@ Sources/
     PopoverView.swift                 hero, hourly chart, tables, live tail
     GaugesView.swift                  popover's budget/plan-limit gauge block
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         171 unit tests
+Tests/ClaudeCounterCoreTests/         177 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
@@ -336,11 +347,14 @@ Tests/ClaudeCounterCoreTests/         171 unit tests
                                               formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   ModelPaletteTests.swift             2 tests, model→colour ranking rule
-  AppStateTests.swift                 10 tests, incl. live pipeline + refresh
+  AppStateTests.swift                 12 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
-  LimitsTests.swift                   17 tests, window evaluation + TOML load
+                                              + budget-vs-vendor-scan cadence split
+  LimitsTests.swift                   20 tests, window evaluation + TOML load
+                                              (incl. spaced table headers, CRLF)
   PlanLimitsTests.swift               8 tests, Codex/Grok scan + staleness
-  GaugeRowsTests.swift                9 tests, row building + tint rules
+  GaugeRowsTests.swift                10 tests, row building + tint rules +
+                                              escalation matches displayable rows
   LimitsParityTests.swift             1 test, cross-language fixture vs. Go
   NotificationsTests.swift            5 tests (unrelated feature)
   SessionTrackerTests.swift           16 tests (unrelated feature)
@@ -449,7 +463,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 171-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 177-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 
