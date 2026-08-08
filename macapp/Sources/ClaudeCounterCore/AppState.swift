@@ -220,10 +220,19 @@ public final class AppState: ObservableObject {
     private static let gaugeRescanEveryNTicks = 10
 
     /// Ticks (60s each, one per periodic-flush loop iteration) since the
-    /// last full gauge rescan. Starts at `gaugeRescanEveryNTicks` so the
-    /// very first tick after `start()`'s own rescan doesn't immediately
-    /// rescan again.
+    /// last full gauge rescan. Starts at 0 — `start()` already performs
+    /// its own rescan before the periodic loop's first tick, so counting
+    /// up from zero here means the next filesystem rescan is a full
+    /// `gaugeRescanEveryNTicks`-tick interval away, not immediate.
     private var gaugeRescanTickCount = 0
+
+    /// Mirrors whatever `lastError` `refreshGauges` itself most recently
+    /// set (nil once it last succeeded). Lets a later successful config
+    /// load clear `lastError` WITHOUT clobbering an unrelated error set
+    /// by another path (initial scan, reader, refresh, cache write) that
+    /// may have landed in `lastError` since — we only clear when
+    /// `lastError` still equals the error we ourselves put there.
+    private var lastLimitsError: String? = nil
 
     /// Highest non-stale utilisation, used for menu bar escalation.
     /// Reads `displayPlanGauges`, not `planGauges` directly, so an
@@ -258,13 +267,15 @@ public final class AppState: ObservableObject {
     /// assignment hops back.
     ///
     /// A malformed `limits.toml` degrades the budget rows to "no rows",
-    /// never a crash or a stalled UI, but surfaces once via `lastError`
-    /// so the user isn't left wondering why the budget gauges vanished.
-    /// A missing config file is NOT an error — `Limits.load` returns
-    /// zero limits for that case, which is the normal unconfigured
-    /// state. Vendor scans never throw either: `PlanLimits.scanCodex` /
-    /// `scanGrok` treat a missing or unreadable log as "no rows" for
-    /// that vendor, not a failure.
+    /// never a crash or a stalled UI, but surfaces via `lastError` so the
+    /// user isn't left wondering why the budget gauges vanished — and
+    /// clears again the next time the file loads cleanly (see
+    /// `lastLimitsError`), so a fixed typo doesn't leave a stale error
+    /// banner up until the next manual Refresh. A missing config file is
+    /// NOT an error — `Limits.load` returns zero limits for that case,
+    /// which is the normal unconfigured state. Vendor scans never throw
+    /// either: `PlanLimits.scanCodex` / `scanGrok` treat a missing or
+    /// unreadable log as "no rows" for that vendor, not a failure.
     ///
     /// Called from `start()` (first paint) and `refresh()` (the
     /// popover's manual refresh button) — both do a full rescan. The
@@ -288,11 +299,21 @@ public final class AppState: ObservableObject {
             var cal = Calendar(identifier: .iso8601)
             cal.timeZone = .current
             statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
+            // A fixed limits.toml shouldn't leave a stale error banner
+            // up until the next manual Refresh — but only clear it if
+            // it's still the error WE set; some other subsystem may have
+            // set a more recent, unrelated one since.
+            if lastError != nil && lastError == lastLimitsError { self.lastError = nil }
+            lastLimitsError = nil
         } catch LimitsError.malformed(let line) {
-            self.lastError = "limits.toml is malformed near: \"\(line)\""
+            let message = "limits.toml is malformed near: \"\(line)\""
+            self.lastError = message
+            lastLimitsError = message
             statuses = []
         } catch {
-            self.lastError = "Failed to load limits.toml: \(error)"
+            let message = "Failed to load limits.toml: \(error)"
+            self.lastError = message
+            lastLimitsError = message
             statuses = []
         }
         let gauges = await Task.detached(priority: .utility) { () -> [PlanGauge] in
