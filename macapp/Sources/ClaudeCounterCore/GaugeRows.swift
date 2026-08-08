@@ -17,9 +17,17 @@ public struct GaugeRow: Equatable, Sendable, Identifiable {
     public var notApplicable: String?
 
     /// SwiftUI requires this to be unique within a rendered band, or
-    /// ForEach misbehaves. It holds because a vendor contributes at most
-    /// one row per distinct window label, and labels are derived from
-    /// distinct window_minutes values.
+    /// ForEach misbehaves. This is NOT derived from `PlanGauge`'s raw
+    /// `window_minutes` — that value doesn't survive past `PlanLimits`'
+    /// scan, only its rendered `windowLabel` does, and
+    /// `PlanLimits.windowLabel(minutes:)` is lossy (integer division):
+    /// 300 and 301 both render "5h", 10080 and 11000 both render "7d".
+    /// This id only holds today because the two vendors we scan never
+    /// report two windows whose *rendered* labels collide: Codex's own
+    /// two slots are 300min ("5h") and 10080min ("7d") — far enough
+    /// apart that the lossy rendering doesn't matter — and Grok
+    /// contributes at most one row ("wk"). A vendor reporting two windows
+    /// that render to the same label would break this.
     public var id: String { vendor + "/" + windowLabel }
 
     /// The percentage this row displays, whatever its source.

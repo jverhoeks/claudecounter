@@ -211,25 +211,74 @@ public final class AppState: ObservableObject {
         await publishSnapshot()
     }
 
+    /// How often `refreshGauges` does the expensive part: a recursive
+    /// filesystem walk of `~/.codex/sessions` (up to 50 whole-file reads)
+    /// plus the Grok log. 10 minutes of percentage staleness is an
+    /// acceptable trade against redoing that I/O every periodic-flush
+    /// tick; staleness itself does NOT wait this long — see
+    /// `displayPlanGauges`.
+    private static let gaugeRescanEveryNTicks = 10
+
+    /// Ticks (60s each, one per periodic-flush loop iteration) since the
+    /// last full gauge rescan. Starts at `gaugeRescanEveryNTicks` so the
+    /// very first tick after `start()`'s own rescan doesn't immediately
+    /// rescan again.
+    private var gaugeRescanTickCount = 0
+
     /// Highest non-stale utilisation, used for menu bar escalation.
+    /// Reads `displayPlanGauges`, not `planGauges` directly, so an
+    /// expired window stops counting the instant it expires rather than
+    /// waiting for the next filesystem rescan.
     public var worstUtilisationPct: Double {
-        GaugeRows.worstPct(statuses: limitStatuses, gauges: planGauges)
+        GaugeRows.worstPct(statuses: limitStatuses, gauges: displayPlanGauges)
+    }
+
+    /// `planGauges` with `stale` re-derived from `resetsAt` against the
+    /// current clock, instead of trusting the value fixed at the last
+    /// scan (which can now be up to `gaugeRescanEveryNTicks` minutes
+    /// old). This is what the popover should render, and what
+    /// `worstUtilisationPct` filters on.
+    ///
+    /// This deliberately does NOT mutate the stored `planGauges` array:
+    /// that array keeps exactly what the last scan observed (mirroring
+    /// Go's `Gauge.Stale`, computed once at scan time), and this
+    /// computed property derives the up-to-date display value from it
+    /// on every access instead.
+    public var displayPlanGauges: [PlanGauge] {
+        let now = self.now()
+        return planGauges.map { g in
+            var g2 = g
+            g2.stale = g.resetsAt < now
+            return g2
+        }
     }
 
     /// Re-evaluates budgets and rescans the vendor logs. Scanning walks
-    /// the filesystem, so it stays off the main actor; only the assignment
-    /// hops back. Any failure leaves the previous values in place — a
-    /// gauge that vanishes on one bad refresh is worse than a stale one.
+    /// the filesystem, so it stays off the main actor; only the
+    /// assignment hops back.
     ///
-    /// Called from `start()` (first paint), the 60s periodic-flush loop
-    /// (so a gauge whose window has expired re-evaluates `stale` even on
-    /// an otherwise-idle app — `PlanGauge.stale` is fixed at scan time),
-    /// and `refresh()` (the popover's manual refresh button). Piggybacking
-    /// on the existing periodic loop avoids adding a second timer.
+    /// A malformed `limits.toml` degrades the budget rows to "no rows",
+    /// never a crash or a stalled UI, but surfaces once via `lastError`
+    /// so the user isn't left wondering why the budget gauges vanished.
+    /// A missing config file is NOT an error — `Limits.load` returns
+    /// zero limits for that case, which is the normal unconfigured
+    /// state. Vendor scans never throw either: `PlanLimits.scanCodex` /
+    /// `scanGrok` treat a missing or unreadable log as "no rows" for
+    /// that vendor, not a failure.
+    ///
+    /// Called from `start()` (first paint) and `refresh()` (the
+    /// popover's manual refresh button) — both do a full rescan. The
+    /// periodic-flush loop also calls this, but only every
+    /// `gaugeRescanEveryNTicks` ticks; the loop's other ticks force a
+    /// UI redraw (via `objectWillChange`) so `displayPlanGauges` picks
+    /// up newly-expired windows every minute without any filesystem
+    /// access. Piggybacking on the existing periodic loop avoids adding
+    /// a second timer.
     public func refreshGauges(now: Date = Date()) async {
         let daily = totals.daily
         let statuses: [LimitStatus]
-        if let cfg = try? Limits.load(path: Limits.defaultConfigPath()) {
+        do {
+            let cfg = try Limits.load(path: Limits.defaultConfigPath())
             // ISO-8601 identifier for Monday-first week numbering matching
             // Go's ISOWeek, but the CURRENT time zone — `DailyTotal.day` is a
             // local calendar day, so evaluating in UTC would misalign the day
@@ -239,7 +288,11 @@ public final class AppState: ObservableObject {
             var cal = Calendar(identifier: .iso8601)
             cal.timeZone = .current
             statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
-        } else {
+        } catch LimitsError.malformed(let line) {
+            self.lastError = "limits.toml is malformed near: \"\(line)\""
+            statuses = []
+        } catch {
+            self.lastError = "Failed to load limits.toml: \(error)"
             statuses = []
         }
         let gauges = await Task.detached(priority: .utility) { () -> [PlanGauge] in
@@ -359,13 +412,23 @@ public final class AppState: ObservableObject {
         periodicFlushTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
-                // Re-scan gauges on the same 60s cadence as the cache
-                // flush rather than adding a second timer. This is also
-                // what lets `PlanGauge.stale` (fixed at scan time) catch
-                // up on an idle app — otherwise a window that expired
-                // between refreshes would keep reading as live forever.
-                await self?.refreshGauges()
-                await self?.flushCache()
+                guard let self else { return }
+                // Force a redraw every tick so `displayPlanGauges` (which
+                // re-derives staleness from `resetsAt` against "now" on
+                // every access — see its doc comment) gets re-evaluated
+                // even on an otherwise-idle app. This alone is what stops
+                // an expired window from reading as live forever; it
+                // costs no filesystem access.
+                self.objectWillChange.send()
+                self.gaugeRescanTickCount += 1
+                if self.gaugeRescanTickCount >= Self.gaugeRescanEveryNTicks {
+                    self.gaugeRescanTickCount = 0
+                    // The expensive part: walks ~/.codex/sessions and
+                    // reads the Grok log. Runs far less often than the
+                    // staleness redraw above needs.
+                    await self.refreshGauges()
+                }
+                await self.flushCache()
             }
         }
     }

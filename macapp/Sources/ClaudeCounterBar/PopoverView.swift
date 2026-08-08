@@ -58,8 +58,8 @@ struct PopoverView: View {
     /// exact same height it is today — `VStack`'s fixed `spacing` would
     /// otherwise still reserve a gap for an empty child.
     private var hasGaugeRows: Bool {
-        !GaugeRows.build(band: .short, statuses: state.limitStatuses, gauges: state.planGauges).isEmpty
-            || !GaugeRows.build(band: .weekly, statuses: state.limitStatuses, gauges: state.planGauges).isEmpty
+        !GaugeRows.build(band: .short, statuses: state.limitStatuses, gauges: state.displayPlanGauges).isEmpty
+            || !GaugeRows.build(band: .weekly, statuses: state.limitStatuses, gauges: state.displayPlanGauges).isEmpty
     }
 
     var body: some View {
@@ -71,7 +71,7 @@ struct PopoverView: View {
             // surface and must always be visible.
             HeroRow(state: state)
             if hasGaugeRows {
-                GaugesView(statuses: state.limitStatuses, gauges: state.planGauges)
+                GaugesView(statuses: state.limitStatuses, gauges: state.displayPlanGauges)
             }
             HourlyChartRow(
                 day: shown?.day ?? "",
