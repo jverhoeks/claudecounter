@@ -52,6 +52,16 @@ struct PopoverView: View {
         return state.totals.daily.first(where: { $0.day == sel }) ?? state.totals.daily.last
     }
 
+    /// True when at least one gauge band has a row to show. Gates the
+    /// `GaugesView` mount below: with no `limits.toml` and no Codex/Grok
+    /// installed, both bands are empty, and this keeps the popover the
+    /// exact same height it is today — `VStack`'s fixed `spacing` would
+    /// otherwise still reserve a gap for an empty child.
+    private var hasGaugeRows: Bool {
+        !GaugeRows.build(band: .short, statuses: state.limitStatuses, gauges: state.planGauges).isEmpty
+            || !GaugeRows.build(band: .weekly, statuses: state.limitStatuses, gauges: state.planGauges).isEmpty
+    }
+
     var body: some View {
         let shown = shownEntry
         let showingToday = shown == nil || shown?.day == todayKey
@@ -60,6 +70,9 @@ struct PopoverView: View {
             // Pinned-top: identity + charts. These are the "glance"
             // surface and must always be visible.
             HeroRow(state: state)
+            if hasGaugeRows {
+                GaugesView(statuses: state.limitStatuses, gauges: state.planGauges)
+            }
             HourlyChartRow(
                 day: shown?.day ?? "",
                 hourlyUSDByModel: shown?.hourlyUSDByModel ?? Array(repeating: [:], count: 24),

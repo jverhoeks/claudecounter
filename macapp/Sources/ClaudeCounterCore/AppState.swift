@@ -25,6 +25,12 @@ public final class AppState: ObservableObject {
     @Published public private(set) var status: Status = .starting
     @Published public private(set) var lastError: String? = nil
     @Published public private(set) var settings: AppSettings
+    /// Budget statuses (day/week) evaluated against `limits.toml`. Empty
+    /// when the file is absent/malformed or every window is `.unset`.
+    @Published public private(set) var limitStatuses: [LimitStatus] = []
+    /// Vendor-reported plan utilisation (Codex, Grok). Empty when neither
+    /// vendor is installed.
+    @Published public private(set) var planGauges: [PlanGauge] = []
 
     public enum Status: Equatable, Sendable {
         case starting
@@ -149,6 +155,9 @@ public final class AppState: ObservableObject {
             self.lastError = "Initial scan failed: \(error.localizedDescription)"
         }
         self.status = .live
+        // First paint of the gauge bands, so they show up without the
+        // user having to click Refresh.
+        await refreshGauges()
 
         // Persist now so that even a crash a moment later keeps the
         // post-backfill state durable.
@@ -190,6 +199,7 @@ public final class AppState: ObservableObject {
             self.lastError = "Refresh failed: \(error.localizedDescription)"
         }
         self.status = .live
+        await refreshGauges()
         await flushCache()
     }
 
@@ -199,6 +209,46 @@ public final class AppState: ObservableObject {
         await aggregator.setPricing(table)
         await tracker.setPricing(table)
         await publishSnapshot()
+    }
+
+    /// Highest non-stale utilisation, used for menu bar escalation.
+    public var worstUtilisationPct: Double {
+        GaugeRows.worstPct(statuses: limitStatuses, gauges: planGauges)
+    }
+
+    /// Re-evaluates budgets and rescans the vendor logs. Scanning walks
+    /// the filesystem, so it stays off the main actor; only the assignment
+    /// hops back. Any failure leaves the previous values in place — a
+    /// gauge that vanishes on one bad refresh is worse than a stale one.
+    ///
+    /// Called from `start()` (first paint), the 60s periodic-flush loop
+    /// (so a gauge whose window has expired re-evaluates `stale` even on
+    /// an otherwise-idle app — `PlanGauge.stale` is fixed at scan time),
+    /// and `refresh()` (the popover's manual refresh button). Piggybacking
+    /// on the existing periodic loop avoids adding a second timer.
+    public func refreshGauges(now: Date = Date()) async {
+        let daily = totals.daily
+        let statuses: [LimitStatus]
+        if let cfg = try? Limits.load(path: Limits.defaultConfigPath()) {
+            // ISO-8601 identifier for Monday-first week numbering matching
+            // Go's ISOWeek, but the CURRENT time zone — `DailyTotal.day` is a
+            // local calendar day, so evaluating in UTC would misalign the day
+            // key at the local midnight boundary. `Calendar.current` is wrong
+            // here too: it is Gregorian and typically Sunday-first, which
+            // numbers weeks differently from the Go side.
+            var cal = Calendar(identifier: .iso8601)
+            cal.timeZone = .current
+            statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
+        } else {
+            statuses = []
+        }
+        let gauges = await Task.detached(priority: .utility) { () -> [PlanGauge] in
+            PlanLimits.scanCodex(root: PlanLimits.defaultCodexRoot(), now: now)
+                + PlanLimits.scanGrok(path: PlanLimits.defaultGrokLog(), now: now)
+        }.value
+
+        self.limitStatuses = statuses
+        self.planGauges = gauges
     }
 
     // MARK: Watcher loop
@@ -309,6 +359,12 @@ public final class AppState: ObservableObject {
         periodicFlushTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+                // Re-scan gauges on the same 60s cadence as the cache
+                // flush rather than adding a second timer. This is also
+                // what lets `PlanGauge.stale` (fixed at scan time) catch
+                // up on an idle app — otherwise a window that expired
+                // between refreshes would keep reading as live forever.
+                await self?.refreshGauges()
                 await self?.flushCache()
             }
         }

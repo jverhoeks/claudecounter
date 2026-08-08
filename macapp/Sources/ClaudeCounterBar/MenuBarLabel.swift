@@ -23,7 +23,12 @@ struct MenuBarLabel: View {
     }
 
     var body: some View {
-        let warned = state.hasActiveWarning
+        // `worstUtilisationPct` already excludes stale rows (see
+        // `GaugeRows.worstPct`), so an expired window never paints this
+        // red — only a live budget or plan gauge can.
+        let worst = state.worstUtilisationPct
+        let overLimit = worst >= 100
+        let warned = state.hasActiveWarning || worst >= Double(LimitsConfig.defaultWarnPct)
         HStack(spacing: 4) {
             CashRegisterGlyph(pulsing: isLoading)
                 // Match the visual weight of the menu-bar text. SF
@@ -50,11 +55,13 @@ struct MenuBarLabel: View {
         // a warning by tinting the glyph + text orange instead — matching
         // the in-popover warning colour so the two surfaces read as the
         // same severity. Orange overrides the normal primary/secondary tint.
-        .foregroundStyle(warned ? AnyShapeStyle(Color.orange)
-                                 : AnyShapeStyle(isLoading ? .secondary : .primary))
+        .foregroundStyle(overLimit ? AnyShapeStyle(Color.red)
+                         : warned ? AnyShapeStyle(Color.orange)
+                                  : AnyShapeStyle(isLoading ? .secondary : .primary))
         .animation(.easeInOut(duration: 0.25), value: isLoading)
         .animation(.easeInOut(duration: 0.25), value: todayUSD())
         .animation(.easeInOut(duration: 0.25), value: warned)
+        .animation(.easeInOut(duration: 0.25), value: overLimit)
     }
 
     private var labelText: String {
