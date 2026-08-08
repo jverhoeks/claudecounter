@@ -49,21 +49,32 @@ func DefaultConfigPath() string {
 // error: that is the normal unconfigured state, not a failure. Malformed
 // TOML does return an error so the caller can surface it once rather
 // than silently behaving as if no limits were set.
+//
+// Every non-error return passes through the single WarnPct clamp at the
+// bottom — an empty path, a missing file and a file that parses but omits
+// warn_pct all end up with WarnPct == DefaultWarnPct, not the zero value.
+// This matters beyond Daily/Weekly (where zero legitimately means
+// "unconfigured"): callers now pass WarnPct straight into rendering
+// (ui.RenderGauges), where an un-clamped 0 would make pct >= warnPct true
+// for nearly every percentage, painting every plan row amber for the
+// commonest case — a user with no limits.toml at all.
 func Load(path string) (Config, error) {
-	if path == "" {
-		return Config{}, nil
-	}
-	var f tomlFile
-	if _, err := toml.DecodeFile(path, &f); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return Config{}, nil
+	var cfg Config
+	if path != "" {
+		var f tomlFile
+		if _, err := toml.DecodeFile(path, &f); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return Config{}, err
+			}
+			// Missing file: fall through to the clamp below with cfg
+			// still zero, same as the path == "" case.
+		} else {
+			cfg = Config{
+				Daily:   f.Limits.Daily,
+				Weekly:  f.Limits.Weekly,
+				WarnPct: f.Limits.WarnPct,
+			}
 		}
-		return Config{}, err
-	}
-	cfg := Config{
-		Daily:   f.Limits.Daily,
-		Weekly:  f.Limits.Weekly,
-		WarnPct: f.Limits.WarnPct,
 	}
 	if cfg.WarnPct <= 0 {
 		cfg.WarnPct = DefaultWarnPct

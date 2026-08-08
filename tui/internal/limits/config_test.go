@@ -27,7 +27,12 @@ func TestLoadFullConfig(t *testing.T) {
 }
 
 // A missing file is the normal "user has not configured limits" state.
-// It must not be an error — the gauge simply hides.
+// It must not be an error — the gauge simply hides. WarnPct must still be
+// clamped to DefaultWarnPct here, same as a parsed file that omits
+// warn_pct: an un-clamped 0 flows straight into ui.RenderGauges (via
+// gatherGauges), where pct >= 0 is true for nearly every percentage —
+// painting every plan row amber for the commonest real configuration,
+// a user with no limits.toml at all.
 func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	got, err := Load(filepath.Join(t.TempDir(), "absent.toml"))
 	if err != nil {
@@ -35,6 +40,22 @@ func TestLoadMissingFileIsNotAnError(t *testing.T) {
 	}
 	if got.Daily != 0 || got.Weekly != 0 {
 		t.Fatalf("missing file must yield zero limits, got %+v", got)
+	}
+	if got.WarnPct != DefaultWarnPct {
+		t.Fatalf("missing file: WarnPct = %d, want %d (DefaultWarnPct)", got.WarnPct, DefaultWarnPct)
+	}
+}
+
+// An empty path is DefaultConfigPath()'s failure mode (os.UserHomeDir
+// erroring) and must degrade exactly like a missing file — including the
+// WarnPct clamp, not just Daily/Weekly.
+func TestLoadEmptyPathAppliesDefaultWarnPct(t *testing.T) {
+	got, err := Load("")
+	if err != nil {
+		t.Fatalf("empty path must not error, got %v", err)
+	}
+	if got.WarnPct != DefaultWarnPct {
+		t.Fatalf("empty path: WarnPct = %d, want %d (DefaultWarnPct)", got.WarnPct, DefaultWarnPct)
 	}
 }
 

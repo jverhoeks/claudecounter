@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +232,38 @@ func TestStateColorFollowsEngineState(t *testing.T) {
 	}
 }
 
+// bar draws a plan row's bar and must cross the same thresholds pctColor
+// does, at the same configured warnPct — not a hardcoded 80 of its own.
+// Nothing else in this file renders a plan row's bar in isolation, so
+// without this test, reverting bar to a hardcoded threshold while leaving
+// pctColor fixed (exactly the bug this task started from — the bar and
+// the percentage text disagreeing on the same row) would pass every
+// other test in this file.
+func TestBarThresholds(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	cases := []struct {
+		pct     float64
+		warnPct int
+		want    lipgloss.Style
+	}{
+		{0, limits.DefaultWarnPct, styleBarFill},
+		{79.9, limits.DefaultWarnPct, styleBarFill},
+		{80, limits.DefaultWarnPct, styleBarWarn},
+		{100, limits.DefaultWarnPct, styleBarOver},
+		{59.9, 60, styleBarFill},
+		{60, 60, styleBarWarn},
+		{79.9, 60, styleBarWarn},
+	}
+	for _, c := range cases {
+		want := c.want.Render(plainBar(c.pct))
+		if got := bar(c.pct, c.warnPct); got != want {
+			t.Errorf("bar(%v, %v) = %q, want %q", c.pct, c.warnPct, got, want)
+		}
+	}
+}
+
 // The percentage text is where the warn/over threshold signal lives —
 // not the bar. A budget row's bar segments must keep their own
 // per-vendor Style even past 80%/100%, since that colour identifies the
@@ -343,6 +376,34 @@ func TestRenderGaugesPlanRowUsesConfiguredWarnPct(t *testing.T) {
 	outDefaultThreshold := RenderGauges(nil, gs, limits.DefaultWarnPct)
 	if want := styleBarWarn.Render(" 65%"); strings.Contains(outDefaultThreshold, want) {
 		t.Fatalf("plan row at 65%% with warnPct=80 must NOT be warn-styled:\n%q", outDefaultThreshold)
+	}
+}
+
+// A caller wires warnPct into RenderGauges from limits.Load's actual
+// return value (see limits_cli.go's gatherGauges), never from a literal
+// int. Every other test in this file passes limits.DefaultWarnPct as a
+// literal, which is exactly what let a Load() that silently returns
+// WarnPct: 0 for "no config" go unnoticed: pctColor/bar treat 0 as "warn
+// at any percentage above zero", so a real Load() bug here would paint
+// every live plan row amber for the single commonest case — a user with
+// no limits.toml at all. This test forces the literal-vs-real distinction
+// by loading a nonexistent config file for real.
+func TestRenderGaugesWarnPctFromRealLoadOfMissingConfig(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	cfg, err := limits.Load(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	gs := []planlimits.Gauge{
+		{Vendor: "codex", WindowLbl: "5h", Pct: 10, ResetsAt: time.Now().Add(time.Hour)},
+	}
+	out := RenderGauges(nil, gs, cfg.WarnPct)
+	if want := styleBarWarn.Render(" 10%"); strings.Contains(out, want) {
+		t.Fatalf("plan row at 10%% with warnPct from Load() of a missing config must NOT be warn-styled "+
+			"(got WarnPct=%d — an un-clamped 0 would make this fail):\n%q", cfg.WarnPct, out)
 	}
 }
 
