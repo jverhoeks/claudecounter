@@ -92,6 +92,8 @@ knowing if you use both:
   warn/over state rather than kept a fixed per-vendor colour.
 - A stale row (its window's reset time has already passed) dims to
   45% opacity rather than the TUI's grey-out-and-relabel.
+- A stale plan row's detail text is bare `stale` in the popover; the
+  TUI's equivalent row spells out `stale · ended <Day>`.
 
 The menu bar glyph escalates off the same numbers: it turns **orange**
 once the worst non-stale row crosses `warn_pct` (80 by default) and
@@ -176,7 +178,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 111 unit tests
+swift test                       # 171 unit tests
 ```
 
 ### Requirements
@@ -306,6 +308,9 @@ Sources/
     DockIcon.swift                    NSApp activation policy + dock badge seam
     Settings.swift                    AppSettings + UserDefaults-backed store
     AppState.swift                    @MainActor coordinator + lifecycle
+    Limits.swift                      LimitsConfig, LimitStatus, TOML load + evaluate
+    PlanLimits.swift                  PlanGauge, Codex/Grok log scanners
+    GaugeRows.swift                   two-band row builder, tint rules, worstPct
   ClaudeCounterBar/                   the macOS app target
     App.swift                         @main, AppDelegate, MenuBarExtra
     MenuBarLabel.swift                cash-register glyph + $today
@@ -315,15 +320,16 @@ Sources/
     ModelPalette.swift                shared model→colour mapping for the
                                               monthly charts and the by-model table
     PopoverView.swift                 hero, hourly chart, tables, live tail
+    GaugesView.swift                  popover's budget/plan-limit gauge block
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         111 unit tests
+Tests/ClaudeCounterCoreTests/         171 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
-  AggregatorTests.swift               18 tests, incl. daily token totals +
+  AggregatorTests.swift               21 tests, incl. daily token totals +
                                               per-model breakdowns (USD + tokens)
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
-  CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
+  CacheTests.swift                    9 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
   DockIconTests.swift                 14 tests, incl. NSApp smoke test +
@@ -332,6 +338,12 @@ Tests/ClaudeCounterCoreTests/         111 unit tests
   ModelPaletteTests.swift             2 tests, model→colour ranking rule
   AppStateTests.swift                 10 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
+  LimitsTests.swift                   17 tests, window evaluation + TOML load
+  PlanLimitsTests.swift               8 tests, Codex/Grok scan + staleness
+  GaugeRowsTests.swift                9 tests, row building + tint rules
+  LimitsParityTests.swift             1 test, cross-language fixture vs. Go
+  NotificationsTests.swift            5 tests (unrelated feature)
+  SessionTrackerTests.swift           16 tests (unrelated feature)
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
 scripts/build-app.sh                  bundle .app from `swift build`
 scripts/release-macapp.sh             package .app into a .zip + .sha256
@@ -437,7 +449,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 111-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 171-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 

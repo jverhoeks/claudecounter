@@ -194,7 +194,9 @@ without changing colour behaviour) and carries the threshold signal on
 its percentage text only. A window whose reset time has already passed
 renders dimmed and labelled `stale`, and is excluded from the menu-bar
 glyph's escalation; only plan (Codex/Grok) rows can go stale, since a
-budget row is always evaluated against "right now".
+budget row is always evaluated against "right now". An `n/a` row
+renders in that same dimmed style, though it isn't itself stale — it's
+just a vendor with nothing to show in this band.
 
 ```bash
 claudecounter --limits                        # one-shot gauge block
