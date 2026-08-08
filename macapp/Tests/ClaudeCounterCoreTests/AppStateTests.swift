@@ -235,6 +235,56 @@ final class AppStateTests: XCTestCase {
         await app.stop()
     }
 
+    /// The split must not change any of the three behaviours the
+    /// pre-split `refreshGauges` got right: a malformed config degrades
+    /// to no rows (never a crash), the resulting `lastError` is scoped
+    /// to `refreshBudgets`'s own error (`lastLimitsError`) so a later
+    /// clean load clears exactly that error and nothing else, and
+    /// `warnPct` falls back to the default rather than staying at a
+    /// stale, possibly stricter, value.
+    func test_refreshBudgets_malformedConfig_degradesToNoRows_thenClearsOwnErrorOnFix() async throws {
+        let root = NSTemporaryDirectory() + "as-bad-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/projects", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-bad-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let configPath = NSTemporaryDirectory() + "limits-\(UUID().uuidString).toml"
+        defer { try? FileManager.default.removeItem(atPath: configPath) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore()
+        )
+        await app.start()
+
+        try "[limits]\ndaily = = =\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+        await app.refreshBudgets(configPath: configPath)
+
+        XCTAssertEqual(app.limitStatuses, [], "malformed config must degrade to no rows, not a crash")
+        XCTAssertNotNil(app.lastError, "a malformed limits.toml must surface once via lastError")
+        XCTAssertEqual(app.warnPct, LimitsConfig.defaultWarnPct,
+                       "warnPct must fall back to the default, not stay at a stale prior value")
+
+        // Fix the typo — the error WE set must clear itself without a
+        // manual Refresh, and the rows must come back.
+        try "[limits]\ndaily = 50.0\nweekly = 250.0\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+        await app.refreshBudgets(configPath: configPath)
+
+        XCTAssertNil(app.lastError, "a fixed limits.toml should clear the error refreshBudgets itself set")
+        XCTAssertEqual(app.limitStatuses.count, 2)
+
+        await app.stop()
+    }
+
     // MARK: - Dock icon wiring
 
     /// Boot AppState with `dockIconEnabled = true` (the default) and an

@@ -189,7 +189,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 177 unit tests
+swift test                       # 178 unit tests
 ```
 
 ### Requirements
@@ -333,7 +333,7 @@ Sources/
     PopoverView.swift                 hero, hourly chart, tables, live tail
     GaugesView.swift                  popover's budget/plan-limit gauge block
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         177 unit tests
+Tests/ClaudeCounterCoreTests/         178 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
@@ -347,7 +347,7 @@ Tests/ClaudeCounterCoreTests/         177 unit tests
                                               formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   ModelPaletteTests.swift             2 tests, model→colour ranking rule
-  AppStateTests.swift                 12 tests, incl. live pipeline + refresh
+  AppStateTests.swift                 13 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
                                               + budget-vs-vendor-scan cadence split
   LimitsTests.swift                   20 tests, window evaluation + TOML load
@@ -463,7 +463,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 177-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 178-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 
