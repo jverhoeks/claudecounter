@@ -2447,7 +2447,15 @@ In `AppState.swift`, add published state and a refresh that runs off the main th
         let daily = totals.daily
         let statuses: [LimitStatus]
         if let cfg = try? Limits.load(path: Limits.defaultConfigPath()) {
-            statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: .current)
+            // ISO-8601 identifier for Monday-first week numbering matching
+            // Go's ISOWeek, but the CURRENT time zone — `DailyTotal.day` is a
+            // local calendar day, so evaluating in UTC would misalign the day
+            // key at the local midnight boundary. `Calendar.current` is wrong
+            // here too: it is Gregorian and typically Sunday-first, which
+            // numbers weeks differently from the Go side.
+            var cal = Calendar(identifier: .iso8601)
+            cal.timeZone = .current
+            statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
         } else {
             statuses = []
         }
