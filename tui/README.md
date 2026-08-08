@@ -164,7 +164,7 @@ contribution, much appreciated. 🙏
 From the repo root:
 
 ```bash
-make test       # cd tui && go test ./...
+make test       # cd tui && TZ=UTC go test ./...
 make cover      # produces coverage.out + summary
 make test-v     # verbose
 ```
@@ -172,8 +172,16 @@ make test-v     # verbose
 Or directly from `tui/`:
 
 ```bash
-cd tui && go test ./...
+cd tui && TZ=UTC go test ./...
 ```
+
+`TZ=UTC` matters here: `limits.Evaluate` hardcodes `time.Local` (no
+location seam yet), and the cross-language limits parity fixture
+compares it against Swift's UTC-pinned test. Without `TZ=UTC`, a
+contributor outside UTC+0/+1/+2 (e.g. UTC+13/+14) gets a failing
+`TestParityFixture` for a timezone mismatch, not a real regression. The
+`make` targets above set it for you; set it yourself if you run `go
+test` directly.
 
 Coverage: pricing math · JSONL parsing · offset / partial-line safety
 · fsnotify wiring · day/month boundaries · dedupe rules · per-project
