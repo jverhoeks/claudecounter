@@ -38,10 +38,13 @@ func shortModel(id string) string {
 	}
 }
 
-func viewMinimal(t agg.Totals) string {
+func viewMinimal(t agg.Totals, gauges string) string {
 	var b strings.Builder
 	b.WriteString(styleHead.Render("Today") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Day))) + "\n")
 	b.WriteString(styleHead.Render("Month") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Month))) + "\n")
+	if gauges != "" {
+		b.WriteString(gauges)
+	}
 
 	// 30-day spend trend, then the parallel 30-day token-volume trend.
 	// Same renderers as view_split / view_full so the charts are

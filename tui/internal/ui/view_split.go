@@ -45,7 +45,7 @@ func inlineBar(width int, frac float64, style lipgloss.Style) string {
 	return bar + track
 }
 
-func viewSplit(t agg.Totals) string {
+func viewSplit(t agg.Totals, gauges string) string {
 	var b strings.Builder
 	dayTotal := sumUSD(t.Day)
 	monthTotal := sumUSD(t.Month)
@@ -57,6 +57,12 @@ func viewSplit(t agg.Totals) string {
 		styleMoney.Render(FormatUSD(monthTotal)),
 	))
 	b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")
+	// The rule above closes the headline, not the gauge block — so
+	// gauges render after it, the same relative position viewMinimal
+	// puts them in (right after the totals, before anything else).
+	if gauges != "" {
+		b.WriteString(gauges)
+	}
 
 	names := make([]string, 0, len(t.Day))
 	for name := range t.Day {

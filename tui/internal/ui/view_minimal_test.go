@@ -23,7 +23,7 @@ func TestViewMinimal_SparklineRenders(t *testing.T) {
 			{Day: "2026-04-06", USD: 16},
 		},
 	}
-	out := viewMinimal(totals)
+	out := viewMinimal(totals, "")
 	if !strings.Contains(out, "last 30 days") {
 		t.Errorf("expected sparkline header in output:\n%s", out)
 	}

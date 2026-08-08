@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/limits"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
 	"github.com/jverhoeks/claudecounter/tui/internal/report"
@@ -54,6 +55,8 @@ func main() {
 	timelineFlag := flag.Bool("timeline", false, "print a per-session audit timeline and exit")
 	sessionFlag := flag.String("session", "", "session id prefix for --scorecard/--timeline (default: most recent session)")
 	phasesFlag := flag.Bool("phases", false, "print subagent spend by phase/language/model for this month and exit")
+	limitsFlag := flag.Bool("limits", false, "scan once, print budget and plan-limit gauges, and exit")
+	limitsPath := flag.String("limits-config", limits.DefaultConfigPath(), "path to limits.toml")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -64,6 +67,10 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *limitsFlag {
+		runLimits(*root, table, *limitsPath)
 		return
 	}
 	if *phasesFlag {
@@ -94,7 +101,7 @@ func main() {
 		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
-	runTUI(*root, table, pricingWarn)
+	runTUI(*root, table, pricingWarn, *limitsPath)
 }
 
 // runOnce scans the projects tree once, prints a plain-text summary, and exits.
@@ -200,8 +207,17 @@ func shortProject(encoded string) string {
 	return tail
 }
 
+// gaugeRefreshInterval is how often the live TUI re-scans budgets and
+// vendor plan logs. It is decoupled from the aggregator's sub-second
+// dirty-flush cadence on purpose: a gauge refresh walks the Codex
+// sessions directory and reads the Grok log, and running that on every
+// 250ms flush during a 47k-event backfill risks stalling the counting
+// pipeline itself. Budgets and plan windows do not change fast enough
+// to need better than this.
+const gaugeRefreshInterval = 30 * time.Second
+
 // runTUI starts the interactive dashboard.
-func runTUI(root string, table pricing.Table, pricingWarn string) {
+func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string) {
 	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
@@ -233,6 +249,26 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	// would flood bubbletea's message queue and delay first paint).
 	liveTail := make(chan struct{})
 	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
+
+	// Gauges run on their own slow ticker rather than piggybacking on
+	// the aggregator's dirty flush — see gaugeRefreshInterval. A
+	// malformed limits.toml is logged and otherwise ignored here: the
+	// live counting path must never go down over a config typo. (The
+	// one-shot --limits, by contrast, exits non-zero on the same error
+	// — see runLimits.)
+	go func() {
+		refresh := func() {
+			if out, ok := tuiGauges(limitsCfgPath, a.Snapshot().Daily, time.Now()); ok {
+				prog.Send(ui.GaugesMsg{Gauges: out})
+			}
+		}
+		refresh()
+		ticker := time.NewTicker(gaugeRefreshInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			refresh()
+		}
+	}()
 
 	// NOTE: bubbletea's program.Send blocks on an unbuffered channel
 	// until prog.Run() is reading. Anything that calls Send must run
