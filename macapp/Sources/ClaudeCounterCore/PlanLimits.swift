@@ -66,14 +66,14 @@ public enum PlanLimits {
         var bestAt: [Int: Date] = [:]
 
         for file in codexFiles(root: root, now: now) {
-            guard let body = try? String(contentsOfFile: file, encoding: .utf8) else {
+            guard let lines = readLines(path: file) else {
                 continue // unreadable file: keep scanning the rest
             }
-            for rawLine in body.split(separator: "\n", omittingEmptySubsequences: true) {
+            for rawLine in lines {
                 // Cheap reject before the JSON parse: the vast majority
                 // of lines in a session transcript carry no rate limits.
                 guard rawLine.contains("\"rate_limits\"") else { continue }
-                guard let data = String(rawLine).data(using: .utf8),
+                guard let data = rawLine.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let payload = obj["payload"] as? [String: Any],
                       payload["type"] as? String == "token_count",
@@ -116,7 +116,7 @@ public enum PlanLimits {
     /// only a cumulative per-prompt context total, which is not billable
     /// tokens, and they are where all the corpus size is.
     public static func scanGrok(path: String, now: Date) -> [PlanGauge] {
-        guard !path.isEmpty, let body = try? String(contentsOfFile: path, encoding: .utf8) else {
+        guard !path.isEmpty, let lines = readLines(path: path) else {
             return [] // absent log is a normal state, not a failure
         }
         let iso = ISO8601DateFormatter()
@@ -126,11 +126,11 @@ public enum PlanLimits {
         var newest: PlanGauge?
         var newestAt = Date.distantPast
 
-        for rawLine in body.split(separator: "\n", omittingEmptySubsequences: true) {
+        for rawLine in lines {
             // Substring reject first: only a small fraction of lines are
             // billing lines, so this avoids parsing almost all of them.
             guard rawLine.contains(grokBillingMarker) else { continue }
-            guard let data = String(rawLine).data(using: .utf8),
+            guard let data = rawLine.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   obj["msg"] as? String == grokBillingMarker,
                   let ts = obj["ts"] as? String,
@@ -155,6 +155,18 @@ public enum PlanLimits {
                                plan: ctx["subscriptionTier"] as? String ?? "")
         }
         return newest.map { [$0] } ?? []
+    }
+
+    /// Reads a file and decodes it line by line, rather than as one
+    /// UTF-8 string. A single invalid byte anywhere in a whole-file
+    /// decode fails the entire read; decoding per line means one
+    /// corrupt line is dropped instead of silently discarding every
+    /// other line in the file — including, possibly, the newest
+    /// observation the caller is looking for. Returns nil only when the
+    /// file itself cannot be opened at all.
+    private static func readLines(path: String) -> [String]? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return data.split(separator: UInt8(ascii: "\n")).compactMap { String(data: $0, encoding: .utf8) }
     }
 
     /// Lists session transcripts newest-first, dropping anything older
