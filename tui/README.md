@@ -135,6 +135,14 @@ and a per-project breakdown with main/subagent split — then exits.
 | `--scorecard` | off | Print a per-session scorecard (tools, failures, waste, tokens) and exit |
 | `--timeline` | off | Print a per-session chronological audit log and exit |
 | `--session` | most recent | Session id prefix for `--scorecard`/`--timeline` |
+| `--limits` | off | Scan once, print budget and plan-limit gauges, and exit |
+| `--limits-config` | `~/.config/claudecounter/limits.toml` | Path to `limits.toml` |
+
+The same gauge block also renders live inside views `1` (minimal) and
+`2` (split, default), refreshed every 30s — not in view `3` (full
+dashboard). See the [root README's Limits
+section](../README.md#-limits--plan-utilisation-tui-views-12----limits)
+for the config format and what each row means.
 
 ## 🪟 Windows testers wanted
 

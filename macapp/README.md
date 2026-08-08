@@ -32,6 +32,9 @@ and pricing source see the [root README](../README.md).
 
 **Popover (~520×700px, on click):**
 - Hero today + month numbers
+- Budget & plan-limit gauges, right below the hero row (only if a
+  `limits.toml` budget or a Codex/Grok install has something to show —
+  see "Limits & plan-utilisation gauges" below)
 - 24-bar hourly chart for today (future hours dimmed)
 - 30-day **cost** chart with each day's bar **stacked by model** —
   the segment colours match the swatches in the "By model · month"
@@ -60,6 +63,42 @@ and pricing source see the [root README](../README.md).
   it off if you'd rather keep the Dock free of an extra icon.
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
+
+## 🚦 Limits & plan-utilisation gauges
+
+The popover shows the same two duration bands as the [Go TUI](../tui) —
+"short window" and "weekly" — with the same rows (`claude` budget,
+`codex` and `grok` plan limits) and the same caveat: a band title is a
+duration, not a shared window definition, so a `claude` weekly row, a
+Codex 7-day rolling window and Grok's Thursday-anchored billing period
+can legitimately show different numbers side by side. See the [root
+README's Limits
+section](../README.md#-limits--plan-utilisation-tui-views-12----limits)
+for the full explanation and the `limits.toml` format.
+
+Limits are read from the same `~/.config/claudecounter/limits.toml` the
+TUI reads, so the two apps always agree on your budgets and threshold.
+
+The popover rescans `~/.codex/sessions` and the Grok log every 10
+minutes — that walk is comparatively expensive — but re-derives each
+row's `stale` flag against the clock every minute. So if a window's
+reset time passes, the row dims to stale within a minute even though
+the percentage behind it can be up to 10 minutes stale itself.
+
+A couple of things the popover renders differently from the TUI, worth
+knowing if you use both:
+- Each row is a single SwiftUI `ProgressView`, not a Go-style stacked
+  bar — so, unlike the TUI, a budget row's bar itself is tinted by its
+  warn/over state rather than kept a fixed per-vendor colour.
+- A stale row (its window's reset time has already passed) dims to
+  45% opacity rather than the TUI's grey-out-and-relabel.
+
+The menu bar glyph escalates off the same numbers: it turns **orange**
+once the worst non-stale row crosses `warn_pct` (80 by default) and
+**red** once any row hits 100% — mirroring the popover's own warn/over
+colours. (The glyph can also turn orange for other, unrelated warnings
+surfaced elsewhere in the app; orange alone doesn't always mean a limit
+is close.)
 
 ## 📦 Install (release build)
 
@@ -435,7 +474,6 @@ Considered and deferred:
 - **Universal binary** (Intel + Apple Silicon) — currently arm64-only.
   Open an issue if you want Intel and we'll add a second job to the
   release workflow.
-- Budget alerts / red-tint when today exceeds a threshold.
 - Per-day or per-week popover views.
 - CSV export.
 - Sparkle auto-update.
