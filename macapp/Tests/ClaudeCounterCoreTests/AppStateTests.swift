@@ -819,6 +819,98 @@ final class AppStateTests: XCTestCase {
                        accuracy: 1e-6, "a second restart with no new content must not change the total")
         await app3.stop()
     }
+
+    /// Pins the invariant that makes `mergedOffsets()`'s plain
+    /// last-wins merge safe, DIRECTLY rather than through the
+    /// downstream double-counting symptom: after cache restore, every
+    /// reader's offset dict must contain ONLY paths under its own
+    /// source's root, and a cached path belonging to no configured
+    /// source must be dropped rather than land in some reader anyway.
+    ///
+    /// A restart-cycle test (`test_appState_restartAfterCacheRestore_…`
+    /// above) observes this only through whether a total comes out
+    /// right, which depends on `mergedOffsets()`'s merge happening to
+    /// pick the correct value out of an *unordered* `Dictionary` when
+    /// two readers disagree about a path — a re-review transplanted an
+    /// earlier version of that kind of test onto the pre-fix (broadcast
+    /// seed) code and found it failed only 2 of 14 runs (~14%): most
+    /// runs stayed green by accident. This test instead asserts the
+    /// membership property itself, which has no dependence on
+    /// iteration order and fails 100% of the time if the broadcast seed
+    /// is ever reintroduced.
+    ///
+    /// Uses empty source roots (no `.jsonl` files) so `start()`'s
+    /// subsequent scan phase finds nothing to read and can't mutate the
+    /// seeded offsets before this test inspects them via
+    /// `AppState.readerOffsetsByID()`.
+    func test_appState_seedReaders_scopesEachOffsetToExactlyOneOwningReader() async throws {
+        let base = NSTemporaryDirectory() + "as-invariant-\(UUID().uuidString)"
+        let workRoot = base + "/work/projects"
+        let personalRoot = base + "/personal/projects"
+        try FileManager.default.createDirectory(atPath: workRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workRoot + "/p1/sess.jsonl"
+        let personalPath = personalRoot + "/p1/sess.jsonl"
+        // Under NEITHER configured root — simulates a source that was
+        // removed from sources.toml since this offset was cached.
+        let orphanPath = base + "/orphan/projects/p1/sess.jsonl"
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(workRoot)"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(personalRoot)"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-invariant-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let seededCache = CacheFile(
+            writtenAt: Date(),
+            cells: [],
+            perMsg: [],
+            offsets: [workPath: 111, personalPath: 222, orphanPath: 333],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: workRoot,
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+        await app.stop()
+
+        let bySource = await app.readerOffsetsByID()
+
+        XCTAssertEqual(bySource["claude/work"], [workPath: 111],
+                       "the work reader must hold exactly its own path, nothing more")
+        XCTAssertEqual(bySource["claude/personal"], [personalPath: 222],
+                       "the personal reader must hold exactly its own path, nothing more")
+
+        let allSeededPaths = Set(bySource.values.flatMap { $0.keys })
+        XCTAssertEqual(allSeededPaths, [workPath, personalPath],
+                       "each mapped path must appear in exactly one reader — never duplicated across readers, never missing")
+        XCTAssertFalse(bySource.values.contains { $0[orphanPath] != nil },
+                       "a cached path matching no configured source must be dropped, not assigned to some reader anyway")
+    }
 }
 
 private extension String {

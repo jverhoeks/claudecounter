@@ -392,12 +392,44 @@ public final class AppState: ObservableObject {
     private func seedReaders(from offsets: [String: Int64]) async {
         var bySource: [String: [String: Int64]] = [:]
         for (path, offset) in offsets {
+            // A cached path that no longer matches ANY configured
+            // source (its source was removed from sources.toml since
+            // the cache was written) is dropped here, on purpose: there
+            // is no reader to give it to. If that source is later
+            // re-added, its files are re-read from offset zero — a
+            // one-time re-scan, not a double count, since the
+            // aggregator's perMsg dedupe (also restored from the same
+            // cache) still recognises every message it already
+            // counted. See
+            // `test_appState_seedReaders_scopesEachOffsetToExactlyOneOwningReader`
+            // for the pinned behaviour.
             guard let source = sourceForPath(path) else { continue }
             bySource[source.id, default: [:]][path] = offset
         }
         for (id, r) in readers {
             await r.seedOffsets(bySource[id] ?? [:])
         }
+    }
+
+    /// Test-only introspection: a snapshot of every reader's own offset
+    /// dict, keyed by source id. `readers` and `seedReaders` are
+    /// `private` (this file keeps the reader pool as an implementation
+    /// detail), so this is the one seam `AppStateTests` uses to assert
+    /// the per-source-scoped-seeding invariant directly — see
+    /// `test_appState_seedReaders_scopesEachOffsetToExactlyOneOwningReader`
+    /// for why that direct assertion matters more than observing the
+    /// double-counting symptom through a full restart cycle (the
+    /// symptom depends on `Dictionary`'s randomised iteration order and
+    /// was measured to reproduce only ~14% of the time against the
+    /// pre-fix code). No `private`/`public` modifier: internal is
+    /// enough for `@testable import` to reach it, and it stays out of
+    /// `AppState`'s public API.
+    func readerOffsetsByID() async -> [String: [String: Int64]] {
+        var out: [String: [String: Int64]] = [:]
+        for (id, r) in readers {
+            out[id] = await r.allOffsets()
+        }
+        return out
     }
 
     /// Merge every reader's offset map into one flat dict for the cache
