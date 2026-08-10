@@ -119,7 +119,7 @@ func main() {
 		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
-	runTUI(*root, table, pricingWarn, *limitsPath, *sourcesPath)
+	runTUI(*root, table, pricingWarn, *limitsPath, *sourcesPath, rootSet)
 }
 
 // requireRoot fails fast if root doesn't exist. Used only by the
@@ -158,6 +158,26 @@ func loadSourcesOrExit(cfgPath, home string) []sources.Source {
 		os.Exit(1)
 	}
 	return cfg.Sources
+}
+
+// tuiSources resolves the source list for the live TUI. An explicit
+// --root overrides the configured list with a single implicit source —
+// the same override resolveSources applies for --once/--limits — so a
+// user who still passes --root sees exactly what they always have.
+// Otherwise the configured list is used. Unlike the one-shot paths, a
+// malformed sources.toml here must never stop the live TUI: it falls
+// back to the default source list and returns a non-empty warning for
+// the caller to fold into the footer, the same way a malformed
+// pricing.toml already surfaces (see loadPricing).
+func tuiSources(sourcesCfgPath, root string, rootSet bool, home string) ([]sources.Source, string) {
+	if rootSet {
+		return []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}, ""
+	}
+	cfg, err := sources.Load(sourcesCfgPath, home)
+	if err != nil {
+		return sources.Defaults(home), fmt.Sprintf("⚠ sources config: %v (using defaults)", err)
+	}
+	return cfg.Sources, ""
 }
 
 // runOnce scans every configured source once, prints a plain-text
@@ -310,26 +330,16 @@ func shortProject(encoded string) string {
 const gaugeRefreshInterval = 30 * time.Second
 
 // runTUI starts the interactive dashboard.
-func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string, sourcesCfgPath string) {
+func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string, sourcesCfgPath string, rootSet bool) {
 	home, _ := os.UserHomeDir()
-	cfg, srcErr := sources.Load(sourcesCfgPath, home)
-	if srcErr != nil {
-		// A malformed sources.toml must never take the live TUI down:
-		// fall back to the default source list (today's implicit
-		// single-source behaviour) and surface the error as a footer
-		// warning, the same way a malformed pricing.toml already does
-		// (both ride SnapshotMsg.PricingWarn). Contrast resolveSources /
-		// scanSnapshotFromConfig, the one-shot paths, which exit
-		// non-zero on the same error.
-		warn := fmt.Sprintf("⚠ sources config: %v (using defaults)", srcErr)
+	srcs, srcWarn := tuiSources(sourcesCfgPath, root, rootSet, home)
+	if srcWarn != "" {
 		if pricingWarn != "" {
-			pricingWarn += "\n" + warn
+			pricingWarn += "\n" + srcWarn
 		} else {
-			pricingWarn = warn
+			pricingWarn = srcWarn
 		}
-		cfg = sources.Config{Sources: sources.Defaults(home)}
 	}
-	srcs := cfg.Sources
 	rsrcs := resolveSourceRoots(srcs)
 
 	evCh := make(chan reader.Event, 1024)

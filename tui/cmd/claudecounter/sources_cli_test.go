@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,76 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 	"github.com/jverhoeks/claudecounter/tui/internal/watcher"
 )
+
+// An explicit --root overrides whatever sources.toml says: the live TUI
+// must show exactly what --root always meant, not silently switch to
+// the configured (or default) list underneath the user.
+func TestTUISourcesRootOverridesConfig(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, "sources.toml")
+	if err := os.WriteFile(cfg, []byte(`
+[[source]]
+vendor = "claude"
+label  = "other"
+root   = "`+filepath.Join(home, "other")+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srcs, warn := tuiSources(cfg, "/custom/path", true, home)
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
+	}
+	if len(srcs) != 1 || srcs[0].Root != "/custom/path" || srcs[0].ID() != "claude/claude" {
+		t.Fatalf("expected a single claude/claude source rooted at --root, got %+v", srcs)
+	}
+}
+
+// With no --root override and no sources.toml, the TUI must fall back
+// to exactly today's implicit default: claude/claude at
+// home/.claude/projects.
+func TestTUISourcesNoOverrideNoConfigUsesDefault(t *testing.T) {
+	home := t.TempDir()
+	// root is ignored when rootSet is false; passed as "unused" to make
+	// that explicit.
+	srcs, warn := tuiSources(filepath.Join(home, "absent.toml"), "unused", false, home)
+	if warn != "" {
+		t.Fatalf("expected no warning for an absent config, got %q", warn)
+	}
+	want := filepath.Join(home, ".claude", "projects")
+	if len(srcs) != 1 || srcs[0].ID() != "claude/claude" || srcs[0].Root != want {
+		t.Fatalf("expected the default source rooted at %q, got %+v", want, srcs)
+	}
+}
+
+// A malformed sources.toml must never take the live TUI down: it falls
+// back to the default source list AND reports a non-empty warning so
+// the caller can surface it in the footer, unlike the one-shot paths
+// which exit non-zero on the same error.
+func TestTUISourcesMalformedConfigFallsBackWithWarning(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, "sources.toml")
+	if err := os.WriteFile(cfg, []byte(`
+[[source]]
+vendor = "bogus"
+label  = "x"
+root   = "/tmp"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srcs, warn := tuiSources(cfg, "unused", false, home)
+	if warn == "" {
+		t.Fatal("expected a non-empty warning for a malformed config")
+	}
+	if !strings.Contains(warn, "unknown vendor") {
+		t.Fatalf("expected the warning to carry the parse error, got %q", warn)
+	}
+	want := filepath.Join(home, ".claude", "projects")
+	if len(srcs) != 1 || srcs[0].ID() != "claude/claude" || srcs[0].Root != want {
+		t.Fatalf("expected fallback to the default source, got %+v", srcs)
+	}
+}
 
 // usageLine returns one minimal assistant JSONL line carrying usage, so
 // it lands in the current month regardless of what "now" is when the
