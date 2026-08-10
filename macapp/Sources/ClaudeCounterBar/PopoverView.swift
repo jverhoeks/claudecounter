@@ -34,12 +34,20 @@ struct PopoverView: View {
     /// is a glanceable surface, not the full ledger.
     private let topN = 8
 
+    /// This month's totals collapsed to one row per model, merged across
+    /// every configured source — the by-model table and its palette have
+    /// always shown a model-keyed view, so `.model` grouping reproduces
+    /// today's behaviour exactly regardless of how many sources feed in.
+    private var monthByModel: [String: ModelDay] {
+        Grouping.group(state.totals.month, by: .model)
+    }
+
     /// Computed once per view body so both monthly charts AND the
     /// by-model table share the same model→colour mapping. Recomputed
     /// every snapshot publish (cheap — small dictionary), so the
     /// palette stays in sync with the data the UI is currently showing.
     private var palette: ModelPalette {
-        ModelPalette(monthUSD: state.totals.month, dailyWindow: state.totals.daily)
+        ModelPalette(monthUSD: monthByModel, dailyWindow: state.totals.daily)
     }
 
     /// Day key of "today" — always the last entry of the daily window.
@@ -92,7 +100,7 @@ struct PopoverView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 16) {
-                        ByModelTable(month: state.totals.month, topN: topN, palette: palette)
+                        ByModelTable(month: monthByModel, topN: topN, palette: palette)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ByProjectTable(month: state.totals.monthProj)
                             .frame(maxWidth: .infinity, alignment: .leading)

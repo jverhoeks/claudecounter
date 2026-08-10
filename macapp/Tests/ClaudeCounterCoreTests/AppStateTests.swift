@@ -99,7 +99,7 @@ final class AppStateTests: XCTestCase {
         var finalUSD: Double = 0
         while Date() < deadline {
             try await Task.sleep(nanoseconds: 250_000_000)
-            let total = app.totals.day["claude-opus-4-7"]?.usd ?? 0
+            let total = app.totals.day[SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
             if total > 0 {
                 finalUSD = total
                 break
@@ -137,10 +137,11 @@ final class AppStateTests: XCTestCase {
             settingsStore: InMemorySettingsStore()
         )
         await app.start()
-        XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0)
+        let opusKey = SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")
+        XCTAssertGreaterThan(app.totals.day[opusKey]?.usd ?? 0, 0)
 
         await app.refresh()
-        XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0,
+        XCTAssertGreaterThan(app.totals.day[opusKey]?.usd ?? 0, 0,
                              "Refresh should rebuild totals from disk")
         await app.stop()
     }

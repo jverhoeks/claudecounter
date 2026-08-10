@@ -11,8 +11,8 @@ final class AggregatorTests: XCTestCase {
                               project: "p1", isSub: false,
                               ts: Self.fixedNow, msgID: "m1", reqID: "r1"))
         let s = await agg.snapshot()
-        XCTAssertEqual(s.day["claude-opus-4-7"]?.tokens.input, 1_000_000)
-        XCTAssertEqual(s.day["claude-opus-4-7"]?.usd ?? 0, 5.0, accuracy: 1e-9)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.tokens.input, 1_000_000)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.usd ?? 0, 5.0, accuracy: 1e-9)
     }
 
     func test_apply_duplicateMsgReqID_isDeduped() async {
@@ -23,7 +23,7 @@ final class AggregatorTests: XCTestCase {
         await agg.apply(ev)
         await agg.apply(ev) // duplicate
         let s = await agg.snapshot()
-        XCTAssertEqual(s.day["claude-opus-4-7"]?.tokens.input, 1_000_000)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.tokens.input, 1_000_000)
         XCTAssertEqual(s.dupes, 1)
     }
 
@@ -35,7 +35,7 @@ final class AggregatorTests: XCTestCase {
         await agg.apply(ev)
         await agg.apply(ev) // both counted because msgID is empty
         let s = await agg.snapshot()
-        XCTAssertEqual(s.day["claude-opus-4-7"]?.tokens.input, 2_000_000)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.tokens.input, 2_000_000)
         XCTAssertEqual(s.dupes, 0)
     }
 
@@ -47,7 +47,7 @@ final class AggregatorTests: XCTestCase {
         await agg.apply(ev)
         await agg.apply(ev) // both counted because reqID is empty
         let s = await agg.snapshot()
-        XCTAssertEqual(s.day["claude-opus-4-7"]?.tokens.input, 2_000_000)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.tokens.input, 2_000_000)
         XCTAssertEqual(s.dupes, 0)
     }
 
@@ -59,8 +59,8 @@ final class AggregatorTests: XCTestCase {
         let s = await agg.snapshot()
         XCTAssertEqual(s.unknown, 1)
         // Unknown-model tokens are still bucketed but cost is 0.
-        XCTAssertEqual(s.day["claude-mystery-9-9"]?.tokens.input, 1_000_000)
-        XCTAssertEqual(s.day["claude-mystery-9-9"]?.usd, 0)
+        XCTAssertEqual(s.day[sk("claude-mystery-9-9")]?.tokens.input, 1_000_000)
+        XCTAssertEqual(s.day[sk("claude-mystery-9-9")]?.usd, 0)
     }
 
     // MARK: - civil day / month bucketing
@@ -73,8 +73,8 @@ final class AggregatorTests: XCTestCase {
                               project: "p1", isSub: false,
                               ts: yesterdayLocal, msgID: "m1", reqID: "r1"))
         let s = await agg.snapshot()
-        XCTAssertNil(s.day["claude-opus-4-7"], "yesterday should not be in 'day' bucket")
-        XCTAssertEqual(s.month["claude-opus-4-7"]?.tokens.input, 1_000_000,
+        XCTAssertNil(s.day[sk("claude-opus-4-7")], "yesterday should not be in 'day' bucket")
+        XCTAssertEqual(s.month[sk("claude-opus-4-7")]?.tokens.input, 1_000_000,
                        "yesterday in same month should still be in 'month' bucket")
     }
 
@@ -86,8 +86,8 @@ final class AggregatorTests: XCTestCase {
                               project: "p1", isSub: false,
                               ts: lastMonthLocal, msgID: "m1", reqID: "r1"))
         let s = await agg.snapshot()
-        XCTAssertNil(s.day["claude-opus-4-7"])
-        XCTAssertNil(s.month["claude-opus-4-7"])
+        XCTAssertNil(s.day[sk("claude-opus-4-7")])
+        XCTAssertNil(s.month[sk("claude-opus-4-7")])
     }
 
     // MARK: - per-project main vs subagent
@@ -374,6 +374,13 @@ final class AggregatorTests: XCTestCase {
         c.year = 2026; c.month = 4; c.day = 26; c.hour = 14
         return Calendar.current.date(from: c)!
     }()
+
+    /// All events in this file go through the (implicit) default source,
+    /// so every series key shares the same source/vendor — only the
+    /// model varies per test.
+    private func sk(_ model: String) -> SeriesKey {
+        SeriesKey(source: "claude/claude", vendor: "claude", model: model)
+    }
 
     private func event(model: String, input: UInt64, output: UInt64,
                        cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0,

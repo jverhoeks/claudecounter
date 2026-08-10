@@ -53,6 +53,23 @@ public struct ModelDay: Equatable, Sendable {
     }
 }
 
+/// Identifies one chartable series. Source and vendor are both stored
+/// rather than vendor being derived from source at snapshot time: the
+/// macapp persists cells between runs, so a label removed from the
+/// config would otherwise leave its cached cells unattributable. Mirrors
+/// `agg.SeriesKey` in `tui/internal/agg/agg.go`.
+public struct SeriesKey: Hashable, Sendable, Codable {
+    public let source: String // "vendor/label"
+    public let vendor: String
+    public let model: String
+
+    public init(source: String, vendor: String, model: String) {
+        self.source = source
+        self.vendor = vendor
+        self.model = model
+    }
+}
+
 public struct ProjectDay: Equatable, Sendable {
     public var main: TokenCounts
     public var sub: TokenCounts
@@ -103,8 +120,8 @@ public struct DailyTotal: Equatable, Sendable {
 }
 
 public struct Totals: Equatable, Sendable {
-    public var day: [String: ModelDay] = [:]
-    public var month: [String: ModelDay] = [:]
+    public var day: [SeriesKey: ModelDay] = [:]
+    public var month: [SeriesKey: ModelDay] = [:]
     public var dayProj: [String: ProjectDay] = [:]
     public var monthProj: [String: ProjectDay] = [:]
     public var daily: [DailyTotal] = []
@@ -148,11 +165,13 @@ func civilDayString(_ d: CivilDay) -> String {
 
 public actor Aggregator {
 
-    /// Storage cell: a (day, project, model, isSub) bucket of token counts.
-    /// Cost is derived from these at snapshot time.
+    /// Storage cell: a (day, project, source, vendor, model, isSub) bucket
+    /// of token counts. Cost is derived from these at snapshot time.
     public struct CellKey: Hashable, Sendable, Codable {
         public let day: CivilDay
         public let project: String
+        public let source: String
+        public let vendor: String
         public let model: String
         public let isSub: Bool
     }
@@ -279,10 +298,12 @@ public actor Aggregator {
             unknownMsgs.insert(uid)
         }
 
-        // 3) Bucket tokens into the day/project/model/isSub cell.
+        // 3) Bucket tokens into the day/project/source/vendor/model/isSub cell.
         let cellKey = CellKey(
             day: dayOf(e.timestamp, calendar: calendar),
             project: e.project,
+            source: e.source,
+            vendor: e.vendor,
             model: e.model,
             isSub: e.isSubagent
         )
@@ -314,8 +335,8 @@ public actor Aggregator {
         out.dupes = dupes
         out.unknown = unknownMsgs.count
 
-        // Aggregate per-(scope, model) tokens.
-        struct ModelScope: Hashable { let scope: String; let model: String }
+        // Aggregate per-(scope, series) tokens.
+        struct ModelScope: Hashable { let scope: String; let key: SeriesKey }
         var modelTok: [ModelScope: TokenCounts] = [:]
 
         // Aggregate per-(scope, project, isSub, model) tokens. Model must
@@ -331,17 +352,18 @@ public actor Aggregator {
         var byDM: [DayModel: TokenCounts] = [:]
 
         for (k, t) in cells {
+            let sk = SeriesKey(source: k.source, vendor: k.vendor, model: k.model)
             // Day scope.
             if k.day == today {
-                modelTok[ModelScope(scope: "day", model: k.model), default: .zero] =
-                    (modelTok[ModelScope(scope: "day", model: k.model)] ?? .zero).adding(t)
+                modelTok[ModelScope(scope: "day", key: sk), default: .zero] =
+                    (modelTok[ModelScope(scope: "day", key: sk)] ?? .zero).adding(t)
                 let pk = ProjScopeModel(scope: "day", project: k.project, isSub: k.isSub, model: k.model)
                 projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(t)
             }
             // Month scope.
             if k.day.year == nowYear && k.day.month == nowMonth {
-                modelTok[ModelScope(scope: "month", model: k.model), default: .zero] =
-                    (modelTok[ModelScope(scope: "month", model: k.model)] ?? .zero).adding(t)
+                modelTok[ModelScope(scope: "month", key: sk), default: .zero] =
+                    (modelTok[ModelScope(scope: "month", key: sk)] ?? .zero).adding(t)
                 let pk = ProjScopeModel(scope: "month", project: k.project, isSub: k.isSub, model: k.model)
                 projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(t)
             }
@@ -351,15 +373,15 @@ public actor Aggregator {
                 (byDM[DayModel(day: k.day, model: k.model)] ?? .zero).adding(t)
         }
 
-        // Apply pricing per (scope, model).
+        // Apply pricing per (scope, series).
         for (mk, tok) in modelTok {
-            let usd = pricing.has(model: mk.model)
-                ? pricing.cost(model: mk.model, usage: tok.toUsage())
+            let usd = pricing.has(model: mk.key.model)
+                ? pricing.cost(model: mk.key.model, usage: tok.toUsage())
                 : 0
             let md = ModelDay(usd: usd, tokens: tok)
             switch mk.scope {
-            case "day":   out.day[mk.model] = md
-            case "month": out.month[mk.model] = md
+            case "day":   out.day[mk.key] = md
+            case "month": out.month[mk.key] = md
             default: break
             }
         }

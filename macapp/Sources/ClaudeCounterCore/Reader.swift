@@ -12,9 +12,17 @@ public struct UsageEvent: Equatable, Sendable {
     public var requestID: String     // Anthropic request id
     public var isSubagent: Bool      // path contains "/subagents/"
     public var usage: Usage
+    /// "vendor/label" of the configured source this event came from —
+    /// see `SourceEntry.id`. Defaults to the single implicit source
+    /// (`Sources.defaults`) so every existing single-source call site
+    /// keeps behaving exactly as before; a source-aware scanner
+    /// (multi-source wiring) is expected to pass the real value.
+    public var source: String
+    public var vendor: String
 
     public init(timestamp: Date, sessionID: String, cwd: String, project: String,
-                model: String, messageID: String, requestID: String, isSubagent: Bool, usage: Usage) {
+                model: String, messageID: String, requestID: String, isSubagent: Bool, usage: Usage,
+                source: String = "claude/claude", vendor: String = "claude") {
         self.timestamp = timestamp
         self.sessionID = sessionID
         self.cwd = cwd
@@ -24,6 +32,8 @@ public struct UsageEvent: Equatable, Sendable {
         self.requestID = requestID
         self.isSubagent = isSubagent
         self.usage = usage
+        self.source = source
+        self.vendor = vendor
     }
 }
 

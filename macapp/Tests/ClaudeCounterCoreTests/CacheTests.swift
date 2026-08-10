@@ -3,6 +3,12 @@ import XCTest
 
 final class CacheTests: XCTestCase {
 
+    // Bumping the version invalidates old caches so a stale cell without a
+    // source cannot be resurrected under the wrong series.
+    func test_cacheVersion_wasBumpedForSeriesKeys() {
+        XCTAssertEqual(CacheFile.currentVersion, 4)
+    }
+
     func test_save_then_load_roundTrip() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -230,7 +236,9 @@ final class CacheTests: XCTestCase {
         let snap2 = await agg2.snapshot()
         XCTAssertEqual(snap2.dupes, 1)
         // Tokens unchanged (only counted once originally + dedupe of replay).
-        XCTAssertEqual(snap2.day["claude-opus-4-7"]?.tokens.input, 1_000_000)
+        XCTAssertEqual(
+            snap2.day[SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")]?.tokens.input,
+            1_000_000)
     }
 
     // MARK: - helpers
