@@ -84,10 +84,19 @@ public enum Sources {
     /// error — that is the normal unconfigured state. A malformed or
     /// invalid file throws so a typo is surfaced rather than silently
     /// read as "no sources".
+    ///
+    /// Missing and unreadable are deliberately NOT the same thing: only
+    /// an absent file falls back to defaults, matching Go's
+    /// `errors.Is(err, fs.ErrNotExist)` check. A file that exists but
+    /// can't be read (permissions, a sandboxed container boundary, ...)
+    /// throws instead of silently pretending the user has no config —
+    /// `try?` around the read would otherwise swallow that distinction
+    /// and hide a real misconfiguration behind "using defaults".
     public static func load(path: String, home: String) throws -> SourcesConfig {
-        guard let body = try? String(contentsOfFile: path, encoding: .utf8) else {
+        guard FileManager.default.fileExists(atPath: path) else {
             return SourcesConfig(sources: defaults(home: home))
         }
+        let body = try String(contentsOfFile: path, encoding: .utf8)
 
         let entries = try parse(body)
 
@@ -178,7 +187,16 @@ public enum Sources {
     private static func expand(_ p: String, home: String) -> String {
         if p == "~" { return home }
         if p.hasPrefix("~/") {
-            return (home as NSString).appendingPathComponent(String(p.dropFirst(2)))
+            // Go's filepath.Join(home, p[2:]) cleans its result
+            // internally, so "~/x/../y" resolves to "<home>/y". Building
+            // the joined path with appendingPathComponent alone (no
+            // clean) leaves the literal "x/../y" in place — and because
+            // checkOverlap and duplicate detection compare roots as
+            // plain strings, that divergence could make the Go and Swift
+            // loaders disagree about whether two roots overlap. Routing
+            // through clean() keeps both sides producing the same
+            // canonical string for the same input.
+            return clean((home as NSString).appendingPathComponent(String(p.dropFirst(2))))
         }
         return clean(p)
     }

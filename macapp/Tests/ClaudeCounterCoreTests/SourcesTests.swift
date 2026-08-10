@@ -144,4 +144,68 @@ final class SourcesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: p) }
         XCTAssertNoThrow(try Sources.load(path: p, home: "/home/u"))
     }
+
+    // Pinned together deliberately: only an ABSENT file falls back to
+    // defaults. A file that exists but can't be read (permissions, a
+    // sandboxed container boundary, ...) must throw instead of silently
+    // looking like "no config" — `try?` around the read used to swallow
+    // that distinction (see FR round 1).
+    func test_load_missingVsUnreadableFileAreNotTheSame() throws {
+        let missing = NSTemporaryDirectory() + "/absent-\(UUID().uuidString).toml"
+        XCTAssertNoThrow(try Sources.load(path: missing, home: "/home/u"))
+        let cfg = try Sources.load(path: missing, home: "/home/u")
+        XCTAssertEqual(cfg.sources, Sources.defaults(home: "/home/u"))
+
+        guard getuid() != 0 else {
+            // Root ignores POSIX mode bits, so the permission-denied case
+            // below can't be exercised meaningfully as root (e.g. some CI
+            // containers). The "missing" half above still ran.
+            return
+        }
+        let unreadable = try write("""
+        [[source]]
+        vendor = "claude"
+        label  = "work"
+        root   = "~/work"
+        """)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: unreadable)
+            try? FileManager.default.removeItem(atPath: unreadable)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable)
+        XCTAssertThrowsError(try Sources.load(path: unreadable, home: "/home/u"))
+    }
+
+    // Go's filepath.Join(home, p[2:]) cleans its result internally, so
+    // "~/x/../y" resolves to "<home>/y". Two roots that differ only by
+    // such a segment must therefore collide on the SAME canonical string
+    // — including tripping duplicate/overlap detection, since that
+    // comparison is a plain string equality (see FR round 1).
+    func test_load_tildeExpansionCleansDotDotSegments() throws {
+        let p = try write("""
+        [[source]]
+        vendor = "claude"
+        label  = "work"
+        root   = "~/x/../y"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        let cfg = try Sources.load(path: p, home: "/home/u")
+        XCTAssertEqual(cfg.sources[0].root, "/home/u/y")
+    }
+
+    func test_load_detectsDuplicateAcrossUncleanedTildePaths() throws {
+        let p = try write("""
+        [[source]]
+        vendor = "claude"
+        label  = "a"
+        root   = "~/x/../y"
+
+        [[source]]
+        vendor = "claude"
+        label  = "b"
+        root   = "~/y"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u"))
+    }
 }
