@@ -151,7 +151,6 @@ warn_pct = 80
 ── short window
  claude  daily ████████░░  78%  $39.00/$50.00
  codex   5h    █████████░  92%  ↻ 2h14m
- grok    —     n/a (weekly only)
 ── weekly
  claude  wk    █████░░░░░  52%  $130.00/$250.00
  codex   7d    ██████████ 100%  ↻ Mon ⚠
@@ -174,10 +173,9 @@ resets:
 | `codex` | `~/.codex/sessions/**/*.jsonl`, vendor-reported | % of plan |
 | `grok` | `~/.grok/logs/unified.jsonl`, vendor-reported | % of plan |
 
-Grok reports no short window, so that row reads `n/a (weekly only)`
-rather than vanishing (in the weekly band, a vendor with no row instead
-reads `n/a (no weekly window)`). Claude is the reverse — it has a dollar
-figure but publishes no utilisation percentage locally.
+Grok reports no short window, so it simply has no row in the short-window
+group — it appears only under weekly. Claude is the reverse — it has a
+dollar figure but publishes no utilisation percentage locally.
 
 > **Correction.** An earlier version of this section said Grok can never
 > carry a dollar figure, because its transcripts log cumulative context
@@ -203,9 +201,7 @@ without changing colour behaviour) and carries the threshold signal on
 its percentage text only. A window whose reset time has already passed
 renders dimmed and labelled `stale`, and is excluded from the menu-bar
 glyph's escalation; only plan (Codex/Grok) rows can go stale, since a
-budget row is always evaluated against "right now". An `n/a` row
-renders in that same dimmed style, though it isn't itself stale — it's
-just a vendor with nothing to show in this band.
+budget row is always evaluated against "right now".
 
 ```bash
 claudecounter --limits                        # one-shot gauge block

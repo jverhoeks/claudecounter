@@ -22,17 +22,20 @@ final class GaugeRowsTests: XCTestCase {
     }
 
     // Display order must match Go's exactly, or the popover and the TUI
-    // disagree about which row is which.
+    // disagree about which row is which. The weekly band is where all
+    // three vendors actually have a row (grok has no short window).
     func test_build_fixedDisplayOrder() {
-        let rows = GaugeRows.build(band: .short, statuses: statuses, gauges: gauges)
+        let rows = GaugeRows.build(band: .weekly, statuses: statuses, gauges: gauges)
         XCTAssertEqual(rows.map(\.vendor), ["claude", "codex", "grok"])
     }
 
-    func test_build_grokShortWindowIsNotApplicable() {
+    // Codex stopped emitting its 5h window and Grok never had one, so the
+    // short band was one real row plus two placeholders. A vendor with
+    // nothing in a band is now simply not listed.
+    func test_build_omitsVendorWithNothingInBand() {
         let rows = GaugeRows.build(band: .short, statuses: statuses, gauges: gauges)
-        XCTAssertEqual(rows.last?.vendor, "grok")
-        XCTAssertNotNil(rows.last?.notApplicable)
-        XCTAssertNil(rows.last?.plan)
+        XCTAssertEqual(rows.map(\.vendor), ["claude", "codex"])
+        XCTAssertTrue(rows.allSatisfy { $0.plan != nil || $0.budget != nil })
     }
 
     func test_build_omitsVendorThatIsNotInstalled() {
@@ -47,7 +50,7 @@ final class GaugeRowsTests: XCTestCase {
             LimitStatus(window: .week, spentUSD: 0, limitUSD: 0, pct: 0, state: .unset, resetsAt: Date()),
         ]
         let rows = GaugeRows.build(band: .short, statuses: unset, gauges: gauges)
-        XCTAssertEqual(rows.map(\.vendor), ["codex", "grok"])
+        XCTAssertEqual(rows.map(\.vendor), ["codex"])
     }
 
     // A stale 100% must never drive the menu bar red.
@@ -106,19 +109,19 @@ final class GaugeRowsTests: XCTestCase {
         let warnStatus = LimitStatus(window: .day, spentUSD: 32.5, limitUSD: 50, pct: 65,
                                      state: .warn, resetsAt: Date())
         let row = GaugeRow(vendor: "claude", windowLabel: "daily", budget: warnStatus,
-                           plan: nil, notApplicable: nil)
+                           plan: nil)
         XCTAssertEqual(GaugeRows.tint(for: row, warnPct: 80), .warn)
 
         let okStatus = LimitStatus(window: .day, spentUSD: 32.5, limitUSD: 50, pct: 65,
                                    state: .ok, resetsAt: Date())
         let okRow = GaugeRow(vendor: "claude", windowLabel: "daily", budget: okStatus,
-                             plan: nil, notApplicable: nil)
+                             plan: nil)
         XCTAssertEqual(GaugeRows.tint(for: okRow, warnPct: 60), .ok)
 
         let overStatus = LimitStatus(window: .day, spentUSD: 55, limitUSD: 50, pct: 110,
                                      state: .over, resetsAt: Date())
         let overRow = GaugeRow(vendor: "claude", windowLabel: "daily", budget: overStatus,
-                               plan: nil, notApplicable: nil)
+                               plan: nil)
         XCTAssertEqual(GaugeRows.tint(for: overRow, warnPct: 80), .over)
     }
 
@@ -132,8 +135,7 @@ final class GaugeRowsTests: XCTestCase {
         let gauge = PlanGauge(vendor: "codex", windowLabel: "5h", pct: 65,
                               resetsAt: Date().addingTimeInterval(3600),
                               observed: Date(), stale: false, plan: "plus")
-        let row = GaugeRow(vendor: "codex", windowLabel: "5h", budget: nil, plan: gauge,
-                           notApplicable: nil)
+        let row = GaugeRow(vendor: "codex", windowLabel: "5h", budget: nil, plan: gauge)
         XCTAssertEqual(GaugeRows.tint(for: row, warnPct: 60), .warn)
         XCTAssertEqual(GaugeRows.tint(for: row, warnPct: 80), .ok)
     }
@@ -146,8 +148,7 @@ final class GaugeRowsTests: XCTestCase {
         let gauge = PlanGauge(vendor: "codex", windowLabel: "5h", pct: 100,
                               resetsAt: Date().addingTimeInterval(-3600),
                               observed: Date(), stale: true, plan: "plus")
-        let row = GaugeRow(vendor: "codex", windowLabel: "5h", budget: nil, plan: gauge,
-                           notApplicable: nil)
+        let row = GaugeRow(vendor: "codex", windowLabel: "5h", budget: nil, plan: gauge)
         XCTAssertEqual(GaugeRows.tint(for: row, warnPct: 60), .stale)
     }
 }
