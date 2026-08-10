@@ -24,6 +24,7 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
 	"github.com/jverhoeks/claudecounter/tui/internal/report"
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 	"github.com/jverhoeks/claudecounter/tui/internal/ui"
 	"github.com/jverhoeks/claudecounter/tui/internal/watcher"
 )
@@ -44,6 +45,7 @@ func defaultRoot() string {
 func main() {
 	pricingPath := flag.String("pricing", defaultPricingPath(), "path to pricing.toml")
 	root := flag.String("root", defaultRoot(), "claude projects root")
+	sourcesPath := flag.String("sources-config", sources.DefaultConfigPath(), "path to sources.toml")
 	refresh := flag.Bool("refresh-pricing", false, "fetch pricing from the web and overwrite pricing.toml")
 	once := flag.Bool("once", false, "scan once, print totals, and exit (no TUI, no watcher)")
 	reportFlag := flag.Bool("report", false, "scan once, print the git-activity report, and exit")
@@ -59,33 +61,47 @@ func main() {
 	limitsPath := flag.String("limits-config", limits.DefaultConfigPath(), "path to limits.toml")
 	flag.Parse()
 
-	if _, err := os.Stat(*root); err != nil {
-		log.Fatalf("claude projects root not found: %s (%v)", *root, err)
-	}
+	// rootSet tracks whether --root was passed explicitly, as opposed to
+	// carrying its default. --once and --limits treat an explicit --root
+	// as an override of the configured source list (a single implicit
+	// source rooted there) — the pre-sources-feature contract that
+	// --root always wins. The report-family one-shots below don't
+	// consult sources at all; they keep using --root directly.
+	rootSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "root" {
+			rootSet = true
+		}
+	})
+	home, _ := os.UserHomeDir()
 
 	table, pricingWarn := loadPricing(*pricingPath, *refresh)
 
 	if *once {
-		runOnce(*root, table, pricingWarn)
+		runOnce(resolveSources(*sourcesPath, *root, rootSet, home), table, pricingWarn)
 		return
 	}
 	if *limitsFlag {
-		runLimits(*root, table, *limitsPath)
+		runLimits(resolveSources(*sourcesPath, *root, rootSet, home), table, *limitsPath)
 		return
 	}
 	if *phasesFlag {
+		requireRoot(*root)
 		runPhases(*root, table)
 		return
 	}
 	if *scorecardFlag {
+		requireRoot(*root)
 		runScorecard(*root, table, *sessionFlag)
 		return
 	}
 	if *timelineFlag {
+		requireRoot(*root)
 		runTimeline(*root, table, *sessionFlag)
 		return
 	}
 	if *safetyFlag {
+		requireRoot(*root)
 		if *csvFlag {
 			runSafetyCSV(*root, *days)
 		} else {
@@ -94,22 +110,65 @@ func main() {
 		return
 	}
 	if *csvFlag {
+		requireRoot(*root)
 		runReportCSV(*root, table, *days, parseBucket(*bucket))
 		return
 	}
 	if *reportFlag {
+		requireRoot(*root)
 		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
-	runTUI(*root, table, pricingWarn, *limitsPath)
+	runTUI(*root, table, pricingWarn, *limitsPath, *sourcesPath)
 }
 
-// runOnce scans the projects tree once, prints a plain-text summary, and exits.
-func runOnce(root string, table pricing.Table, pricingWarn string) {
-	fmt.Fprintf(os.Stderr, "scanning %s …\n", root)
+// requireRoot fails fast if root doesn't exist. Used only by the
+// report-family one-shot commands (--report, --safety, --scorecard,
+// --timeline, --phases), which still take --root directly and are out
+// of scope for --sources-config (Task 6 wires --once, --limits, and the
+// live TUI). --once/--limits and the live TUI no longer need this: an
+// absent configured root contributes nothing and is not an error,
+// matching how an absent vendor already behaves.
+func requireRoot(root string) {
+	if _, err := os.Stat(root); err != nil {
+		log.Fatalf("claude projects root not found: %s (%v)", root, err)
+	}
+}
+
+// resolveSources returns the source list for the --once/--limits
+// one-shot paths. An explicit --root overrides the configured list with
+// a single implicit source, so a user who still passes --root sees
+// exactly what they always have. Otherwise the configured list is used
+// (Defaults(home) when no sources.toml exists — byte-identical to
+// today's implicit single-source behaviour). A malformed sources.toml
+// is fatal here: these are one-shot commands, so exiting non-zero with
+// the parse error beats silently showing wrong or empty totals.
+// Contrast runTUI, which must never exit on the same error.
+func resolveSources(sourcesPath, root string, rootSet bool, home string) []sources.Source {
+	if rootSet {
+		return []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}
+	}
+	return loadSourcesOrExit(sourcesPath, home)
+}
+
+func loadSourcesOrExit(cfgPath, home string) []sources.Source {
+	cfg, err := sources.Load(cfgPath, home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sources config:", err)
+		os.Exit(1)
+	}
+	return cfg.Sources
+}
+
+// runOnce scans every configured source once, prints a plain-text
+// summary, and exits.
+func runOnce(srcs []sources.Source, table pricing.Table, pricingWarn string) {
+	for _, s := range srcs {
+		fmt.Fprintf(os.Stderr, "scanning %s (%s) …\n", s.Root, s.ID())
+	}
 	start := time.Now()
 
-	snap, dupes, parseErrors := scanSnapshot(root, table)
+	snap, dupes, parseErrors := scanSnapshotSources(srcs, table)
 
 	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
 
@@ -119,12 +178,26 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	printSummary(snap, dupes, parseErrors)
 }
 
-// scanSnapshot does a single full scan and returns the aggregated
-// totals plus the reader/aggregator's dupe and parse-error counters.
-// Shared by --once and --limits so both see identical numbers.
-func scanSnapshot(root string, table pricing.Table) (agg.Totals, int, int) {
+// scanSnapshotFromConfig loads the source list and scans every
+// configured root into one aggregator. A malformed config is fatal
+// here (the one-shot paths exit non-zero); the live TUI path must not
+// be, and handles the error separately — see runTUI.
+func scanSnapshotFromConfig(cfgPath, home string, table pricing.Table) agg.Totals {
+	snap, _, _ := scanSnapshotSources(loadSourcesOrExit(cfgPath, home), table)
+	return snap
+}
+
+// scanSnapshotSources scans each configured source's root, in turn,
+// into one shared aggregator so dedupe still spans every source. Each
+// source gets its own Reader: a Reader tags every event it emits with
+// one fixed source field guarded by its own mutex, so scanning two
+// sources concurrently on a single shared Reader could momentarily
+// mis-tag events with the wrong source mid-scan. Giving every source
+// its own Reader removes that hazard structurally rather than relying
+// on scans staying sequential (which they are here, but runTUI's
+// watcher path is not).
+func scanSnapshotSources(srcs []sources.Source, table pricing.Table) (agg.Totals, int, int) {
 	evCh := make(chan reader.Event, 1024)
-	r := reader.New(evCh)
 	a := agg.New(table)
 
 	done := make(chan struct{})
@@ -136,12 +209,27 @@ func scanSnapshot(root string, table pricing.Table) (agg.Totals, int, int) {
 	}()
 
 	notBefore := scanCutoff(time.Now().Local())
-	if err := r.InitialScan(root, notBefore); err != nil {
-		log.Fatalf("initial scan: %v", err)
+	readers := make([]*reader.Reader, 0, len(srcs))
+	for _, s := range srcs {
+		// A configured root that does not exist contributes nothing and
+		// is not an error — same rule as an absent vendor.
+		if _, err := os.Stat(s.Root); err != nil {
+			continue
+		}
+		r := reader.New(evCh)
+		if err := r.InitialScanSource(s, notBefore); err != nil {
+			log.Fatalf("initial scan %s: %v", s.ID(), err)
+		}
+		readers = append(readers, r)
 	}
 	close(evCh)
 	<-done
-	return a.Snapshot(), a.Dupes(), r.ParseErrors()
+
+	parseErrors := 0
+	for _, r := range readers {
+		parseErrors += r.ParseErrors()
+	}
+	return a.Snapshot(), a.Dupes(), parseErrors
 }
 
 func printSummary(snap agg.Totals, dupes, parseErrors int) {
@@ -156,15 +244,20 @@ func printSummary(snap agg.Totals, dupes, parseErrors int) {
 	fmt.Printf("Month  %s\n", ui.FormatUSD(monthT))
 	fmt.Println(strings.Repeat("─", 60))
 	fmt.Println("By model (this month):")
-	names := make([]string, 0, len(snap.Month))
-	for n := range snap.Month {
+	// Collapse by model across every source: --once may now span more
+	// than one configured source (a plain --root still produces exactly
+	// one), and this plain-text report has always shown one line per
+	// model, not per source — merging keeps that unchanged.
+	byModel := agg.Group(snap.Month, agg.GroupModel)
+	names := make([]string, 0, len(byModel))
+	for n := range byModel {
 		names = append(names, n)
 	}
 	sort.Slice(names, func(i, j int) bool {
-		return snap.Month[names[i]].USD > snap.Month[names[j]].USD
+		return byModel[names[i]].USD > byModel[names[j]].USD
 	})
 	for _, n := range names {
-		md := snap.Month[n]
+		md := byModel[n]
 		fmt.Printf("  %-32s %9s   in=%d out=%d cache_write=%d cache_read=%d\n",
 			n, ui.FormatUSD(md.USD),
 			md.Tokens.In, md.Tokens.Out, md.Tokens.CacheCreate, md.Tokens.CacheRead)
@@ -217,10 +310,42 @@ func shortProject(encoded string) string {
 const gaugeRefreshInterval = 30 * time.Second
 
 // runTUI starts the interactive dashboard.
-func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string) {
+func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string, sourcesCfgPath string) {
+	home, _ := os.UserHomeDir()
+	cfg, srcErr := sources.Load(sourcesCfgPath, home)
+	if srcErr != nil {
+		// A malformed sources.toml must never take the live TUI down:
+		// fall back to the default source list (today's implicit
+		// single-source behaviour) and surface the error as a footer
+		// warning, the same way a malformed pricing.toml already does
+		// (both ride SnapshotMsg.PricingWarn). Contrast resolveSources /
+		// scanSnapshotFromConfig, the one-shot paths, which exit
+		// non-zero on the same error.
+		warn := fmt.Sprintf("⚠ sources config: %v (using defaults)", srcErr)
+		if pricingWarn != "" {
+			pricingWarn += "\n" + warn
+		} else {
+			pricingWarn = warn
+		}
+		cfg = sources.Config{Sources: sources.Defaults(home)}
+	}
+	srcs := cfg.Sources
+	rsrcs := resolveSourceRoots(srcs)
+
 	evCh := make(chan reader.Event, 1024)
-	r := reader.New(evCh)
 	a := agg.New(table)
+	// One Reader per configured source (see scanSnapshotSources): the
+	// backfill goroutine below and the pipeline's watcher-event loop run
+	// concurrently, and each may be working a different source at the
+	// same instant. A single shared Reader's source field would then be
+	// a data race that tags events with whichever source last won the
+	// mutex — silent mis-attribution of spend, not a crash. Separate
+	// Reader instances make that structurally impossible instead of
+	// relying on careful serialization that the next change could break.
+	readers := make(map[string]*reader.Reader, len(srcs))
+	for _, s := range srcs {
+		readers[s.ID()] = reader.New(evCh)
+	}
 
 	w, err := watcher.New()
 	if err != nil {
@@ -243,12 +368,13 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 	})
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
-	// liveTail is closed by the backfill goroutine once InitialScan
-	// completes. Until then the pipeline only updates the aggregator —
-	// it does NOT emit RecentEventMsg per backfill event (47k+ events
-	// would flood bubbletea's message queue and delay first paint).
+	// liveTail is closed by the backfill goroutine once every source's
+	// InitialScanSource completes. Until then the pipeline only updates
+	// the aggregator — it does NOT emit RecentEventMsg per backfill event
+	// (47k+ events would flood bubbletea's message queue and delay first
+	// paint).
 	liveTail := make(chan struct{})
-	go pipeline(w, r, a, evCh, prog, table, pricingWarn, liveTail)
+	go pipeline(w, readers, rsrcs, a, evCh, prog, table, pricingWarn, liveTail)
 
 	// NOTE: bubbletea's program.Send blocks on an unbuffered channel
 	// until prog.Run() is reading. Anything that calls Send must run
@@ -282,19 +408,31 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
 		// Register fsnotify watchers in parallel with the initial
-		// scan: AddTree is mostly syscall-bound, InitialScan is
+		// scan: AddTree is mostly syscall-bound, InitialScanSource is
 		// I/O-bound, so both running concurrently roughly halves the
-		// cold-start time.
+		// cold-start time. A configured root that does not exist
+		// contributes nothing and is not an error, matching how an
+		// absent vendor already behaves.
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := w.AddTree(root, notBefore); err != nil {
-				log.Printf("watcher add: %v", err)
+			for _, s := range srcs {
+				if _, err := os.Stat(s.Root); err != nil {
+					continue
+				}
+				if err := w.AddTree(s.Root, notBefore); err != nil {
+					log.Printf("watcher add %s: %v", s.ID(), err)
+				}
 			}
 		}()
-		if err := r.InitialScan(root, notBefore); err != nil {
-			log.Printf("initial scan: %v", err)
+		for _, s := range srcs {
+			if _, err := os.Stat(s.Root); err != nil {
+				continue
+			}
+			if err := readers[s.ID()].InitialScanSource(s, notBefore); err != nil {
+				log.Printf("initial scan %s: %v", s.ID(), err)
+			}
 		}
 		wg.Wait()
 		// Push the post-backfill snapshot once, then run the first gauge
@@ -304,7 +442,7 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 		// tell the UI to drop the spinner.
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
-			ParseErrors: r.ParseErrors(),
+			ParseErrors: sumParseErrors(readers),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
@@ -315,6 +453,83 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 
 	if _, err := prog.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func sumParseErrors(readers map[string]*reader.Reader) int {
+	total := 0
+	for _, r := range readers {
+		total += r.ParseErrors()
+	}
+	return total
+}
+
+// resolvedSource pairs a configured source with its symlink-resolved
+// root. macOS's default TMPDIR (and hence the real ~/.claude/projects
+// on some setups) can sit behind a symlink, and fsnotify reports events
+// under whichever path the OS resolved — which may not be byte-equal to
+// the configured root even though it's the same file. Resolving once at
+// startup, rather than trusting a raw string-prefix match, keeps a
+// symlinked root from silently failing to match any source (which would
+// drop the event on the floor rather than mis-attribute it, but is
+// exactly as much a correctness bug for this feature).
+type resolvedSource struct {
+	sources.Source
+	resolvedRoot string
+}
+
+func resolveSourceRoots(srcs []sources.Source) []resolvedSource {
+	out := make([]resolvedSource, len(srcs))
+	for i, s := range srcs {
+		root := s.Root
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			root = r
+		}
+		out[i] = resolvedSource{Source: s, resolvedRoot: root}
+	}
+	return out
+}
+
+// sourceForPath finds the source whose (resolved) root is the longest
+// matching prefix of path. sources.Load's overlap check guarantees at
+// most one source's root can contain a given path, so the longest match
+// is also the only match.
+func sourceForPath(rsrcs []resolvedSource, path string) (sources.Source, bool) {
+	resolved := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		resolved = r
+	}
+	best := -1
+	var bestSrc sources.Source
+	for _, rs := range rsrcs {
+		if resolved == rs.resolvedRoot || strings.HasPrefix(resolved, rs.resolvedRoot+string(filepath.Separator)) {
+			if len(rs.resolvedRoot) > best {
+				best = len(rs.resolvedRoot)
+				bestSrc = rs.Source
+			}
+		}
+	}
+	return bestSrc, best >= 0
+}
+
+// handleWatchChange dispatches one filesystem change to the Reader that
+// owns its source. Factored out of pipeline so the path-to-source
+// mapping is unit-testable without a running bubbletea program.
+func handleWatchChange(c watcher.Change, rsrcs []resolvedSource, readers map[string]*reader.Reader) {
+	src, ok := sourceForPath(rsrcs, c.Path)
+	if !ok {
+		// Should not happen: the watcher only ever watches configured
+		// roots. Log rather than silently drop — a swallowed event here
+		// is spend silently lost, not just mis-attributed.
+		log.Printf("watcher: %s does not match any configured source root; ignoring", c.Path)
+		return
+	}
+	r := readers[src.ID()]
+	switch c.Kind {
+	case watcher.Create, watcher.Write:
+		_ = r.OnChangeSource(src, c.Path)
+	case watcher.Remove:
+		r.Forget(c.Path)
 	}
 }
 
@@ -463,7 +678,7 @@ func scanCutoff(now time.Time) time.Time {
 	return fom
 }
 
-func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
+func pipeline(w *watcher.Watcher, readers map[string]*reader.Reader, rsrcs []resolvedSource, a *agg.Aggregator,
 	evCh chan reader.Event, prog *tea.Program, table pricing.Table, pricingWarn string,
 	liveTail <-chan struct{}) {
 
@@ -482,7 +697,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 		}
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
-			ParseErrors: r.ParseErrors(),
+			ParseErrors: sumParseErrors(readers),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
@@ -504,12 +719,7 @@ func pipeline(w *watcher.Watcher, r *reader.Reader, a *agg.Aggregator,
 			if !ok {
 				return
 			}
-			switch c.Kind {
-			case watcher.Create, watcher.Write:
-				_ = r.OnChange(c.Path)
-			case watcher.Remove:
-				r.Forget(c.Path)
-			}
+			handleWatchChange(c, rsrcs, readers)
 		case e := <-evCh:
 			a.Apply(e)
 			// Only stream events into the live tail AFTER backfill

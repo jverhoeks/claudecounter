@@ -48,11 +48,15 @@ func TestEndToEnd_NewFileAndAppend(t *testing.T) {
 		}
 	}
 
+	// reader.New defaults to the implicit "claude/claude" source
+	// whenever InitialScan (rather than InitialScanSource) is used.
+	key := agg.SeriesKey{Source: "claude/claude", Vendor: "claude", Model: "claude-opus-4-7"}
+
 	snap := a.Snapshot()
-	if snap.Day["claude-opus-4-7"].USD == 0 {
+	if snap.Day[key].USD == 0 {
 		t.Fatalf("expected initial scan to count current-month opus: %+v", snap.Day)
 	}
-	beforeUSD := snap.Day["claude-opus-4-7"].USD
+	beforeUSD := snap.Day[key].USD
 
 	w, err := watcher.New()
 	if err != nil {
@@ -84,11 +88,11 @@ func TestEndToEnd_NewFileAndAppend(t *testing.T) {
 			a.Apply(e)
 		default:
 		}
-		return a.Snapshot().Day["claude-opus-4-7"].USD > beforeUSD
+		return a.Snapshot().Day[key].USD > beforeUSD
 	}) {
 		t.Fatal("append was not picked up")
 	}
-	afterAppend := a.Snapshot().Day["claude-opus-4-7"].USD
+	afterAppend := a.Snapshot().Day[key].USD
 
 	// Create a brand-new file in a new subdir.
 	projNew := filepath.Join(root, "new")
@@ -103,7 +107,7 @@ func TestEndToEnd_NewFileAndAppend(t *testing.T) {
 			a.Apply(e)
 		default:
 		}
-		return a.Snapshot().Day["claude-opus-4-7"].USD > afterAppend
+		return a.Snapshot().Day[key].USD > afterAppend
 	}) {
 		t.Fatal("new file in new subdir was not picked up")
 	}

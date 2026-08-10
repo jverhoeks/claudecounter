@@ -9,6 +9,7 @@ import (
 
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 )
 
 func TestGatherGaugesRendersConfiguredBudget(t *testing.T) {
@@ -89,8 +90,9 @@ func TestRunLimitsUnconfiguredPrintsFallback(t *testing.T) {
 	}
 	cfgPath := filepath.Join(t.TempDir(), "custom-limits.toml")
 
+	srcs := []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}
 	out := captureStdout(t, func() {
-		runLimits(root, pricing.Defaults(), cfgPath)
+		runLimits(srcs, pricing.Defaults(), cfgPath)
 	})
 	if !strings.Contains(out, "No limits configured") {
 		t.Fatalf("expected fallback message, got:\n%s", out)
