@@ -153,7 +153,9 @@ root   = "~/.grok/sessions"
 ```
 
 `vendor` selects the reader; `label` is the user's name for that subscription or
-install. **When the file is absent, the current hardcoded roots are used as an
+install. The pair `(vendor, label)` is the series identity, rendered as
+`vendor/label` — so the two `personal` labels above are distinct series
+(`claude/personal` and `grok/personal`) and never merge. **When the file is absent, the current hardcoded roots are used as an
 implicit source list** with labels defaulting to the vendor name — so a user who
 never opts in sees no change whatsoever. A configured `root` that does not exist
 contributes nothing and is not an error, matching how absent vendors already
@@ -215,7 +217,7 @@ One cycle key with four modes, plus drill-in to a single series:
 |---|---|
 | `model` (default) | `claude-opus-4-7`, `grok-4.5-build`, … |
 | `vendor` | `claude`, `grok` — this is the "all Claude usage" view |
-| `source` | `work`, `personal` — one series per configured subscription |
+| `source` | `claude/work`, `claude/personal`, `grok/personal` — one series per configured subscription |
 | `total` | one series |
 
 The same mode drives the monthly per-model table and the daily/monthly charts, in
@@ -257,7 +259,7 @@ reappears on its own.
 | `sources.toml` absent | Hardcoded roots used as an implicit source list. Current behaviour exactly. |
 | `sources.toml` malformed | Logged once and treated as absent, so a typo cannot silently stop counting. Matches `limits.toml`'s missing-vs-malformed rule. |
 | A configured `root` does not exist | Contributes nothing. Not an error. |
-| Two sources share a `label` | Rejected at load — the label is a series identity and duplicates would silently merge two subscriptions. |
+| Two sources share a `label` **within one vendor** | Rejected at load — the pair `(vendor, label)` is the series identity, and a duplicate would silently merge two subscriptions. The same label under *different* vendors is fine (`claude`/`personal` and `grok`/`personal` are distinct series). |
 | A configured `root` nests inside another | Rejected at load. Overlapping roots would double-count every event in the overlap. |
 | `~/.grok/sessions` absent | No Grok cells. Not an error. |
 | A `turn_completed` without `usage` | Counted toward the coverage denominator; contributes no cost. |
