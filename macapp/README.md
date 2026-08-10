@@ -44,7 +44,9 @@ and pricing source see the [root README](../README.md).
   the same vertical position in both charts. Hover any bar to see
   day + tokens + USD in the header row, so you can answer "did spend
   follow usage?" at a glance
-- "By model · month" table with USD and %
+- A **model / vendor / source / total** segmented control, and below
+  it a "By … · month" table that regroups under whichever segment is
+  selected (see "Multiple sources & grouping" below)
 - "By project · month" table with main / subagent split
 - Live tail — last 8 events as they arrive
 - Footer: "Updated Xs ago" · Refresh button · ⚙ menu
@@ -61,8 +63,52 @@ and pricing source see the [root README](../README.md).
   running spend in whole dollars (e.g. `$35`). Badge updates on every
   snapshot tick (≤250 ms after a new event). **On by default**; turn
   it off if you'd rather keep the Dock free of an extra icon.
+- **Edit sources…** opens an inline editor for `sources.toml` right in
+  the popover (see "Multiple sources & grouping" below)
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
+
+## 🗂️ Multiple sources & grouping
+
+The popover's by-model table has a segmented control above it —
+**model / vendor / source / total** — that regroups the same monthly
+totals along a different axis without rescanning anything; all four
+partition the same numbers, so they always sum to the same grand total.
+`source` mode shows one row per configured subscription, rendered
+`vendor/label` (e.g. `claude/work`). This mirrors the Go TUI's `v` key;
+see the [root README's Multiple sources & grouping
+section](../README.md#-multiple-sources--grouping-tui-key-v--popover-segmented-control)
+for the full explanation, including why the root path is the only thing
+that can tell two Claude subscriptions apart.
+
+**⚙ → Edit sources…** opens an inline, collapsible editor inside the
+popover (not a separate window — a `MenuBarExtra` popover can't reliably
+host a `.sheet`). Add a row per subscription (vendor picker, label, root
+— with a folder-picker button), remove rows, then **Save**. Save
+validates through the exact same rules `Sources.load` applies (so a file
+this editor writes can never be one the app itself would then reject) —
+a duplicate or nested root is rejected inline, with the error shown in
+the editor, before anything touches disk — and on success the running
+app reloads its sources immediately, no restart needed.
+
+Both apps read and write the same file:
+
+```toml
+# ~/.config/claudecounter/sources.toml — read by BOTH apps
+
+[[source]]
+vendor = "claude"
+label  = "personal"
+root   = "~/.claude/projects"
+
+[[source]]
+vendor = "claude"
+label  = "work"
+root   = "~/work-claude/projects"
+```
+
+With no file, both apps use exactly one implicit source (`claude`/`claude`
+rooted at `~/.claude/projects`) — today's behaviour, unchanged.
 
 ## 🚦 Limits & plan-utilisation gauges
 
@@ -244,13 +290,28 @@ the Go internal packages:
 | `pricing/` | `Pricing.swift`, `PricingFetch.swift`, `TOML.swift` |
 | `reader/` | `Reader.swift` |
 | `agg/` | `Aggregator.swift` |
+| `sources/` | `Sources.swift` |
+| `agg/group.go` | `Grouping.swift` |
 | `watcher/` (fsnotify) | `Watcher.swift` (FSEventStream) |
 | (no equivalent) | `Cache.swift`, `AppState.swift`, `LiveEventBuffer.swift` |
 
 The Swift test suite includes **cross-language conformance tests**
 that load the same `session_normal.jsonl` and `session_malformed.jsonl`
 fixtures the Go tests use, and assert identical token totals. That's
-the regression net against algorithm drift.
+the regression net against algorithm drift. `GroupingParityTests` adds
+the same style of check for grouping, against a fixture shared with Go's
+`grouping_parity_test.go`.
+
+`Sources.swift` is not a byte-for-byte port in the same sense: it is also
+the **writer** (`Sources.write`, backing the ⚙ → Edit sources… editor),
+which the Go side has no equivalent of — the Go TUI only ever reads
+`sources.toml`, hand-edited or written by this app. Because Swift's
+hand-rolled TOML parser can't round-trip a `#`, `"`, `\`, or a newline
+inside a `label`/`root` value, `Sources.swift` rejects those characters
+at both load and write time; Go's loader, which never writes the file,
+has no equivalent check. Both loaders agree on every other rule
+(unknown vendor, empty fields, duplicate `(vendor,label)`, overlapping
+or nested roots, tilde expansion).
 
 The directory walk order is also matched to Go's `filepath.WalkDir`
 (`Reader.walkDirLikeGo`) so first-seen-wins dedupe attributes shared
@@ -322,6 +383,8 @@ Sources/
     Limits.swift                      LimitsConfig, LimitStatus, TOML load + evaluate
     PlanLimits.swift                  PlanGauge, Codex/Grok log scanners
     GaugeRows.swift                   two-band row builder, tint rules, worstPct
+    Sources.swift                     SourceEntry, sources.toml load + write + validate
+    Grouping.swift                    GroupMode, series-key collapse (mirrors Go's agg.Group)
   ClaudeCounterBar/                   the macOS app target
     App.swift                         @main, AppDelegate, MenuBarExtra
     MenuBarLabel.swift                cash-register glyph + $today
@@ -330,32 +393,41 @@ Sources/
                                               into NSApp.applicationIconImage
     ModelPalette.swift                shared model→colour mapping for the
                                               monthly charts and the by-model table
-    PopoverView.swift                 hero, hourly chart, tables, live tail
+    PopoverView.swift                 hero, hourly chart, grouping control, tables, live tail
     GaugesView.swift                  popover's budget/plan-limit gauge block
+    SourcesEditorView.swift           inline sources.toml editor (⚙ → Edit sources…)
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         178 unit tests
+Tests/ClaudeCounterCoreTests/         215 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
   AggregatorTests.swift               21 tests, incl. daily token totals +
                                               per-model breakdowns (USD + tokens)
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
-  CacheTests.swift                    9 tests, incl. cache-v2 hour-bucket round-trip
+  CacheTests.swift                    10 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
   DockIconTests.swift                 14 tests, incl. NSApp smoke test +
                                               formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   ModelPaletteTests.swift             2 tests, model→colour ranking rule
-  AppStateTests.swift                 13 tests, incl. live pipeline + refresh
+  AppStateTests.swift                 20 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
                                               + budget-vs-vendor-scan cadence split
+                                              + multi-source scanning
   LimitsTests.swift                   20 tests, window evaluation + TOML load
                                               (incl. spaced table headers, CRLF)
   PlanLimitsTests.swift               8 tests, Codex/Grok scan + staleness
   GaugeRowsTests.swift                10 tests, row building + tint rules +
                                               escalation matches displayable rows
   LimitsParityTests.swift             1 test, cross-language fixture vs. Go
+  SourcesTests.swift                  14 tests, load/validate: defaults, tilde
+                                              expansion, duplicate + nested-root
+                                              rejection, same label across vendors
+  SourcesWriteTests.swift             7 tests, write→load round-trip, validate-
+                                              before-write, atomic write
+  GroupingTests.swift                 7 tests, all four modes partition one total
+  GroupingParityTests.swift           1 test, cross-language fixture vs. Go
   NotificationsTests.swift            5 tests (unrelated feature)
   SessionTrackerTests.swift           16 tests (unrelated feature)
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
@@ -401,6 +473,14 @@ What's covered:
   formatter rules ($12.34 / $123.4 / $1234), `NSApp` smoke test
 - **Settings** — `dockIconEnabled` defaults to `true` (verified per
   user request), UserDefaults round-trip with isolated suite names
+- **Sources** — load/validate (defaults, tilde expansion, duplicate and
+  nested-root rejection, same label legitimately reused across vendors),
+  write (round-trip, validate-before-write so a rejected save never
+  touches disk, unsafe-character rejection), plus a cross-language
+  fixture checked against the Go loader
+- **Grouping** — all four modes (model/vendor/source/total) partition
+  one total identically, `next` cycles in the same order as Go's
+  `Mode.Next()`, and `label` matches Go's `Mode.String()` values
 
 UI is intentionally not pixel-tested (thin SwiftUI layer; visual
 verification via `make macapp-run`).

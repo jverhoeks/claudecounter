@@ -106,6 +106,10 @@ Keys:
 - `1` / `2` / `3` — minimal · split · full view
 - `4` — git activity & ROI report (`d`/`w`/`m` bucket, `[`/`]` window)
 - `5` — permission-mode safety report (`[`/`]` window)
+- `v` — cycle the grouping shown in views `1`/`2`/`3`: model → vendor →
+  source → total → model (see the [root README's Multiple sources &
+  grouping
+  section](../README.md#-multiple-sources--grouping-tui-key-v--popover-segmented-control))
 - `↑`/`↓` `PgUp`/`PgDn` `g`/`G` — scroll (report/safety views)
 - `Tab` — cycle views
 - `q` / `Ctrl+C` — quit
@@ -123,7 +127,8 @@ and a per-project breakdown with main/subagent split — then exits.
 
 | flag | default | what |
 |---|---|---|
-| `--root` | `~/.claude/projects` | Where to read JSONL transcripts from |
+| `--root` | `~/.claude/projects` | Where to read JSONL transcripts from. Passing this explicitly overrides `sources.toml` entirely with a single implicit source rooted there — the pre-`sources.toml` contract, kept for anyone who hasn't adopted the config file |
+| `--sources-config` | `~/.config/claudecounter/sources.toml` | Path to `sources.toml`, for monitoring more than one Claude subscription. Only consulted by the live TUI and `--once`/`--limits`; the report-family flags (`--report`, `--safety`, `--scorecard`, `--timeline`, `--phases`) still take `--root` directly. See the [root README's Multiple sources & grouping section](../README.md#-multiple-sources--grouping-tui-key-v--popover-segmented-control) |
 | `--pricing` | `~/.config/claudecounter/pricing.toml` | Custom pricing table |
 | `--refresh-pricing` | off | Fetch the latest pricing from Anthropic docs and write it to disk |
 | `--once` | off | Print summary and exit (no TUI, no watcher) |
@@ -185,16 +190,20 @@ test` directly.
 
 Coverage: pricing math · JSONL parsing · offset / partial-line safety
 · fsnotify wiring · day/month boundaries · dedupe rules · per-project
-attribution · format helpers. UI rendering is intentionally not tested
-(thin layer; visual verification).
+attribution · format helpers · `sources.toml` load/validate (duplicate
+and nested-root rejection, tilde expansion, same label across vendors)
+· grouping (all four modes partition the same total). UI rendering is
+intentionally not tested (thin layer; visual verification).
 
 ## 📁 Layout
 
 ```
 cmd/claudecounter/        main, CLI report/safety/scorecard/timeline, tests
 internal/pricing/         LiteLLM table, fetch, defaults, TOML override
+internal/sources/         sources.toml load + validate (multiple subscriptions)
 internal/reader/          JSONL tailing + project/subagent attribution
-internal/agg/             token aggregator, snapshot, civil-day bucketing
+internal/agg/             token aggregator, snapshot, civil-day bucketing,
+                          grouping (model/vendor/source/total)
 internal/watcher/         fsnotify wrapper with recursive AddTree
 internal/report/          git activity & ROI report (spend × commits)
 internal/gitstat/         git repo-root mapping + commit collection
