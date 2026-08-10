@@ -403,7 +403,13 @@ public final class AppState: ObservableObject {
             // counted. See
             // `test_appState_seedReaders_scopesEachOffsetToExactlyOneOwningReader`
             // for the pinned behaviour.
-            guard let source = sourceForPath(path) else { continue }
+            //
+            // Deliberately `Self.matchSource`, NOT `sourceForPath`: the
+            // latter's single-source shortcut would hand this path to
+            // the lone reader unconditionally, even when it belongs to
+            // no configured source — see `matchSource`'s doc comment
+            // and `test_appState_seedReaders_singleSource_dropsPathOutsideRoot`.
+            guard let source = Self.matchSource(for: path, in: sources) else { continue }
             bySource[source.id, default: [:]][path] = offset
         }
         for (id, r) in readers {
@@ -657,8 +663,30 @@ public final class AppState: ObservableObject {
     /// the watcher's reported path against `projectsRoot` at all, and
     /// this preserves that for the single-source case rather than
     /// introducing a new way for it to (mis)fire on a symlink quirk.
+    ///
+    /// This shortcut is watcher-only — used here, in `handle(change:)`,
+    /// and nowhere else. `seedReaders` needs the opposite forgiveness
+    /// rule (drop an unmatched path rather than assign it) and calls
+    /// `matchSource` directly instead; see its doc comment.
     private func sourceForPath(_ path: String) -> SourceEntry? {
         if sources.count == 1 { return sources[0] }
+        return Self.matchSource(for: path, in: sources)
+    }
+
+    /// The prefix-match core of `sourceForPath`, without its
+    /// single-source shortcut. `seedReaders` MUST go through this
+    /// directly rather than `sourceForPath`: the shortcut hands ANY
+    /// path to the lone reader regardless of whether it's actually
+    /// under that source's root, which — for seeding, unlike the
+    /// watcher — reopens the exact offset collision Task 10 fixed. A
+    /// cached path outside the one configured source's root would be
+    /// seeded into that reader anyway instead of being dropped, so a
+    /// later `mergedOffsets()` could persist an offset behind what was
+    /// actually read, causing a re-read (and, for events missing a
+    /// `messageID`/`requestID`, a re-count) on the next launch. See
+    /// final-review.md item 3 /
+    /// `test_appState_seedReaders_singleSource_dropsPathOutsideRoot`.
+    private static func matchSource(for path: String, in sources: [SourceEntry]) -> SourceEntry? {
         let resolvedPath = (path as NSString).resolvingSymlinksInPath
         var best: SourceEntry? = nil
         var bestLen = -1

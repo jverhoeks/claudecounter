@@ -911,6 +911,77 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(bySource.values.contains { $0[orphanPath] != nil },
                        "a cached path matching no configured source must be dropped, not assigned to some reader anyway")
     }
+
+    /// Pins final-review.md item 3: `sourceForPath`'s `sources.count ==
+    /// 1` shortcut resolves ANY path to the lone source, no matter
+    /// where it actually lives — a shortcut that's fine for the
+    /// watcher (see `sourceForPath`'s doc comment) but wrong for
+    /// `seedReaders`, which must drop an unmatched cached path exactly
+    /// as the multi-source case does. With exactly ONE configured
+    /// source, a cached path that lies OUTSIDE that source's root must
+    /// still be dropped rather than seeded into its reader — seeding it
+    /// anyway is the identical failure mode Task 10 fixed (an offset
+    /// persisted behind what was read, re-triggering a re-read and, for
+    /// events missing a `messageID`/`requestID`, a re-count).
+    ///
+    /// This must FAIL against the un-fixed shortcut: with only one
+    /// source configured, `sourceForPath("...")` returns that source
+    /// unconditionally, so `orphanPath` below would land in its reader
+    /// instead of being dropped.
+    func test_appState_seedReaders_singleSource_dropsPathOutsideRoot() async throws {
+        let base = NSTemporaryDirectory() + "as-single-source-\(UUID().uuidString)"
+        let workRoot = base + "/work/projects"
+        try FileManager.default.createDirectory(atPath: workRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workRoot + "/p1/sess.jsonl"
+        // Under the ONE configured source's root — must be kept.
+        // A path from a DIFFERENT, no-longer-configured root — must be
+        // dropped, even though there's only one reader to (mis)assign
+        // it to.
+        let orphanPath = base + "/orphan/projects/p1/sess.jsonl"
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(workRoot)"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-single-source-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let seededCache = CacheFile(
+            writtenAt: Date(),
+            cells: [],
+            perMsg: [],
+            offsets: [workPath: 111, orphanPath: 333],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: workRoot,
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+        await app.stop()
+
+        let bySource = await app.readerOffsetsByID()
+
+        XCTAssertEqual(bySource["claude/work"], [workPath: 111],
+                       "the sole reader must hold only its own path — the orphan must not be seeded into it just because it's the only reader available")
+    }
 }
 
 private extension String {
