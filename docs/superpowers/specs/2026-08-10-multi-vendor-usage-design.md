@@ -4,16 +4,39 @@
 **Status:** approved, ready for planning
 **Scope:** configurable sources, Grok ingestion, and the grouping control. Codex
 ingestion is deferred to a follow-up spec.
-
-> **Size warning.** This is larger than the usage-limits work that preceded it. It
-> adds two dimensions to the aggregation key (touching both languages and the
-> macapp's persisted cache), a new ingestion path, a new aggregator capability
-> (vendor-supplied cost), a config file with a GUI editor, and a four-mode grouping
-> control on two surfaces. It is a candidate for decomposition — the natural seam
-> is *configurable sources + the source dimension* first, then *Grok ingestion +
-> grouping*. Decide before planning, not during.
 **Supersedes a claim in:** `docs/superpowers/specs/2026-08-07-usage-limits-design.md`
 (see *Correction* below).
+
+> **Size.** This is larger than the usage-limits work that preceded it: two new
+> dimensions in the aggregation key (touching both languages and the macapp's
+> persisted cache), a new ingestion path, a new aggregator capability
+> (vendor-supplied cost), a config file with a GUI editor, and a four-mode grouping
+> control on two surfaces.
+
+## Agreed decomposition
+
+Two phases, each with its own implementation plan. The seam is the source
+dimension.
+
+**Phase A — sources and grouping.** Configurable `sources.toml`, the macapp config
+GUI, `Source`/`Vendor` on `reader.Event` and in the aggregation key, and the full
+four-mode grouping control. Built against **existing Claude data only** — no new
+ingestion path, no aggregator cost change.
+
+Phase A ships something complete on its own: it is what solves the
+multiple-Claude-subscriptions problem, and `source` mode is what makes two
+subscriptions worth configuring separately. The `vendor` mode is built here too and
+simply has one member until Phase B lands — building it now avoids reworking the
+grouping control twice.
+
+**Phase B — Grok.** The Grok reader, vendor-supplied cost in `agg.Snapshot`, and
+partial-coverage reporting. Plugs into dimensions and a UI that already exist, so
+its surface area is the ingestion itself rather than the plumbing.
+
+Phase C, separately specced later, is Codex.
+
+Sections below describe the whole design; each is marked **[A]** or **[B]** where
+the phase is not obvious from context.
 
 ## Problem
 
@@ -94,7 +117,7 @@ scanning every file is safe. Contrast Claude, where `agg` deliberately splits
 
 ## Components
 
-### Configurable sources
+### Configurable sources — [A]
 
 Today the roots are hardcoded: `~/.claude/projects` for Claude, and the vendor
 paths for the plan gauges. A user may run more than one Claude subscription — a
@@ -140,7 +163,7 @@ The macapp gets a GUI editor for this list, so a user need not hand-edit TOML. I
 writes the same file the TUI reads, following the precedent set by `limits.toml`
 being shared between the two surfaces.
 
-### Vendor and source as first-class dimensions
+### Vendor and source as first-class dimensions — [A]
 
 `reader.Event` gains `Vendor string` and `Source string`. Both are set from **which
 configured root the event's file came from**, not inferred from the model name.
@@ -161,7 +184,7 @@ This is the widest change in the spec: it touches `Totals`, every consumer of
 `Day`/`Month`, the macapp's persisted cache, and its `usdByModel`, `tokensByModel`
 and `hourlyUSDByModel` maps — in both languages.
 
-### Grok ingestion
+### Grok ingestion — [B]
 
 Source: `~/.grok/sessions/**/updates.jsonl`. Read events where
 `params.update.sessionUpdate == "turn_completed"` **and** `usage` is present.
@@ -172,7 +195,7 @@ Source: `~/.grok/sessions/**/updates.jsonl`. Read events where
 - **Per-model** — one cell per key of `modelUsage`, not one cell per turn. The top-level totals are the sum across `modelUsage` and must **not** be added on top of it.
 - **Never read** `sessions/**` for anything else. `_meta.totalTokens` is cumulative context and is not usage.
 
-### Authoritative cost — a new aggregator capability
+### Authoritative cost — a new aggregator capability — [B]
 
 `agg.Snapshot` currently derives USD from tokens via the pricing table for every
 cell. Grok cells carry an authoritative USD (`costUsdTicks / 1e9`) that must be
@@ -184,7 +207,7 @@ supplied). `Snapshot` sums each accordingly. A consequence worth stating: Grok
 figures are immune to pricing-table drift, and a Grok model missing from LiteLLM is
 not an `Unknown` — there is nothing to look up.
 
-### The grouping control
+### The grouping control — [A]
 
 One cycle key with four modes, plus drill-in to a single series:
 
@@ -204,7 +227,7 @@ separately — merging them would leave a user unable to tell work spend from
 personal. With only one source configured (the default), the mode still works and
 simply shows a single series; it need not be hidden.
 
-### Partial-coverage reporting
+### Partial-coverage reporting — [B]
 
 A monthly Grok total computed over July would be roughly one fifth of the truth and
 would look exactly as authoritative as a correct one. That is the failure mode this
@@ -216,7 +239,7 @@ When a Grok figure's coverage falls below a threshold, mark it partial in the UI
 rather than presenting it as complete. A user looking at July must be able to see
 that the number is a floor, not a total.
 
-### Drop the `n/a` placeholder rows
+### Drop the `n/a` placeholder rows — [A]
 
 The limits gauges render a dimmed `n/a` row for a vendor that reports nothing in a
 duration band. Codex stopped emitting its 5-hour window in August (29 session files
