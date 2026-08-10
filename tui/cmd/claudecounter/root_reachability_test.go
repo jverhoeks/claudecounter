@@ -65,6 +65,56 @@ func TestExplicitRootOverrideMissingIsFatalForTUI(t *testing.T) {
 	}
 }
 
+// TestResolveSourcesNoConfigMissingDefaultRootIsFatal and
+// TestTUISourcesNoOverrideNoConfigMissingDefaultRootIsFatal pin the fix
+// for final-review.md item 2: a user with NO sources.toml (the
+// Defaults(home) case) who also has no ~/.claude/projects — a first-run
+// user, or a cron/CI wrapper with the wrong $HOME — must get the same
+// fatal error the tool gave before --sources-config existed, not a
+// confident, silent $0.00. This is deliberately narrower than
+// TestConfiguredAbsentSourceIsSkippedSilently just below: THAT test is
+// about a root a human actually typed into sources.toml, which is a
+// legitimate "this subscription isn't on this machine" and stays
+// silent. This one is about the implicit fallback nobody configured,
+// which is not.
+func TestResolveSourcesNoConfigMissingDefaultRootIsFatal(t *testing.T) {
+	if os.Getenv("CC_DEFAULT_ROOT_CRASH_TEST") == "1" {
+		missingHome := os.Getenv("CC_MISSING_HOME")
+		resolveSources(filepath.Join(missingHome, "absent-sources.toml"), "unused", false, missingHome)
+		return // must not be reached: resolveSources should have exited
+	}
+
+	missingHome := t.TempDir() // has no .claude/projects under it
+	cmd := exec.Command(os.Args[0], "-test.run=TestResolveSourcesNoConfigMissingDefaultRootIsFatal")
+	cmd.Env = append(os.Environ(), "CC_DEFAULT_ROOT_CRASH_TEST=1", "CC_MISSING_HOME="+missingHome)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Success() {
+		t.Fatalf("expected resolveSources to exit non-zero when no sources.toml exists and the default root is missing; err=%v output=%s", err, out)
+	}
+	if !strings.Contains(string(out), "claude projects root not found") {
+		t.Fatalf("expected the fatal message to name the missing default root, got:\n%s", out)
+	}
+}
+
+// Same case, for the live-TUI equivalent.
+func TestTUISourcesNoOverrideNoConfigMissingDefaultRootIsFatal(t *testing.T) {
+	if os.Getenv("CC_TUI_DEFAULT_ROOT_CRASH_TEST") == "1" {
+		missingHome := os.Getenv("CC_MISSING_HOME")
+		tuiSources(filepath.Join(missingHome, "absent-sources.toml"), "unused", false, missingHome)
+		return
+	}
+
+	missingHome := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestTUISourcesNoOverrideNoConfigMissingDefaultRootIsFatal")
+	cmd.Env = append(os.Environ(), "CC_TUI_DEFAULT_ROOT_CRASH_TEST=1", "CC_MISSING_HOME="+missingHome)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Success() {
+		t.Fatalf("expected tuiSources to exit non-zero when no sources.toml exists and the default root is missing; err=%v output=%s", err, out)
+	}
+}
+
 // Contrast case: a root named IN sources.toml (never typed by the
 // user) that doesn't exist is silently skipped, not fatal — this is
 // TestScanSnapshotSkipsMissingRoot in sources_cli_test.go, exercised

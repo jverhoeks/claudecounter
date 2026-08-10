@@ -48,16 +48,22 @@ root   = "`+filepath.Join(home, "other")+`"
 
 // With no --root override and no sources.toml, the TUI must fall back
 // to exactly today's implicit default: claude/claude at
-// home/.claude/projects.
+// home/.claude/projects — provided that root actually exists. (A
+// missing default root is a separate, fatal case — see
+// TestTUISourcesNoOverrideNoConfigMissingDefaultRootIsFatal in
+// root_reachability_test.go.)
 func TestTUISourcesNoOverrideNoConfigUsesDefault(t *testing.T) {
 	home := t.TempDir()
+	want := filepath.Join(home, ".claude", "projects")
+	if err := os.MkdirAll(want, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// root is ignored when rootSet is false; passed as "unused" to make
 	// that explicit.
 	srcs, warn := tuiSources(filepath.Join(home, "absent.toml"), "unused", false, home)
 	if warn != "" {
 		t.Fatalf("expected no warning for an absent config, got %q", warn)
 	}
-	want := filepath.Join(home, ".claude", "projects")
 	if len(srcs) != 1 || srcs[0].ID() != "claude/claude" || srcs[0].Root != want {
 		t.Fatalf("expected the default source rooted at %q, got %+v", want, srcs)
 	}

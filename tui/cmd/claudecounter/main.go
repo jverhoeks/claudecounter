@@ -163,7 +163,26 @@ func loadSourcesOrExit(cfgPath, home string) []sources.Source {
 		fmt.Fprintln(os.Stderr, "sources config:", err)
 		os.Exit(1)
 	}
+	if cfg.UsedDefaults {
+		requireDefaultRoots(cfg.Sources)
+	}
 	return cfg.Sources
+}
+
+// requireDefaultRoots restores the pre-sources.toml contract for the
+// implicit, unconfigured source list: before --sources-config existed,
+// a missing default root was always fatal (main() ran an unconditional
+// os.Stat(*root) check). splitReachable's "a configured-but-absent root
+// is skipped silently" rule is meant for a root a user actually
+// listed in sources.toml — a legitimate "this subscription isn't on
+// this machine" — not for the fallback nobody configured. Without this,
+// a first-run user (or a cron/CI wrapper with a wrong $HOME) gets a
+// confident, silent $0.00 with nothing distinguishing "you spent
+// nothing" from "I couldn't find your transcripts".
+func requireDefaultRoots(srcs []sources.Source) {
+	for _, s := range srcs {
+		requireRoot(s.Root)
+	}
 }
 
 // tuiSources resolves the source list for the live TUI. An explicit
@@ -183,6 +202,9 @@ func tuiSources(sourcesCfgPath, root string, rootSet bool, home string) ([]sourc
 	cfg, err := sources.Load(sourcesCfgPath, home)
 	if err != nil {
 		return sources.Defaults(home), fmt.Sprintf("⚠ sources config: %v (using defaults)", err)
+	}
+	if cfg.UsedDefaults {
+		requireDefaultRoots(cfg.Sources)
 	}
 	return cfg.Sources, ""
 }
