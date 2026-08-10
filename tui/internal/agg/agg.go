@@ -30,7 +30,7 @@ func (a TokenCounts) ToUsage() pricing.Usage {
 	}
 }
 
-// ModelDay holds aggregated tokens for a (day or month, model) cell
+// ModelDay holds aggregated tokens for a (day or month, series) cell
 // plus the cost computed once at snapshot time from those tokens.
 // Storing tokens (uint64) and computing cost only at snapshot avoids
 // per-event float64 accumulation drift over many thousands of events.
@@ -63,14 +63,24 @@ type DailyTotal struct {
 	Tokens uint64 // sum of input + output + cacheCreate + cacheRead
 }
 
+// SeriesKey identifies one chartable series. Source and Vendor are both
+// stored rather than Vendor being derived from Source at snapshot time:
+// the macapp persists cells between runs, so a label removed from the
+// config would otherwise leave its cached cells unattributable.
+type SeriesKey struct {
+	Source string // "vendor/label"
+	Vendor string
+	Model  string
+}
+
 type Totals struct {
-	Day       map[string]ModelDay   // model -> totals for today
-	Month     map[string]ModelDay   // model -> totals for this month
-	DayProj   map[string]ProjectDay // project -> totals for today
-	MonthProj map[string]ProjectDay // project -> totals for this month
-	Daily     []DailyTotal          // last N days (ascending), N set by Snapshot caller via DailyWindow
-	Unknown   int                   // distinct unpriced message ids
-	Dupes     int                   // events skipped as msgid:reqid duplicates
+	Day       map[SeriesKey]ModelDay // series (source, vendor, model) -> totals for today
+	Month     map[SeriesKey]ModelDay // series (source, vendor, model) -> totals for this month
+	DayProj   map[string]ProjectDay  // project -> totals for today
+	MonthProj map[string]ProjectDay  // project -> totals for this month
+	Daily     []DailyTotal           // last N days (ascending), N set by Snapshot caller via DailyWindow
+	Unknown   int                    // distinct unpriced message ids
+	Dupes     int                    // events skipped as msgid:reqid duplicates
 	AsOf      time.Time
 }
 
@@ -85,11 +95,14 @@ func dayOf(t time.Time) civilDay {
 	return civilDay{lt.Year(), lt.Month(), lt.Day()}
 }
 
-// cellKey identifies one storage cell: a (day, project, model, isSub)
-// bucket of token counts. Cost is derived from these at snapshot time.
+// cellKey identifies one storage cell: a (day, project, source, vendor,
+// model, isSub) bucket of token counts. Cost is derived from these at
+// snapshot time.
 type cellKey struct {
 	Day     civilDay
 	Project string
+	Source  string
+	Vendor  string
 	Model   string
 	IsSub   bool
 }
@@ -147,6 +160,8 @@ func (a *Aggregator) Apply(e reader.Event) {
 	k := cellKey{
 		Day:     dayOf(e.Timestamp),
 		Project: e.Project,
+		Source:  e.Source,
+		Vendor:  e.Vendor,
 		Model:   e.Model,
 		IsSub:   e.IsSubagent,
 	}
@@ -176,9 +191,9 @@ func (a *Aggregator) Dupes() int {
 // reads from this slice.
 const DailyWindow = 30
 
-// Snapshot computes per-model and per-project totals for today and this
+// Snapshot computes per-series and per-project totals for today and this
 // month from the accumulated token cells. Costs are computed exactly
-// once per (model, scope) by summing tokens first then applying
+// once per (series, scope) by summing tokens first then applying
 // pricing — this is mathematically equivalent to summing per-event
 // costs but avoids float accumulation noise over thousands of events.
 func (a *Aggregator) Snapshot() Totals {
@@ -188,9 +203,12 @@ func (a *Aggregator) Snapshot() Totals {
 	now := a.now().Local()
 	today := civilDay{now.Year(), now.Month(), now.Day()}
 
-	// 1) Aggregate per-(scope, model) and per-(scope, project, isSub)
+	// 1) Aggregate per-(scope, series) and per-(scope, project, isSub)
 	//    in tokens. scope ∈ {"day","month"}.
-	type modelKey struct{ Scope, Model string }
+	type modelKey struct {
+		Scope string
+		Key   SeriesKey
+	}
 	type projKey struct {
 		Scope, Project string
 		IsSub          bool
@@ -201,14 +219,15 @@ func (a *Aggregator) Snapshot() Totals {
 	inMonth := func(d civilDay) bool { return d.Y == now.Year() && d.M == now.Month() }
 
 	for k, t := range a.cells {
+		sk := SeriesKey{Source: k.Source, Vendor: k.Vendor, Model: k.Model}
 		if k.Day == today {
-			mk := modelKey{"day", k.Model}
+			mk := modelKey{"day", sk}
 			modelTok[mk] = modelTok[mk].Add(t)
 			pk := projKey{"day", k.Project, k.IsSub}
 			projTok[pk] = projTok[pk].Add(t)
 		}
 		if inMonth(k.Day) {
-			mk := modelKey{"month", k.Model}
+			mk := modelKey{"month", sk}
 			modelTok[mk] = modelTok[mk].Add(t)
 			pk := projKey{"month", k.Project, k.IsSub}
 			projTok[pk] = projTok[pk].Add(t)
@@ -217,8 +236,8 @@ func (a *Aggregator) Snapshot() Totals {
 
 	// 2) Apply pricing once per cell to derive USD.
 	out := Totals{
-		Day:       map[string]ModelDay{},
-		Month:     map[string]ModelDay{},
+		Day:       map[SeriesKey]ModelDay{},
+		Month:     map[SeriesKey]ModelDay{},
 		DayProj:   map[string]ProjectDay{},
 		MonthProj: map[string]ProjectDay{},
 		Unknown:   len(a.unknownMsgs),
@@ -228,15 +247,15 @@ func (a *Aggregator) Snapshot() Totals {
 
 	for mk, tok := range modelTok {
 		usd := 0.0
-		if a.pricing.Has(mk.Model) {
-			usd = a.pricing.Cost(mk.Model, tok.ToUsage())
+		if a.pricing.Has(mk.Key.Model) {
+			usd = a.pricing.Cost(mk.Key.Model, tok.ToUsage())
 		}
 		md := ModelDay{USD: usd, Tokens: tok}
 		switch mk.Scope {
 		case "day":
-			out.Day[mk.Model] = md
+			out.Day[mk.Key] = md
 		case "month":
-			out.Month[mk.Model] = md
+			out.Month[mk.Key] = md
 		}
 	}
 
