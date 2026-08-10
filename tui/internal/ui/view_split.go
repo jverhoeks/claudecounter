@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -45,7 +44,7 @@ func inlineBar(width int, frac float64, style lipgloss.Style) string {
 	return bar + track
 }
 
-func viewSplit(t agg.Totals, gauges string) string {
+func viewSplit(t agg.Totals, gauges string, mode agg.Mode) string {
 	var b strings.Builder
 	dayTotal := sumUSD(t.Day)
 	monthTotal := sumUSD(t.Month)
@@ -64,26 +63,8 @@ func viewSplit(t agg.Totals, gauges string) string {
 		b.WriteString(gauges)
 	}
 
-	names := make([]string, 0, len(t.Day))
-	for name := range t.Day {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		return t.Day[names[i]].USD > t.Day[names[j]].USD
-	})
-
-	const barW = 24
-	for _, n := range names {
-		md := t.Day[n]
-		frac := 0.0
-		if dayTotal > 0 {
-			frac = md.USD / dayTotal
-		}
-		bar := inlineBar(barW, frac, modelBarStyle(n))
-		line := fmt.Sprintf("  %-7s %s %9s  %4.0f%%\n",
-			shortModel(n), bar, FormatUSD(md.USD), frac*100)
-		b.WriteString(line)
-	}
+	b.WriteString(renderModeBar(mode))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode))
 
 	// 30-day spend trend, then the parallel 30-day token-volume trend.
 	// Same renderers as the minimal view so the charts are visually

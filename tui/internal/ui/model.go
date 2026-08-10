@@ -92,6 +92,7 @@ const (
 
 type Model struct {
 	mode        ViewMode
+	groupMode   agg.Mode // cycled with "b"; zero value is agg.GroupModel
 	totals      agg.Totals
 	recent      []string
 	warns       []string
@@ -252,6 +253,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.safetyVP, cmd = m.safetyVP.Update(msg)
 				return m, cmd
 			}
+			// "b" ("group by") is otherwise free: it only scrolls the
+			// report/safety viewports above, and those modes don't show
+			// a grouped series table. Cycle the grouping in the three
+			// modes that do.
+			if msg.String() == "b" && (m.mode == ModeMinimal || m.mode == ModeSplit || m.mode == ModeFull) {
+				m.groupMode = m.groupMode.Next()
+			}
 		case "g":
 			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoTop()
@@ -332,11 +340,11 @@ func (m Model) View() string {
 	var body string
 	switch m.mode {
 	case ModeMinimal:
-		body = viewMinimal(m.totals, m.gauges)
+		body = viewMinimal(m.totals, m.gauges, m.groupMode)
 	case ModeSplit:
-		body = viewSplit(m.totals, m.gauges)
+		body = viewSplit(m.totals, m.gauges, m.groupMode)
 	case ModeFull:
-		body = viewFull(m.totals, m.recent, m.streamline.View())
+		body = viewFull(m.totals, m.recent, m.streamline.View(), m.groupMode)
 	case ModeReport:
 		head := reportHeader(m.reportDays, m.reportBucket)
 		switch {
