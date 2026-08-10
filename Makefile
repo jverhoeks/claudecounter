@@ -41,17 +41,26 @@ build-insights: ## Build the analyzer binary → ./claudeinsights
 install: ## go install the TUI into $GOBIN
 	cd $(TUI_DIR) && go install -ldflags="$(LDFLAGS)" $(TUI_PKG)
 
+
+# TZ=UTC pins Go's time.Local for the duration of the test process. The
+# limits parity fixture (internal/limits/parity_test.go) compares Go's
+# Evaluate(), which hardcodes time.Local, against Swift's
+# LimitsParityTests, which pins UTC — so without a fixed TZ here, a
+# contributor at UTC+13/+14 (or any non-Amsterdam zone) gets a red suite
+# for a timezone mismatch, not a real regression (final-review.md M-2).
+# `t.Setenv("TZ", …)` cannot fix this: Go resolves time.Local once at
+# process start, before any test runs.
 .PHONY: test
-test: ## Run all Go tests
-	cd $(TUI_DIR) && go test ./...
+test: ## Run all Go tests (TZ=UTC — see comment above)
+	cd $(TUI_DIR) && TZ=UTC go test ./...
 
 .PHONY: test-v
-test-v: ## Run Go tests verbosely
-	cd $(TUI_DIR) && go test -v ./...
+test-v: ## Run Go tests verbosely (TZ=UTC — see comment above)
+	cd $(TUI_DIR) && TZ=UTC go test -v ./...
 
 .PHONY: cover
-cover: ## Run Go tests with coverage report
-	cd $(TUI_DIR) && go test -coverprofile=../coverage.out ./...
+cover: ## Run Go tests with coverage report (TZ=UTC — see comment above)
+	cd $(TUI_DIR) && TZ=UTC go test -coverprofile=../coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
 .PHONY: fmt
@@ -117,7 +126,7 @@ macapp-publish: ## Tag macapp-VERSION + push (CI builds + creates GitHub Release
 # ────────────────────── meta ──────────────────────
 
 .PHONY: test-all
-test-all: test macapp-test ## Run Go + Swift test suites
+test-all: test macapp-test ## Run Go + Swift test suites (includes the cross-language limits parity fixture)
 
 .PHONY: clean
 clean: ## Remove built artefacts (both apps)

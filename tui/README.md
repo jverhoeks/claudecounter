@@ -135,6 +135,14 @@ and a per-project breakdown with main/subagent split — then exits.
 | `--scorecard` | off | Print a per-session scorecard (tools, failures, waste, tokens) and exit |
 | `--timeline` | off | Print a per-session chronological audit log and exit |
 | `--session` | most recent | Session id prefix for `--scorecard`/`--timeline` |
+| `--limits` | off | Scan once, print budget and plan-limit gauges, and exit |
+| `--limits-config` | `~/.config/claudecounter/limits.toml` | Path to `limits.toml` |
+
+The same gauge block also renders live inside views `1` (minimal) and
+`2` (split, default), refreshed every 30s — not in view `3` (full
+dashboard). See the [root README's Limits
+section](../README.md#-limits--plan-utilisation-tui-views-12----limits)
+for the config format and what each row means.
 
 ## 🪟 Windows testers wanted
 
@@ -156,7 +164,7 @@ contribution, much appreciated. 🙏
 From the repo root:
 
 ```bash
-make test       # cd tui && go test ./...
+make test       # cd tui && TZ=UTC go test ./...
 make cover      # produces coverage.out + summary
 make test-v     # verbose
 ```
@@ -164,8 +172,16 @@ make test-v     # verbose
 Or directly from `tui/`:
 
 ```bash
-cd tui && go test ./...
+cd tui && TZ=UTC go test ./...
 ```
+
+`TZ=UTC` matters here: `limits.Evaluate` hardcodes `time.Local` (no
+location seam yet), and the cross-language limits parity fixture
+compares it against Swift's UTC-pinned test. Without `TZ=UTC`, a
+contributor outside UTC+0/+1/+2 (e.g. UTC+13/+14) gets a failing
+`TestParityFixture` for a timezone mismatch, not a real regression. The
+`make` targets above set it for you; set it yourself if you run `go
+test` directly.
 
 Coverage: pricing math · JSONL parsing · offset / partial-line safety
 · fsnotify wiring · day/month boundaries · dedupe rules · per-project

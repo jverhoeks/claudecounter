@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/limits"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
 	"github.com/jverhoeks/claudecounter/tui/internal/report"
@@ -54,6 +55,8 @@ func main() {
 	timelineFlag := flag.Bool("timeline", false, "print a per-session audit timeline and exit")
 	sessionFlag := flag.String("session", "", "session id prefix for --scorecard/--timeline (default: most recent session)")
 	phasesFlag := flag.Bool("phases", false, "print subagent spend by phase/language/model for this month and exit")
+	limitsFlag := flag.Bool("limits", false, "scan once, print budget and plan-limit gauges, and exit")
+	limitsPath := flag.String("limits-config", limits.DefaultConfigPath(), "path to limits.toml")
 	flag.Parse()
 
 	if _, err := os.Stat(*root); err != nil {
@@ -64,6 +67,10 @@ func main() {
 
 	if *once {
 		runOnce(*root, table, pricingWarn)
+		return
+	}
+	if *limitsFlag {
+		runLimits(*root, table, *limitsPath)
 		return
 	}
 	if *phasesFlag {
@@ -94,7 +101,7 @@ func main() {
 		runReport(*root, table, *days, parseBucket(*bucket))
 		return
 	}
-	runTUI(*root, table, pricingWarn)
+	runTUI(*root, table, pricingWarn, *limitsPath)
 }
 
 // runOnce scans the projects tree once, prints a plain-text summary, and exits.
@@ -102,6 +109,20 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	fmt.Fprintf(os.Stderr, "scanning %s …\n", root)
 	start := time.Now()
 
+	snap, dupes, parseErrors := scanSnapshot(root, table)
+
+	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
+
+	if pricingWarn != "" {
+		fmt.Println(pricingWarn)
+	}
+	printSummary(snap, dupes, parseErrors)
+}
+
+// scanSnapshot does a single full scan and returns the aggregated
+// totals plus the reader/aggregator's dupe and parse-error counters.
+// Shared by --once and --limits so both see identical numbers.
+func scanSnapshot(root string, table pricing.Table) (agg.Totals, int, int) {
 	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
@@ -120,14 +141,7 @@ func runOnce(root string, table pricing.Table, pricingWarn string) {
 	}
 	close(evCh)
 	<-done
-
-	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
-
-	snap := a.Snapshot()
-	if pricingWarn != "" {
-		fmt.Println(pricingWarn)
-	}
-	printSummary(snap, a.Dupes(), r.ParseErrors())
+	return a.Snapshot(), a.Dupes(), r.ParseErrors()
 }
 
 func printSummary(snap agg.Totals, dupes, parseErrors int) {
@@ -193,8 +207,17 @@ func shortProject(encoded string) string {
 	return tail
 }
 
+// gaugeRefreshInterval is how often the live TUI re-scans budgets and
+// vendor plan logs. It is decoupled from the aggregator's sub-second
+// dirty-flush cadence on purpose: a gauge refresh walks the Codex
+// sessions directory and reads the Grok log, and running that on every
+// 250ms flush during a 47k-event backfill risks stalling the counting
+// pipeline itself. Budgets and plan windows do not change fast enough
+// to need better than this.
+const gaugeRefreshInterval = 30 * time.Second
+
 // runTUI starts the interactive dashboard.
-func runTUI(root string, table pricing.Table, pricingWarn string) {
+func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath string) {
 	evCh := make(chan reader.Event, 1024)
 	r := reader.New(evCh)
 	a := agg.New(table)
@@ -230,8 +253,31 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 	// NOTE: bubbletea's program.Send blocks on an unbuffered channel
 	// until prog.Run() is reading. Anything that calls Send must run
 	// in a goroutine that will only fire AFTER Run has started — the
-	// pipeline ticker (250 ms) and the backfill completion send below
-	// both satisfy that. Don't send synchronously from this point.
+	// pipeline ticker (250 ms), the gauge ticker below (fires no sooner
+	// than gaugeRefreshInterval), and the backfill completion send
+	// (which only runs after InitialScan) all satisfy that. Don't send
+	// synchronously from this point.
+
+	// refreshGauges re-scans budgets and vendor plan logs and pushes the
+	// result to the UI (see gaugeRefreshInterval for why this runs on
+	// its own cadence rather than piggybacking on the aggregator's
+	// dirty flush). A malformed limits.toml is carried in GaugesMsg.Err
+	// rather than logged or exited: the live counting path must never
+	// go down, or spam stderr under the alt screen, over a config typo.
+	// The model turns Err into a footer warning and leaves the
+	// last-good gauge block on screen. Contrast runLimits, the
+	// one-shot, which exits non-zero on the same error.
+	refreshGauges := func() {
+		out, err := gatherGauges(limitsCfgPath, a.Snapshot().Daily, time.Now())
+		prog.Send(ui.GaugesMsg{Gauges: out, Err: err})
+	}
+	go func() {
+		ticker := time.NewTicker(gaugeRefreshInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			refreshGauges()
+		}
+	}()
 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
@@ -251,14 +297,18 @@ func runTUI(root string, table pricing.Table, pricingWarn string) {
 			log.Printf("initial scan: %v", err)
 		}
 		wg.Wait()
-		// Push the post-backfill snapshot once, then unblock the live
-		// tail and tell the UI to drop the spinner.
+		// Push the post-backfill snapshot once, then run the first gauge
+		// refresh from real (fully backfilled) totals — not before, or
+		// a configured budget would briefly show a confident but wrong
+		// 0% off an empty Daily series — then unblock the live tail and
+		// tell the UI to drop the spinner.
 		prog.Send(ui.SnapshotMsg{
 			Totals:      a.Snapshot(),
 			ParseErrors: r.ParseErrors(),
 			Dupes:       a.Dupes(),
 			PricingWarn: pricingWarn,
 		})
+		refreshGauges()
 		prog.Send(ui.BackfillDoneMsg{})
 		close(liveTail)
 	}()

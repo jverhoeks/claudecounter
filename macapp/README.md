@@ -32,6 +32,9 @@ and pricing source see the [root README](../README.md).
 
 **Popover (~520×700px, on click):**
 - Hero today + month numbers
+- Budget & plan-limit gauges, right below the hero row (only if a
+  `limits.toml` budget or a Codex/Grok install has something to show —
+  see "Limits & plan-utilisation gauges" below)
 - 24-bar hourly chart for today (future hours dimmed)
 - 30-day **cost** chart with each day's bar **stacked by model** —
   the segment colours match the swatches in the "By model · month"
@@ -60,6 +63,55 @@ and pricing source see the [root README](../README.md).
   it off if you'd rather keep the Dock free of an extra icon.
 - Refresh pricing (fetches from LiteLLM and writes to the in-app override)
 - Quit
+
+## 🚦 Limits & plan-utilisation gauges
+
+The popover shows the same two duration bands as the [Go TUI](../tui) —
+"short window" and "weekly" — with the same rows (`claude` budget,
+`codex` and `grok` plan limits) and the same caveat: a band title is a
+duration, not a shared window definition, so a `claude` weekly row, a
+Codex 7-day rolling window and Grok's Thursday-anchored billing period
+can legitimately show different numbers side by side. See the [root
+README's Limits
+section](../README.md#-limits--plan-utilisation-tui-views-12----limits)
+for the full explanation and the `limits.toml` format.
+
+Limits are read from the same `~/.config/claudecounter/limits.toml` the
+TUI reads, so the two apps always agree on your budgets and threshold.
+
+Three different refresh cadences feed this block, and they are not all
+the same:
+- **`claude` budget rows** (day/week spend vs. `limits.toml`) re-read
+  the config file and re-evaluate every **minute** — a plain `Limits.load`
+  plus the pure `Limits.evaluate`, no filesystem walk, so it's cheap
+  enough to do on every periodic tick. A budget crossing `warn_pct` or
+  100% shows up (and escalates the menu bar) within a minute.
+- **`codex`/`grok` plan rows'** percentages come from rescanning
+  `~/.codex/sessions` and the Grok log — a comparatively expensive walk
+  — every **10 minutes**.
+- Every row's `stale` flag, for either kind, re-derives against the
+  clock every **minute**, independent of the walk above. So if a
+  window's reset time passes, the row dims to stale within a minute
+  even though a plan row's percentage behind it can be up to 10 minutes
+  stale itself. (A budget row has no separate staleness concept — it's
+  either a current window's spend or not shown at all.)
+
+A couple of things the popover renders differently from the TUI, worth
+knowing if you use both:
+- Each row is a single SwiftUI `ProgressView`, not a Go-style stacked
+  bar — so, unlike the TUI, a budget row's bar itself is tinted by its
+  warn/over state rather than kept a fixed per-vendor colour.
+- A stale row (its window's reset time has already passed) dims to
+  45% opacity rather than the TUI's grey-out-and-relabel.
+- A stale plan row's detail text is bare `stale` in the popover; the
+  TUI's equivalent row spells out `stale · ended <Day>`.
+
+The menu bar glyph escalates off the same numbers: it turns **orange**
+once the worst non-stale row crosses `warn_pct` (80 by default) and
+**red** once any row hits 100% — mirroring the popover's own warn/over
+colours. (The glyph can also turn orange for other, unrelated warnings
+surfaced elsewhere in the app; orange alone doesn't always mean a limit
+is close.)
 
 ## 📦 Install (release build)
 
@@ -137,7 +189,7 @@ open dist/ClaudeCounterBar.app
 ```bash
 cd macapp
 ./scripts/build-app.sh release   # → ../dist/ClaudeCounterBar.app
-swift test                       # 111 unit tests
+swift test                       # 178 unit tests
 ```
 
 ### Requirements
@@ -267,6 +319,9 @@ Sources/
     DockIcon.swift                    NSApp activation policy + dock badge seam
     Settings.swift                    AppSettings + UserDefaults-backed store
     AppState.swift                    @MainActor coordinator + lifecycle
+    Limits.swift                      LimitsConfig, LimitStatus, TOML load + evaluate
+    PlanLimits.swift                  PlanGauge, Codex/Grok log scanners
+    GaugeRows.swift                   two-band row builder, tint rules, worstPct
   ClaudeCounterBar/                   the macOS app target
     App.swift                         @main, AppDelegate, MenuBarExtra
     MenuBarLabel.swift                cash-register glyph + $today
@@ -276,23 +331,33 @@ Sources/
     ModelPalette.swift                shared model→colour mapping for the
                                               monthly charts and the by-model table
     PopoverView.swift                 hero, hourly chart, tables, live tail
+    GaugesView.swift                  popover's budget/plan-limit gauge block
     Resources/                        SPM-processed resources
-Tests/ClaudeCounterCoreTests/         111 unit tests
+Tests/ClaudeCounterCoreTests/         178 unit tests
   Fixtures/                           JSONL fixtures shared with Go tests
   PricingTests.swift                  9 tests
   ReaderTests.swift                   21 tests, incl. cross-language conformance
-  AggregatorTests.swift               18 tests, incl. daily token totals +
+  AggregatorTests.swift               21 tests, incl. daily token totals +
                                               per-model breakdowns (USD + tokens)
   WatcherTests.swift                  7 tests, incl. live FSEvents smoke test
-  CacheTests.swift                    8 tests, incl. cache-v2 hour-bucket round-trip
+  CacheTests.swift                    9 tests, incl. cache-v2 hour-bucket round-trip
   PricingFetchAndTOMLTests.swift      10 tests, incl. mock URL session
   LaunchAtLoginTests.swift            6 tests, incl. SMAppService smoke test
   DockIconTests.swift                 14 tests, incl. NSApp smoke test +
                                               formatUSDWhole + formatTokens rules
   SettingsTests.swift                 6 tests, incl. UserDefaults first-run defaults
   ModelPaletteTests.swift             2 tests, model→colour ranking rule
-  AppStateTests.swift                 10 tests, incl. live pipeline + refresh
+  AppStateTests.swift                 13 tests, incl. live pipeline + refresh
                                               + dock-icon visibility/badge wiring
+                                              + budget-vs-vendor-scan cadence split
+  LimitsTests.swift                   20 tests, window evaluation + TOML load
+                                              (incl. spaced table headers, CRLF)
+  PlanLimitsTests.swift               8 tests, Codex/Grok scan + staleness
+  GaugeRowsTests.swift                10 tests, row building + tint rules +
+                                              escalation matches displayable rows
+  LimitsParityTests.swift             1 test, cross-language fixture vs. Go
+  NotificationsTests.swift            5 tests (unrelated feature)
+  SessionTrackerTests.swift           16 tests (unrelated feature)
 Resources/Info.plist                  CFBundle*, LSUIElement = YES
 scripts/build-app.sh                  bundle .app from `swift build`
 scripts/release-macapp.sh             package .app into a .zip + .sha256
@@ -398,7 +463,7 @@ make release VERSION=v1.0.0
 Tags `v1.0.0` and pushes. The
 [`release.yml`](../.github/workflows/release.yml) workflow takes over:
 runs the Go test suite + cross-builds 6 TUI platforms on
-`ubuntu-latest`, runs the 111-test Swift suite + builds the macapp on
+`ubuntu-latest`, runs the 178-test Swift suite + builds the macapp on
 `macos-14`, then a third job creates the Release with all 8 assets
 attached.
 
@@ -435,7 +500,6 @@ Considered and deferred:
 - **Universal binary** (Intel + Apple Silicon) — currently arm64-only.
   Open an issue if you want Intel and we'll add a second job to the
   release workflow.
-- Budget alerts / red-tint when today exceeds a threshold.
 - Per-day or per-week popover views.
 - CSV export.
 - Sparkle auto-update.

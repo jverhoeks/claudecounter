@@ -1,0 +1,73 @@
+{
+  "cases": [
+    {
+      "name": "typical day and week",
+      "now": "2026-08-07T12:00:00Z",
+      "dailyLimit": 50.0,
+      "weeklyLimit": 250.0,
+      "warnPct": 80,
+      "daily": [
+        {"day": "2026-08-02", "usd": 99.0},
+        {"day": "2026-08-03", "usd": 10.0},
+        {"day": "2026-08-06", "usd": 20.0},
+        {"day": "2026-08-07", "usd": 39.0}
+      ],
+      "expect": [
+        {"window": "day",  "spentUSD": 39.0, "pct": 78.0, "state": "ok"},
+        {"window": "week", "spentUSD": 69.0, "pct": 27.6, "state": "ok"}
+      ]
+    },
+    {
+      "name": "exactly at the daily limit is over",
+      "now": "2026-08-07T12:00:00Z",
+      "dailyLimit": 50.0,
+      "weeklyLimit": 250.0,
+      "warnPct": 80,
+      "daily": [{"day": "2026-08-07", "usd": 50.0}],
+      "expect": [
+        {"window": "day",  "spentUSD": 50.0, "pct": 100.0, "state": "over"},
+        {"window": "week", "spentUSD": 50.0, "pct": 20.0,  "state": "ok"}
+      ]
+    },
+    {
+      "name": "exactly at warn_pct is warn",
+      "now": "2026-08-07T12:00:00Z",
+      "dailyLimit": 50.0,
+      "weeklyLimit": 0.0,
+      "warnPct": 80,
+      "daily": [{"day": "2026-08-07", "usd": 40.0}],
+      "expect": [
+        {"window": "day",  "spentUSD": 40.0, "pct": 80.0, "state": "warn"},
+        {"window": "week", "spentUSD": 40.0, "pct": 0.0,  "state": "unset"}
+      ]
+    },
+    {
+      "name": "week straddling the ISO year boundary stays one bucket",
+      "now": "2027-01-01T12:00:00Z",
+      "dailyLimit": 0.0,
+      "weeklyLimit": 100.0,
+      "warnPct": 80,
+      "daily": [
+        {"day": "2026-12-28", "usd": 5.0},
+        {"day": "2027-01-01", "usd": 7.0},
+        {"day": "2027-01-04", "usd": 9.0}
+      ],
+      "expect": [
+        {"window": "day",  "spentUSD": 7.0,  "pct": 0.0,  "state": "unset"},
+        {"window": "week", "spentUSD": 12.0, "pct": 12.0, "state": "ok"}
+      ]
+    },
+    {
+      "name": "no spend at all",
+      "now": "2026-08-07T12:00:00Z",
+      "dailyLimit": 50.0,
+      "weeklyLimit": 250.0,
+      "warnPct": 80,
+      "daily": [],
+      "expect": [
+        {"window": "day",  "spentUSD": 0.0, "pct": 0.0, "state": "ok"},
+        {"window": "week", "spentUSD": 0.0, "pct": 0.0, "state": "ok"}
+      ]
+    }
+  ]
+}

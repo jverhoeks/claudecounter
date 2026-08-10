@@ -590,9 +590,13 @@ func TestScanCodexNewLayoutWeeklyInPrimary(t *testing.T) {
 }
 
 func TestScanCodexMarksExpiredWindowStale(t *testing.T) {
-	root := copyFixture(t, "codex_new_layout.jsonl", now().Add(-time.Hour))
 	// resets_at in the fixture is far future; evaluate as if now is later.
 	future := time.Unix(4102444800, 0).Add(time.Hour)
+	// Pin the fixture's mtime to the SAME timeline as `future`. The walk is
+	// age-bounded relative to the evaluation time, so an mtime drawn from a
+	// different clock would put the file outside the window and the scan
+	// would return nothing — the test would fail for the wrong reason.
+	root := copyFixture(t, "codex_new_layout.jsonl", future.Add(-time.Hour))
 	gs, err := ScanCodex(root, future)
 	if err != nil {
 		t.Fatalf("ScanCodex: %v", err)
@@ -2443,7 +2447,15 @@ In `AppState.swift`, add published state and a refresh that runs off the main th
         let daily = totals.daily
         let statuses: [LimitStatus]
         if let cfg = try? Limits.load(path: Limits.defaultConfigPath()) {
-            statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: .current)
+            // ISO-8601 identifier for Monday-first week numbering matching
+            // Go's ISOWeek, but the CURRENT time zone — `DailyTotal.day` is a
+            // local calendar day, so evaluating in UTC would misalign the day
+            // key at the local midnight boundary. `Calendar.current` is wrong
+            // here too: it is Gregorian and typically Sunday-first, which
+            // numbers weeks differently from the Go side.
+            var cal = Calendar(identifier: .iso8601)
+            cal.timeZone = .current
+            statuses = Limits.evaluate(daily: daily, config: cfg, now: now, calendar: cal)
         } else {
             statuses = []
         }

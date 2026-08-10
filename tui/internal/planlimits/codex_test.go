@@ -1,0 +1,160 @@
+package planlimits
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func now() time.Time { return time.Date(2026, 8, 7, 13, 0, 0, 0, time.UTC) }
+
+// copyFixture places a fixture into a temp dir under the session-file
+// layout ScanCodex walks, with a controlled mtime.
+func copyFixture(t *testing.T, name string, mtime time.Time) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "2026", "08", "07")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "rollout-"+name)
+	if err := os.WriteFile(dst, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dst, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func byLabel(gs []Gauge) map[string]Gauge {
+	m := map[string]Gauge{}
+	for _, g := range gs {
+		m[g.WindowLbl] = g
+	}
+	return m
+}
+
+// The old layout puts 5h in primary and weekly in secondary. Keying on
+// the slot name instead of window_minutes would mislabel both.
+func TestScanCodexOldLayoutBothWindows(t *testing.T) {
+	root := copyFixture(t, "codex_old_layout.jsonl", now().Add(-time.Hour))
+	gs, err := ScanCodex(root, now())
+	if err != nil {
+		t.Fatalf("ScanCodex: %v", err)
+	}
+	m := byLabel(gs)
+	if len(m) != 2 {
+		t.Fatalf("want 2 windows, got %d: %+v", len(m), gs)
+	}
+	if m["5h"].Pct != 92 {
+		t.Fatalf("5h Pct = %v, want 92 (newest observation wins)", m["5h"].Pct)
+	}
+	if m["7d"].Pct != 30 {
+		t.Fatalf("7d Pct = %v, want 30", m["7d"].Pct)
+	}
+	if m["5h"].Vendor != "codex" || m["5h"].Plan != "plus" {
+		t.Fatalf("vendor/plan wrong: %+v", m["5h"])
+	}
+}
+
+// The new layout puts the weekly window in primary. It must still be
+// labelled 7d, proving the reader keys on window_minutes.
+func TestScanCodexNewLayoutWeeklyInPrimary(t *testing.T) {
+	root := copyFixture(t, "codex_new_layout.jsonl", now().Add(-time.Hour))
+	gs, err := ScanCodex(root, now())
+	if err != nil {
+		t.Fatalf("ScanCodex: %v", err)
+	}
+	m := byLabel(gs)
+	if len(m) != 1 {
+		t.Fatalf("want 1 window, got %d: %+v", len(m), gs)
+	}
+	if m["7d"].Pct != 100 {
+		t.Fatalf("7d Pct = %v, want 100", m["7d"].Pct)
+	}
+}
+
+func TestScanCodexMarksExpiredWindowStale(t *testing.T) {
+	// resets_at in the fixture is far future; evaluate as if now is later.
+	future := time.Unix(4102444800, 0).Add(time.Hour)
+	// Pin the fixture's mtime to the same timeline as `future`, so the
+	// age-bounded walk includes it — mtime and evaluation time must never
+	// come from different clocks.
+	root := copyFixture(t, "codex_new_layout.jsonl", future.Add(-time.Hour))
+	gs, err := ScanCodex(root, future)
+	if err != nil {
+		t.Fatalf("ScanCodex: %v", err)
+	}
+	if len(gs) != 1 || !gs[0].Stale {
+		t.Fatalf("expired window must be Stale, got %+v", gs)
+	}
+}
+
+func TestScanCodexMissingRootIsNotAnError(t *testing.T) {
+	gs, err := ScanCodex(filepath.Join(t.TempDir(), "absent"), now())
+	if err != nil {
+		t.Fatalf("absent root must not error, got %v", err)
+	}
+	if len(gs) != 0 {
+		t.Fatalf("absent root must yield no gauges, got %+v", gs)
+	}
+}
+
+// A line larger than the scanner's 16 MiB buffer must not silently
+// swallow later, valid rate-limit lines in the same file: it should
+// truncate the read at the oversized line, so only observations before
+// it are seen. This pins the actual observed behaviour so a future
+// change to buffer handling is visible.
+func TestScanCodexOversizedLineDoesNotSilentlyTruncate(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "2026", "08", "07")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	before := `{"timestamp":"2026-08-07T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{},"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":50.0,"window_minutes":300,"resets_at":4102444800},"secondary":null}}}`
+	oversized := strings.Repeat("x", 17*1024*1024) // exceeds the 16 MiB max buffer
+	after := `{"timestamp":"2026-08-07T11:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{},"rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":99.0,"window_minutes":300,"resets_at":4102444800},"secondary":null}}}`
+	body := strings.Join([]string{before, oversized, after}, "\n") + "\n"
+
+	dst := filepath.Join(dir, "rollout-oversized.jsonl")
+	if err := os.WriteFile(dst, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := now().Add(-time.Hour)
+	if err := os.Chtimes(dst, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	gs, err := ScanCodex(root, now())
+	if err != nil {
+		t.Fatalf("ScanCodex: %v", err)
+	}
+	m := byLabel(gs)
+	if len(m) != 1 {
+		t.Fatalf("want 1 window, got %d: %+v", len(m), gs)
+	}
+	// The oversized line ends the scan of this file: the second
+	// rate-limit line (99%), which comes after it, is never read.
+	if m["5h"].Pct != 50 {
+		t.Fatalf("5h Pct = %v, want 50 (line after the oversized one must not be read)", m["5h"].Pct)
+	}
+}
+
+func TestWindowLabel(t *testing.T) {
+	for _, c := range []struct {
+		min  int
+		want string
+	}{{300, "5h"}, {10080, "7d"}, {60, "1h"}, {1440, "24h"}} {
+		if got := WindowLabel(c.min); got != c.want {
+			t.Errorf("WindowLabel(%d) = %q, want %q", c.min, got, c.want)
+		}
+	}
+}

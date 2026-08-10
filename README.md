@@ -134,6 +134,75 @@ commit can be +30k lines), merge commits are excluded, and `$/commit`
 uses **your own** commits — the per-repo `user.email` — while the
 all-authors count is shown alongside. PR/MR counts are not included yet.
 
+## 🚦 Limits & plan utilisation (TUI views `1`/`2` / `--limits`)
+
+Set a USD ceiling and see how close you are to it, alongside the plan
+limits Codex and Grok report for themselves:
+
+```toml
+# ~/.config/claudecounter/limits.toml
+[limits]
+daily    = 50.0
+weekly   = 250.0
+warn_pct = 80
+```
+
+```
+── short window
+ claude  daily ████████░░  78%  $39.00/$50.00
+ codex   5h    █████████░  92%  ↻ 2h14m
+ grok    —     n/a (weekly only)
+── weekly
+ claude  wk    █████░░░░░  52%  $130.00/$250.00
+ codex   7d    ██████████ 100%  ↻ Mon ⚠
+ grok    wk    █░░░░░░░░░  14%  ↻ Thu
+```
+
+Rows are grouped by rough duration, but **a group title is not a shared
+window definition**. The weekly group holds three different weeks: an ISO
+Monday–Sunday week for your USD budget, Codex's rolling 7-day window, and
+Grok's Thursday-20:00-UTC billing period. Each row shows its own window,
+and they will legitimately disagree — that is expected, not a bug.
+
+Two kinds of number appear side by side, and the right-hand column tells
+them apart — a budget row shows `$spent/$limit`, a plan row shows when it
+resets:
+
+| Source | Where it comes from | Unit |
+|---|---|---|
+| `claude` | your `limits.toml` and this tool's cost maths | USD |
+| `codex` | `~/.codex/sessions/**/*.jsonl`, vendor-reported | % of plan |
+| `grok` | `~/.grok/logs/unified.jsonl`, vendor-reported | % of plan |
+
+Grok reports no short window, so that row reads `n/a (weekly only)`
+rather than vanishing (in the weekly band, a vendor with no row instead
+reads `n/a (no weekly window)`). Grok also gets no dollar figure at all:
+its transcripts log cumulative context size, not billable tokens, so any
+USD number would be invented. Claude is the reverse — it has a dollar
+figure but publishes no utilisation percentage locally.
+
+Codex can be short a row too: newer Codex CLI builds sometimes report
+only the 7-day window and omit the 5-hour one, so a missing `codex 5h`
+row is a legitimate vendor state, not an error.
+
+`warn_pct` (default 80) colours a row's percentage amber at that
+threshold and red at 100% (plus a trailing `⚠` once a row hits 100%). A
+plan row's whole bar recolours the same way; a budget row's bar instead
+keeps a fixed colour per vendor (today just `claude`; the renderer is
+built to stack a second segment, e.g. a future Codex USD figure,
+without changing colour behaviour) and carries the threshold signal on
+its percentage text only. A window whose reset time has already passed
+renders dimmed and labelled `stale`, and is excluded from the menu-bar
+glyph's escalation; only plan (Codex/Grok) rows can go stale, since a
+budget row is always evaluated against "right now". An `n/a` row
+renders in that same dimmed style, though it isn't itself stale — it's
+just a vendor with nothing to show in this band.
+
+```bash
+claudecounter --limits                        # one-shot gauge block
+claudecounter --limits --limits-config PATH   # non-default config
+```
+
 ## 🛡️ Permission-mode safety (TUI view `5` / `--safety`)
 
 Press **`5`** in the TUI (or run `claudecounter --safety`) for a per-project
