@@ -166,3 +166,41 @@ func TestLoadEmptyFileYieldsNoSources(t *testing.T) {
 		t.Fatalf("an empty file means no sources, got %+v", got.Sources)
 	}
 }
+
+// "/" is the root of the filesystem and contains all other paths.
+// It must be rejected alongside any non-root path.
+func TestLoadRejectsRootSlashAsSupersets(t *testing.T) {
+	p := write(t, `
+[[source]]
+vendor = "claude"
+label  = "full-fs"
+root   = "/"
+
+[[source]]
+vendor = "claude"
+label  = "home"
+root   = "/foo"
+`)
+	if _, err := Load(p, "/home/u"); err == nil {
+		t.Fatal("root / alongside /foo must be rejected — every event under /foo would double-count")
+	}
+}
+
+// Paths like /foo/bar and /foo/barbaz do not nest: one is not a prefix of
+// the other. They must be allowed.
+func TestLoadAllowsSiblingPaths(t *testing.T) {
+	p := write(t, `
+[[source]]
+vendor = "claude"
+label  = "bar"
+root   = "/foo/bar"
+
+[[source]]
+vendor = "claude"
+label  = "barbaz"
+root   = "/foo/barbaz"
+`)
+	if _, err := Load(p, "/home/u"); err != nil {
+		t.Fatalf("sibling paths /foo/bar and /foo/barbaz must be allowed (not nested): %v", err)
+	}
+}

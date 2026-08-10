@@ -131,7 +131,13 @@ func checkOverlap(ss []Source) error {
 			if a == b {
 				return fmt.Errorf("sources %s and %s share the root %s", ss[i].ID(), ss[j].ID(), a)
 			}
-			if strings.HasPrefix(b, a+string(filepath.Separator)) {
+			// Special case: "/" is the root of the filesystem and contains everything.
+			// Any other path is nested inside it.
+			if a == "/" {
+				if b != "/" {
+					return fmt.Errorf("source %s root %s is nested inside source %s root %s: events would count twice", ss[j].ID(), b, ss[i].ID(), a)
+				}
+			} else if strings.HasPrefix(b, a+string(filepath.Separator)) {
 				return fmt.Errorf("source %s root %s is nested inside source %s root %s: events would count twice", ss[j].ID(), b, ss[i].ID(), a)
 			}
 		}
