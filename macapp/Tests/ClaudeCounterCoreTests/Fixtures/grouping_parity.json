@@ -1,0 +1,20 @@
+{
+  "series": [
+    {"source": "claude/work",     "vendor": "claude", "model": "claude-opus-4-7",   "usd": 10.0,  "tokens": 1000000},
+    {"source": "claude/work",     "vendor": "claude", "model": "claude-sonnet-4-6", "usd": 5.0,   "tokens": 500000},
+    {"source": "claude/personal", "vendor": "claude", "model": "claude-opus-4-7",   "usd": 2.5,   "tokens": 250000},
+    {"source": "grok/personal",   "vendor": "grok",   "model": "grok-4.5-build",    "usd": 3.25,  "tokens": 325000}
+  ],
+  "expect": {
+    "model":  {"claude-opus-4-7": 12.5, "claude-sonnet-4-6": 5.0, "grok-4.5-build": 3.25},
+    "vendor": {"claude": 17.5, "grok": 3.25},
+    "source": {"claude/work": 15.0, "claude/personal": 2.5, "grok/personal": 3.25},
+    "total":  {"total": 20.75}
+  },
+  "expectTokens": {
+    "model":  {"claude-opus-4-7": 1250000, "claude-sonnet-4-6": 500000, "grok-4.5-build": 325000},
+    "vendor": {"claude": 1750000, "grok": 325000},
+    "source": {"claude/work": 1500000, "claude/personal": 250000, "grok/personal": 325000},
+    "total":  {"total": 2075000}
+  }
+}
