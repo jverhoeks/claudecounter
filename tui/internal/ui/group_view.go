@@ -11,7 +11,12 @@ import (
 // renderSeries draws one row per grouped series, ordered by spend. The
 // share column is of the rendered total, so it always sums to 100%
 // whichever mode is active.
-func renderSeries(series map[string]agg.ModelDay, mode agg.Mode) string {
+//
+// barWidth controls whether each row also gets a colour-coded inline
+// bar (reusing view_split.go's inlineBar/modelBarStyle): 0 renders a
+// plain table (viewMinimal), any positive width renders a bar of that
+// width (viewSplit/viewFull, which pass splitBarWidth).
+func renderSeries(series map[string]agg.ModelDay, mode agg.Mode, barWidth int) string {
 	if len(series) == 0 {
 		return ""
 	}
@@ -30,14 +35,18 @@ func renderSeries(series map[string]agg.ModelDay, mode agg.Mode) string {
 
 	var b strings.Builder
 	for _, n := range names {
-		pct := 0.0
+		frac := 0.0
 		if total > 0 {
-			pct = 100 * series[n].USD / total
+			frac = series[n].USD / total
+		}
+		bar := ""
+		if barWidth > 0 {
+			bar = inlineBar(barWidth, frac, modelBarStyle(n)) + " "
 		}
 		// The name is not shortened: a source label like "claude/work"
 		// loses its meaning if truncated to its vendor.
-		b.WriteString(fmt.Sprintf("  %-22s %10s  %3.0f%%\n",
-			n, FormatUSD(series[n].USD), pct))
+		b.WriteString(fmt.Sprintf("  %-22s %s%10s  %3.0f%%\n",
+			n, bar, FormatUSD(series[n].USD), frac*100))
 	}
 	return b.String()
 }
@@ -53,5 +62,5 @@ func renderModeBar(mode agg.Mode) string {
 		}
 		parts = append(parts, m.String())
 	}
-	return styleDim.Render("group: "+strings.Join(parts, " ")+"   (b)") + "\n"
+	return styleDim.Render("group: "+strings.Join(parts, " ")+"   (v)") + "\n"
 }

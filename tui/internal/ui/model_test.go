@@ -62,39 +62,35 @@ func TestModelGaugesMsg_ErrorSurfacesAsFooterWarning(t *testing.T) {
 	}
 }
 
-// TestUpdate_BCyclesGroupModeInCostViews locks in that "b" cycles the
-// grouping in the three views that render a grouped series table. This
-// is the key the brief specified, folded into the pre-existing
-// up/down/pgup/pgdown/j/k/space/b/f case (see the guard in Update) —
-// this test guards against that guard being dropped or inverted.
-func TestUpdate_BCyclesGroupModeInCostViews(t *testing.T) {
+// TestUpdate_VCyclesGroupMode locks in that "v" ("view by") cycles the
+// grouping shown in the cost views. "b" was the original choice but
+// turned out to already be bound as the report/safety scroll-back key
+// (model.go's up/down/pgup/pgdown/j/k/space/b/f case); "v" is a plain,
+// dedicated case with no mode guard to keep in sync with that one.
+func TestUpdate_VCyclesGroupMode(t *testing.T) {
 	m := NewModel()
 	m.mode = ModeSplit
 	if m.groupMode != agg.GroupModel {
 		t.Fatalf("expected default groupMode=GroupModel, got %v", m.groupMode)
 	}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m = next.(Model)
 	if m.groupMode != agg.GroupVendor {
-		t.Errorf("pressing b in ModeSplit did not cycle model -> vendor, got %v", m.groupMode)
+		t.Errorf("pressing v in ModeSplit did not cycle model -> vendor, got %v", m.groupMode)
 	}
 }
 
-// TestUpdate_BDoesNotCycleGroupModeInReport is the executable record of
-// the collision discovered while implementing this task: "b" is also
-// bound (model.go:244) as a report/safety viewport page-back key. That
-// case only returns early when the viewport isn't loading, so the one
-// state that actually reaches the grouping guard is ModeReport while
-// reportLoading is true — this pins that exact case, since it's the one
-// a dropped mode-guard would silently break.
-func TestUpdate_BDoesNotCycleGroupModeInReport(t *testing.T) {
+// TestUpdate_BDoesNotCycleGroupMode is the executable record of the
+// collision discovered while implementing this feature: "b" is bound
+// (model.go:245) as a report/safety viewport page-back key and must
+// never touch groupMode, in any mode — that's why grouping got its own
+// "v" case instead of piggybacking on "b".
+func TestUpdate_BDoesNotCycleGroupMode(t *testing.T) {
 	m := NewModel()
-	m.mode = ModeReport
-	m.reportLoading = true
 	start := m.groupMode
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
 	m = next.(Model)
 	if m.groupMode != start {
-		t.Errorf("pressing b in ModeReport must not cycle groupMode, got %v -> %v", start, m.groupMode)
+		t.Errorf("pressing b must not cycle groupMode, got %v -> %v", start, m.groupMode)
 	}
 }

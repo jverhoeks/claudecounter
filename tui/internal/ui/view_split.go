@@ -10,7 +10,10 @@ import (
 )
 
 // modelBarStyle assigns a consistent colour per model family so the
-// horizontal bars are readable at a glance.
+// horizontal bars are readable at a glance. The model-specific cases
+// come first and the vendor-level ones after, since a model id like
+// "claude-opus-4-7" contains both "claude" and "opus" — checking vendor
+// first would flatten every Claude model to one colour.
 func modelBarStyle(model string) lipgloss.Style {
 	switch {
 	case strings.Contains(model, "opus"):
@@ -19,6 +22,12 @@ func modelBarStyle(model string) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue
 	case strings.Contains(model, "haiku"):
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
+	case strings.Contains(model, "claude"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("5")) // purple
+	case strings.Contains(model, "codex"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
+	case strings.Contains(model, "grok"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // bright red
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 }
@@ -44,6 +53,11 @@ func inlineBar(width int, frac float64, style lipgloss.Style) string {
 	return bar + track
 }
 
+// splitBarWidth is the inline-bar width passed to renderSeries so the
+// split view keeps its colour-coded bar chart; viewMinimal passes 0 for
+// the same call to render a plain table instead.
+const splitBarWidth = 24
+
 func viewSplit(t agg.Totals, gauges string, mode agg.Mode) string {
 	var b strings.Builder
 	dayTotal := sumUSD(t.Day)
@@ -64,7 +78,7 @@ func viewSplit(t agg.Totals, gauges string, mode agg.Mode) string {
 	}
 
 	b.WriteString(renderModeBar(mode))
-	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode, splitBarWidth))
 
 	// 30-day spend trend, then the parallel 30-day token-volume trend.
 	// Same renderers as the minimal view so the charts are visually

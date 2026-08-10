@@ -92,7 +92,7 @@ const (
 
 type Model struct {
 	mode        ViewMode
-	groupMode   agg.Mode // cycled with "b"; zero value is agg.GroupModel
+	groupMode   agg.Mode // cycled with "v"; zero value is agg.GroupModel
 	totals      agg.Totals
 	recent      []string
 	warns       []string
@@ -253,13 +253,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.safetyVP, cmd = m.safetyVP.Update(msg)
 				return m, cmd
 			}
-			// "b" ("group by") is otherwise free: it only scrolls the
-			// report/safety viewports above, and those modes don't show
-			// a grouped series table. Cycle the grouping in the three
-			// modes that do.
-			if msg.String() == "b" && (m.mode == ModeMinimal || m.mode == ModeSplit || m.mode == ModeFull) {
-				m.groupMode = m.groupMode.Next()
-			}
+		case "v":
+			// "view by" — cycles the grouping shown in the cost views.
+			// A dedicated key rather than reusing "b" (which is already
+			// the report/safety scroll-back key at the case above):
+			// piggybacking grouping onto that case would make it fire or
+			// not depending on which modes the scroll case happens to
+			// cover, silently breaking if that case is ever widened.
+			m.groupMode = m.groupMode.Next()
 		case "g":
 			if m.mode == ModeReport && !m.reportLoading {
 				m.reportVP.GotoTop()

@@ -51,6 +51,6 @@ func viewMinimal(t agg.Totals, gauges string, mode agg.Mode) string {
 	b.WriteString(renderDailyTokensSparkline(t.Daily))
 
 	b.WriteString(renderModeBar(mode))
-	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode, 0))
 	return b.String()
 }
