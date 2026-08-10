@@ -4,6 +4,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 // TestModelGaugesMsg_ErrorSurfacesAsFooterWarning is the model-level
@@ -55,5 +59,42 @@ func TestModelGaugesMsg_ErrorSurfacesAsFooterWarning(t *testing.T) {
 	}
 	if !strings.Contains(view, "NEW-GAUGES") || strings.Contains(view, "GOOD-GAUGES") {
 		t.Fatalf("expected gauges to update to the latest successful render:\n%s", view)
+	}
+}
+
+// TestUpdate_BCyclesGroupModeInCostViews locks in that "b" cycles the
+// grouping in the three views that render a grouped series table. This
+// is the key the brief specified, folded into the pre-existing
+// up/down/pgup/pgdown/j/k/space/b/f case (see the guard in Update) —
+// this test guards against that guard being dropped or inverted.
+func TestUpdate_BCyclesGroupModeInCostViews(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeSplit
+	if m.groupMode != agg.GroupModel {
+		t.Fatalf("expected default groupMode=GroupModel, got %v", m.groupMode)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = next.(Model)
+	if m.groupMode != agg.GroupVendor {
+		t.Errorf("pressing b in ModeSplit did not cycle model -> vendor, got %v", m.groupMode)
+	}
+}
+
+// TestUpdate_BDoesNotCycleGroupModeInReport is the executable record of
+// the collision discovered while implementing this task: "b" is also
+// bound (model.go:244) as a report/safety viewport page-back key. That
+// case only returns early when the viewport isn't loading, so the one
+// state that actually reaches the grouping guard is ModeReport while
+// reportLoading is true — this pins that exact case, since it's the one
+// a dropped mode-guard would silently break.
+func TestUpdate_BDoesNotCycleGroupModeInReport(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeReport
+	m.reportLoading = true
+	start := m.groupMode
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = next.(Model)
+	if m.groupMode != start {
+		t.Errorf("pressing b in ModeReport must not cycle groupMode, got %v -> %v", start, m.groupMode)
 	}
 }
