@@ -36,6 +36,15 @@ func (s Source) ID() string { return s.Vendor + "/" + s.Label }
 
 type Config struct {
 	Sources []Source
+	// UsedDefaults is true when Sources came from Defaults(home) rather
+	// than from a parsed sources.toml — i.e. no config file exists (or
+	// none was given). Callers use this to decide how hard a missing
+	// root should fail: a root a user actually listed in sources.toml is
+	// legitimately allowed to be absent (see splitReachable), but the
+	// implicit fallback nobody configured is not — before
+	// --sources-config existed, a missing default root was always
+	// fatal, and callers restore that here.
+	UsedDefaults bool
 }
 
 type tomlFile struct {
@@ -73,14 +82,17 @@ func Defaults(home string) []Source {
 // read as "no sources".
 func Load(path, home string) (Config, error) {
 	if path == "" {
-		return Config{Sources: Defaults(home)}, nil
+		return Config{Sources: Defaults(home), UsedDefaults: true}, nil
 	}
 	var f tomlFile
 	if _, err := toml.DecodeFile(path, &f); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Config{Sources: Defaults(home)}, nil
+			return Config{Sources: Defaults(home), UsedDefaults: true}, nil
 		}
 		return Config{}, err
+	}
+	if len(f.Source) == 0 {
+		return Config{}, errors.New("sources.toml configures no sources: at least one source is required")
 	}
 
 	out := make([]Source, 0, len(f.Source))
@@ -96,6 +108,9 @@ func Load(path, home string) (Config, error) {
 			return Config{}, fmt.Errorf("source %d: root must not be empty", i)
 		}
 		src := Source{Vendor: s.Vendor, Label: s.Label, Root: expand(s.Root, home)}
+		if !filepath.IsAbs(src.Root) {
+			return Config{}, fmt.Errorf("source %d: root %q must be absolute or start with ~", i, s.Root)
+		}
 		if seen[src.ID()] {
 			return Config{}, fmt.Errorf("duplicate source %s: two roots under one label would merge two subscriptions", src.ID())
 		}

@@ -33,17 +33,21 @@ public struct SourcesConfig: Equatable, Sendable {
 }
 
 public enum SourcesError: Error, LocalizedError, Equatable {
+    case noSources
     case malformed(String)
     case unknownVendor(index: Int, vendor: String)
     case emptyLabel(index: Int)
     case emptyRoot(index: Int)
     case duplicateSource(id: String)
     case unsafeCharacter(index: Int, field: String)
+    case relativeRoot(index: Int, root: String)
     case sharedRoot(idA: String, idB: String, root: String)
     case nestedRoots(innerID: String, innerRoot: String, outerID: String, outerRoot: String)
 
     public var errorDescription: String? {
         switch self {
+        case .noSources:
+            return "sources.toml configures no sources: at least one source is required"
         case .malformed(let line):
             return "malformed sources.toml line: \(line)"
         case .unknownVendor(let index, let vendor):
@@ -54,6 +58,8 @@ public enum SourcesError: Error, LocalizedError, Equatable {
             return "source \(index): root must not be empty"
         case .unsafeCharacter(let index, let field):
             return "source \(index): \(field) must not contain '#', '\"', '\\', or a newline — the shared TOML writer/parser can't round-trip those characters"
+        case .relativeRoot(let index, let root):
+            return "source \(index): root \"\(root)\" must be absolute or start with ~"
         case .duplicateSource(let id):
             return "duplicate source \(id): two roots under one label would merge two subscriptions"
         case .sharedRoot(let idA, let idB, let root):
@@ -151,6 +157,15 @@ public enum Sources {
     /// overlapping/nested roots. Kept as the single place both callers
     /// route through so they cannot drift apart.
     private static func validate(_ entries: [RawEntry], home: String) throws -> [SourceEntry] {
+        // A file that parses cleanly but names zero sources (a typo'd
+        // table name, or a file that is all comments) must be rejected,
+        // not silently treated as "no sources" — that would report a
+        // confident $0.00 with nothing distinguishing it from "you
+        // really spent nothing". See final-review.md I1; SourcesEditorView
+        // already guards this at save time, but a hand-edited file
+        // never passes through that guard.
+        guard !entries.isEmpty else { throw SourcesError.noSources }
+
         var out: [SourceEntry] = []
         out.reserveCapacity(entries.count)
         var seen = Set<String>()
@@ -178,6 +193,15 @@ public enum Sources {
                 throw SourcesError.unsafeCharacter(index: index, field: "root")
             }
             let entry = SourceEntry(vendor: raw.vendor, label: raw.label, root: expand(raw.root, home: home))
+            // A bare relative root resolves against whatever the
+            // process's CWD happens to be, AND lets it defeat
+            // checkOverlap's textual comparison against an absolute
+            // root naming the same tree (see the Go loader's
+            // TestLoadRejectsRelativeRoot / final-review.md M2/item 4).
+            // "~"-prefixed roots are already absolute by this point.
+            guard entry.root.hasPrefix("/") else {
+                throw SourcesError.relativeRoot(index: index, root: raw.root)
+            }
             guard !seen.contains(entry.id) else { throw SourcesError.duplicateSource(id: entry.id) }
             seen.insert(entry.id)
             out.append(entry)

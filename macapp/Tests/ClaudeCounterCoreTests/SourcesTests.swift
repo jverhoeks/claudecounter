@@ -99,10 +99,29 @@ final class SourcesTests: XCTestCase {
         XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u"))
     }
 
+    // A file that parses cleanly but names zero sources must be
+    // rejected, not silently read as "no sources" — that used to be
+    // accepted, reporting a confident $0.00 with no indication anything
+    // went wrong. See final-review.md I1.
     func test_load_emptyFileYieldsNoSources() throws {
         let p = try write("# nothing\n")
         defer { try? FileManager.default.removeItem(atPath: p) }
-        XCTAssertEqual(try Sources.load(path: p, home: "/home/u").sources.count, 0)
+        XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u")) { error in
+            XCTAssertEqual(error as? SourcesError, .noSources)
+        }
+    }
+
+    func test_load_rejectsTypoedTableName() throws {
+        let p = try write("""
+        [[sources]]
+        vendor = "claude"
+        label  = "x"
+        root   = "~/x"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u")) { error in
+            XCTAssertEqual(error as? SourcesError, .noSources)
+        }
     }
 
     // Regression for the bug caught in the Go loader's review: "/" + "/"
@@ -191,6 +210,35 @@ final class SourcesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: p) }
         let cfg = try Sources.load(path: p, home: "/home/u")
         XCTAssertEqual(cfg.sources[0].root, "/home/u/y")
+    }
+
+    // A bare relative root resolves against whatever CWD happens to be
+    // at scan time, and can defeat checkOverlap's textual comparison
+    // against an absolute root naming the same tree. It must be
+    // rejected outright. See tui/internal/sources's
+    // TestLoadRejectsRelativeRoot / final-review.md M2/item 4.
+    func test_load_rejectsRelativeRoot() throws {
+        let p = try write("""
+        [[source]]
+        vendor = "claude"
+        label  = "rel"
+        root   = ".claude/projects"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u"))
+    }
+
+    // Must be rejected on its own, not merely as a side effect of an
+    // overlap comparison against another source.
+    func test_load_rejectsRelativeRootAlone() throws {
+        let p = try write("""
+        [[source]]
+        vendor = "claude"
+        label  = "rel"
+        root   = "relative/only"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        XCTAssertThrowsError(try Sources.load(path: p, home: "/home/u"))
     }
 
     func test_load_detectsDuplicateAcrossUncleanedTildePaths() throws {

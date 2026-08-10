@@ -155,15 +155,22 @@ func TestLoadMalformedReturnsError(t *testing.T) {
 	}
 }
 
-// An empty but valid file means "no sources", which is different from
-// "no file". It must not silently fall back to defaults.
+// A file that parses cleanly but names zero sources (a typo'd table
+// name, or a file that is all comments) must be rejected, not silently
+// treated as "no sources" — that would report a confident $0.00 with no
+// indication anything went wrong. This used to be accepted; see
+// final-review.md I1.
 func TestLoadEmptyFileYieldsNoSources(t *testing.T) {
-	got, err := Load(write(t, "# nothing here\n"), "/home/u")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	if _, err := Load(write(t, "# nothing here\n"), "/home/u"); err == nil {
+		t.Fatal("a file with zero [[source]] entries must be rejected, not read as 'no sources'")
 	}
-	if len(got.Sources) != 0 {
-		t.Fatalf("an empty file means no sources, got %+v", got.Sources)
+}
+
+// The same rejection must fire for a typo'd table name, not just a
+// comment-only file — both decode cleanly to zero entries.
+func TestLoadRejectsTypoedTableName(t *testing.T) {
+	if _, err := Load(write(t, "[[sources]]\nvendor = \"claude\"\nlabel = \"x\"\nroot = \"~/x\"\n"), "/home/u"); err == nil {
+		t.Fatal("a typo'd table name ([[sources]] instead of [[source]]) must be rejected")
 	}
 }
 
@@ -202,5 +209,37 @@ root   = "/foo/barbaz"
 `)
 	if _, err := Load(p, "/home/u"); err != nil {
 		t.Fatalf("sibling paths /foo/bar and /foo/barbaz must be allowed (not nested): %v", err)
+	}
+}
+
+// A bare relative root (neither absolute nor "~"-prefixed) is resolved
+// against whatever the process's CWD happens to be at scan time, which
+// also lets it defeat checkOverlap's textual comparison against an
+// absolute root naming the same tree. It must be rejected outright. See
+// final-review.md M2/item 4.
+func TestLoadRejectsRelativeRoot(t *testing.T) {
+	p := write(t, `
+[[source]]
+vendor = "claude"
+label  = "rel"
+root   = ".claude/projects"
+`)
+	if _, err := Load(p, "/home/u"); err == nil {
+		t.Fatal("a bare relative root must be rejected")
+	}
+}
+
+// A relative root must be rejected even when checkOverlap would never
+// see it — i.e. the check must fire on its own, not merely as a side
+// effect of an overlap comparison against another source.
+func TestLoadRejectsRelativeRootAlone(t *testing.T) {
+	p := write(t, `
+[[source]]
+vendor = "claude"
+label  = "rel"
+root   = "relative/only"
+`)
+	if _, err := Load(p, "/home/u"); err == nil {
+		t.Fatal("a single relative root, with nothing to overlap against, must still be rejected")
 	}
 }
