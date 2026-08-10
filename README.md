@@ -176,10 +176,19 @@ resets:
 
 Grok reports no short window, so that row reads `n/a (weekly only)`
 rather than vanishing (in the weekly band, a vendor with no row instead
-reads `n/a (no weekly window)`). Grok also gets no dollar figure at all:
-its transcripts log cumulative context size, not billable tokens, so any
-USD number would be invented. Claude is the reverse — it has a dollar
+reads `n/a (no weekly window)`). Claude is the reverse — it has a dollar
 figure but publishes no utilisation percentage locally.
+
+> **Correction.** An earlier version of this section said Grok can never
+> carry a dollar figure, because its transcripts log cumulative context
+> size rather than billable tokens. That was wrong. It was concluded from
+> `_meta.totalTokens`, which *is* cumulative context — but the same files
+> also emit `turn_completed` events carrying a full `usage` object with a
+> per-model breakdown and a directly reported `costUsdTicks`. Grok in fact
+> has the richest local data of the three vendors. Wiring it into the
+> per-model spend view is designed in
+> `docs/superpowers/specs/2026-08-10-multi-vendor-usage-design.md`; until
+> that ships, the gauges above still show Grok as a percentage only.
 
 Codex can be short a row too: newer Codex CLI builds sometimes report
 only the 7-day window and omit the 5-hour one, so a missing `codex 5h`
