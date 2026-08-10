@@ -42,7 +42,10 @@ func gatherGauges(cfgPath string, daily []agg.DailyTotal, now time.Time) (string
 // the live counting path must never exit, or spam the alt screen, over
 // a config typo.
 func runLimits(srcs []sources.Source, table pricing.Table, cfgPath string) {
-	snap, _, _ := scanSnapshotSources(srcs, table)
+	snap, _, _, warnings := scanSnapshotSources(srcs, table)
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	out, err := gatherGauges(cfgPath, snap.Daily, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

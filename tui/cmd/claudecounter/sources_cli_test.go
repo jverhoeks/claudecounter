@@ -28,11 +28,20 @@ root   = "`+filepath.Join(home, "other")+`"
 		t.Fatal(err)
 	}
 
-	srcs, warn := tuiSources(cfg, "/custom/path", true, home)
+	// Must exist: tuiSources now calls requireRoot on the override
+	// branch (see root_reachability_test.go), which is fatal for a
+	// missing path — a nonexistent placeholder would kill this test
+	// process, not fail the assertion.
+	customRoot := filepath.Join(home, "custom-path")
+	if err := os.MkdirAll(customRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srcs, warn := tuiSources(cfg, customRoot, true, home)
 	if warn != "" {
 		t.Fatalf("expected no warning, got %q", warn)
 	}
-	if len(srcs) != 1 || srcs[0].Root != "/custom/path" || srcs[0].ID() != "claude/claude" {
+	if len(srcs) != 1 || srcs[0].Root != customRoot || srcs[0].ID() != "claude/claude" {
 		t.Fatalf("expected a single claude/claude source rooted at --root, got %+v", srcs)
 	}
 }
@@ -175,7 +184,7 @@ func TestScanSnapshotSkipsMissingRoot(t *testing.T) {
 		{Vendor: "claude", Label: "gone", Root: filepath.Join(home, "does-not-exist")},
 		{Vendor: "claude", Label: "here", Root: filepath.Join(home, "present", "projects")},
 	}
-	snap, _, _ := scanSnapshotSources(srcs, pricing.Defaults())
+	snap, _, _, warnings := scanSnapshotSources(srcs, pricing.Defaults())
 	seen := map[string]bool{}
 	for k := range snap.Month {
 		seen[k.Source] = true
@@ -185,6 +194,9 @@ func TestScanSnapshotSkipsMissingRoot(t *testing.T) {
 	}
 	if !seen["claude/here"] {
 		t.Fatalf("present root must be scanned, got %+v", seen)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("a merely-absent root must not produce a warning, got %+v", warnings)
 	}
 }
 

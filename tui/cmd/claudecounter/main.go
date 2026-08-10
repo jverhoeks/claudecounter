@@ -122,13 +122,17 @@ func main() {
 	runTUI(*root, table, pricingWarn, *limitsPath, *sourcesPath, rootSet)
 }
 
-// requireRoot fails fast if root doesn't exist. Used only by the
+// requireRoot fails fast if root doesn't exist. Used by the
 // report-family one-shot commands (--report, --safety, --scorecard,
 // --timeline, --phases), which still take --root directly and are out
-// of scope for --sources-config (Task 6 wires --once, --limits, and the
-// live TUI). --once/--limits and the live TUI no longer need this: an
-// absent configured root contributes nothing and is not an error,
-// matching how an absent vendor already behaves.
+// of scope for --sources-config, AND by resolveSources/tuiSources
+// whenever --root is passed explicitly. That second case matters: a
+// root named in sources.toml that doesn't exist is a legitimate
+// "this subscription isn't on this machine" and is skipped silently
+// (see splitReachable) — but a root the user just typed on the command
+// line has no such legitimate reading. The only plausible cause is a
+// typo, so it must stay fatal, exactly as it was before --sources-config
+// existed.
 func requireRoot(root string) {
 	if _, err := os.Stat(root); err != nil {
 		log.Fatalf("claude projects root not found: %s (%v)", root, err)
@@ -138,14 +142,16 @@ func requireRoot(root string) {
 // resolveSources returns the source list for the --once/--limits
 // one-shot paths. An explicit --root overrides the configured list with
 // a single implicit source, so a user who still passes --root sees
-// exactly what they always have. Otherwise the configured list is used
-// (Defaults(home) when no sources.toml exists — byte-identical to
-// today's implicit single-source behaviour). A malformed sources.toml
-// is fatal here: these are one-shot commands, so exiting non-zero with
-// the parse error beats silently showing wrong or empty totals.
-// Contrast runTUI, which must never exit on the same error.
+// exactly what they always have — and, per requireRoot, a typo in that
+// path is still fatal, not a silent zero. Otherwise the configured list
+// is used (Defaults(home) when no sources.toml exists — byte-identical
+// to today's implicit single-source behaviour). A malformed
+// sources.toml is fatal here: these are one-shot commands, so exiting
+// non-zero with the parse error beats silently showing wrong or empty
+// totals. Contrast runTUI, which must never exit on the same error.
 func resolveSources(sourcesPath, root string, rootSet bool, home string) []sources.Source {
 	if rootSet {
+		requireRoot(root)
 		return []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}
 	}
 	return loadSourcesOrExit(sourcesPath, home)
@@ -162,15 +168,16 @@ func loadSourcesOrExit(cfgPath, home string) []sources.Source {
 
 // tuiSources resolves the source list for the live TUI. An explicit
 // --root overrides the configured list with a single implicit source —
-// the same override resolveSources applies for --once/--limits — so a
-// user who still passes --root sees exactly what they always have.
-// Otherwise the configured list is used. Unlike the one-shot paths, a
-// malformed sources.toml here must never stop the live TUI: it falls
-// back to the default source list and returns a non-empty warning for
-// the caller to fold into the footer, the same way a malformed
-// pricing.toml already surfaces (see loadPricing).
+// the same override resolveSources applies for --once/--limits, fatal
+// typo included — so a user who still passes --root sees exactly what
+// they always have. Otherwise the configured list is used. Unlike the
+// one-shot paths, a malformed sources.toml here must never stop the
+// live TUI: it falls back to the default source list and returns a
+// non-empty warning for the caller to fold into the footer, the same
+// way a malformed pricing.toml already surfaces (see loadPricing).
 func tuiSources(sourcesCfgPath, root string, rootSet bool, home string) ([]sources.Source, string) {
 	if rootSet {
+		requireRoot(root)
 		return []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}, ""
 	}
 	cfg, err := sources.Load(sourcesCfgPath, home)
@@ -178,6 +185,40 @@ func tuiSources(sourcesCfgPath, root string, rootSet bool, home string) ([]sourc
 		return sources.Defaults(home), fmt.Sprintf("⚠ sources config: %v (using defaults)", err)
 	}
 	return cfg.Sources, ""
+}
+
+// appendWarn folds warn onto base as a new line, or returns warn alone
+// if base is empty. Used to accumulate sources-config and
+// root-reachability warnings into pricingWarn, which already rides
+// SnapshotMsg.PricingWarn into the footer.
+func appendWarn(base, warn string) string {
+	if base == "" {
+		return warn
+	}
+	return base + "\n" + warn
+}
+
+// splitReachable partitions srcs into those whose root can be scanned
+// and warnings for those that can't. A missing root (os.IsNotExist)
+// contributes nothing and is not an error — the configured-but-absent
+// subscription case the spec calls out, same rule as an absent vendor.
+// Any OTHER stat error (permission denied, a stale or dropped network
+// mount, too many symlinks, an I/O error, ...) is a different thing: the
+// root is presumably supposed to be there. Scanning still skips it — a
+// partial scan beats a crash — but returns a warning, so the user sees
+// "this subscription is unreachable" instead of a confident total that
+// silently omits it.
+func splitReachable(srcs []sources.Source) (scannable []sources.Source, warnings []string) {
+	for _, s := range srcs {
+		if _, err := os.Stat(s.Root); err != nil {
+			if !os.IsNotExist(err) {
+				warnings = append(warnings, fmt.Sprintf("⚠ source %s root %s unreachable: %v", s.ID(), s.Root, err))
+			}
+			continue
+		}
+		scannable = append(scannable, s)
+	}
+	return scannable, warnings
 }
 
 // runOnce scans every configured source once, prints a plain-text
@@ -188,10 +229,16 @@ func runOnce(srcs []sources.Source, table pricing.Table, pricingWarn string) {
 	}
 	start := time.Now()
 
-	snap, dupes, parseErrors := scanSnapshotSources(srcs, table)
+	snap, dupes, parseErrors, warnings := scanSnapshotSources(srcs, table)
 
 	fmt.Fprintf(os.Stderr, "scanned in %s\n\n", time.Since(start).Round(time.Millisecond))
 
+	// Root-reachability warnings go to stderr, alongside the other scan
+	// diagnostics — never to stdout, which is what --once's
+	// byte-identical contract is about (see runOnceGolden).
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	if pricingWarn != "" {
 		fmt.Println(pricingWarn)
 	}
@@ -201,9 +248,11 @@ func runOnce(srcs []sources.Source, table pricing.Table, pricingWarn string) {
 // scanSnapshotFromConfig loads the source list and scans every
 // configured root into one aggregator. A malformed config is fatal
 // here (the one-shot paths exit non-zero); the live TUI path must not
-// be, and handles the error separately — see runTUI.
+// be, and handles the error separately — see runTUI. Root-reachability
+// warnings are discarded here: this helper only exists for tests today
+// (see sources_cli_test.go) and returns agg.Totals alone by contract.
 func scanSnapshotFromConfig(cfgPath, home string, table pricing.Table) agg.Totals {
-	snap, _, _ := scanSnapshotSources(loadSourcesOrExit(cfgPath, home), table)
+	snap, _, _, _ := scanSnapshotSources(loadSourcesOrExit(cfgPath, home), table)
 	return snap
 }
 
@@ -215,8 +264,10 @@ func scanSnapshotFromConfig(cfgPath, home string, table pricing.Table) agg.Total
 // mis-tag events with the wrong source mid-scan. Giving every source
 // its own Reader removes that hazard structurally rather than relying
 // on scans staying sequential (which they are here, but runTUI's
-// watcher path is not).
-func scanSnapshotSources(srcs []sources.Source, table pricing.Table) (agg.Totals, int, int) {
+// watcher path is not). The returned warnings cover sources whose root
+// exists but couldn't be stat'd cleanly (see splitReachable) — the
+// caller decides where those surface.
+func scanSnapshotSources(srcs []sources.Source, table pricing.Table) (agg.Totals, int, int, []string) {
 	evCh := make(chan reader.Event, 1024)
 	a := agg.New(table)
 
@@ -229,13 +280,9 @@ func scanSnapshotSources(srcs []sources.Source, table pricing.Table) (agg.Totals
 	}()
 
 	notBefore := scanCutoff(time.Now().Local())
-	readers := make([]*reader.Reader, 0, len(srcs))
-	for _, s := range srcs {
-		// A configured root that does not exist contributes nothing and
-		// is not an error — same rule as an absent vendor.
-		if _, err := os.Stat(s.Root); err != nil {
-			continue
-		}
+	scannable, warnings := splitReachable(srcs)
+	readers := make([]*reader.Reader, 0, len(scannable))
+	for _, s := range scannable {
 		r := reader.New(evCh)
 		if err := r.InitialScanSource(s, notBefore); err != nil {
 			log.Fatalf("initial scan %s: %v", s.ID(), err)
@@ -249,7 +296,7 @@ func scanSnapshotSources(srcs []sources.Source, table pricing.Table) (agg.Totals
 	for _, r := range readers {
 		parseErrors += r.ParseErrors()
 	}
-	return a.Snapshot(), a.Dupes(), parseErrors
+	return a.Snapshot(), a.Dupes(), parseErrors, warnings
 }
 
 func printSummary(snap agg.Totals, dupes, parseErrors int) {
@@ -334,26 +381,39 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 	home, _ := os.UserHomeDir()
 	srcs, srcWarn := tuiSources(sourcesCfgPath, root, rootSet, home)
 	if srcWarn != "" {
-		if pricingWarn != "" {
-			pricingWarn += "\n" + srcWarn
-		} else {
-			pricingWarn = srcWarn
-		}
+		pricingWarn = appendWarn(pricingWarn, srcWarn)
 	}
-	rsrcs := resolveSourceRoots(srcs)
+
+	// Resolve root reachability once, up front, rather than inside the
+	// backfill goroutine below: it's a handful of cheap os.Stat calls
+	// (unlike AddTree/InitialScanSource, which are genuinely slow and
+	// deliberately backgrounded), and doing it here lets any
+	// unreachable-root warning ride the same pricingWarn value the
+	// pipeline goroutine captures at launch, instead of trying to mutate
+	// pricingWarn after pipeline has already started with its own copy.
+	// A missing root is silently skipped (splitReachable); an unreachable
+	// one (permission denied, a stale mount, ...) comes back as a
+	// warning so the user doesn't see a confident zero for a
+	// subscription that's actually just broken right now.
+	scannable, rootWarnings := splitReachable(srcs)
+	for _, w := range rootWarnings {
+		pricingWarn = appendWarn(pricingWarn, w)
+	}
+	rsrcs := resolveSourceRoots(scannable)
 
 	evCh := make(chan reader.Event, 1024)
 	a := agg.New(table)
-	// One Reader per configured source (see scanSnapshotSources): the
-	// backfill goroutine below and the pipeline's watcher-event loop run
-	// concurrently, and each may be working a different source at the
-	// same instant. A single shared Reader's source field would then be
-	// a data race that tags events with whichever source last won the
-	// mutex — silent mis-attribution of spend, not a crash. Separate
-	// Reader instances make that structurally impossible instead of
-	// relying on careful serialization that the next change could break.
-	readers := make(map[string]*reader.Reader, len(srcs))
-	for _, s := range srcs {
+	// One Reader per configured (and reachable) source (see
+	// scanSnapshotSources): the backfill goroutine below and the
+	// pipeline's watcher-event loop run concurrently, and each may be
+	// working a different source at the same instant. A single shared
+	// Reader's source field would then be a data race that tags events
+	// with whichever source last won the mutex — silent mis-attribution
+	// of spend, not a crash. Separate Reader instances make that
+	// structurally impossible instead of relying on careful
+	// serialization that the next change could break.
+	readers := make(map[string]*reader.Reader, len(scannable))
+	for _, s := range scannable {
 		readers[s.ID()] = reader.New(evCh)
 	}
 
@@ -417,29 +477,23 @@ func runTUI(root string, table pricing.Table, pricingWarn string, limitsCfgPath 
 
 	go func() {
 		notBefore := scanCutoff(time.Now().Local())
-		// Register fsnotify watchers in parallel with the initial
-		// scan: AddTree is mostly syscall-bound, InitialScanSource is
+		// Register fsnotify watchers in parallel with the initial scan:
+		// AddTree is mostly syscall-bound, InitialScanSource is
 		// I/O-bound, so both running concurrently roughly halves the
-		// cold-start time. A configured root that does not exist
-		// contributes nothing and is not an error, matching how an
-		// absent vendor already behaves.
+		// cold-start time. Both loops range over scannable — the
+		// reachability check (and its warnings) already happened once,
+		// above, before this goroutine was launched.
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for _, s := range srcs {
-				if _, err := os.Stat(s.Root); err != nil {
-					continue
-				}
+			for _, s := range scannable {
 				if err := w.AddTree(s.Root, notBefore); err != nil {
 					log.Printf("watcher add %s: %v", s.ID(), err)
 				}
 			}
 		}()
-		for _, s := range srcs {
-			if _, err := os.Stat(s.Root); err != nil {
-				continue
-			}
+		for _, s := range scannable {
 			if err := readers[s.ID()].InitialScanSource(s, notBefore); err != nil {
 				log.Printf("initial scan %s: %v", s.ID(), err)
 			}
