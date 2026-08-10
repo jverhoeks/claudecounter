@@ -35,11 +35,25 @@ struct PopoverView: View {
     private let topN = 8
 
     /// This month's totals collapsed to one row per model, merged across
-    /// every configured source — the by-model table and its palette have
-    /// always shown a model-keyed view, so `.model` grouping reproduces
-    /// today's behaviour exactly regardless of how many sources feed in.
+    /// every configured source. Always `.model`, independent of
+    /// `state.groupMode` — the monthly/hourly stacked charts are
+    /// inherently per-model breakdowns (`DailyTotal.usdByModel` etc.),
+    /// and this is what assigns their (and the by-model table's, when
+    /// that table itself is in `.model` mode) colour swatches. Because
+    /// this is always `.model` regardless of how many sources feed in,
+    /// it reproduces today's behaviour exactly for a user with no
+    /// `sources.toml`.
     private var monthByModel: [String: ModelDay] {
         Grouping.group(state.totals.month, by: .model)
+    }
+
+    /// The by-model/vendor/source/total list's actual rows — collapsed
+    /// under whichever axis the segmented control above it currently
+    /// selects. Every mode partitions the same `state.totals.month`, so
+    /// switching modes changes only what's displayed, never what's
+    /// counted.
+    private var groupedMonth: [String: ModelDay] {
+        Grouping.group(state.totals.month, by: state.groupMode)
     }
 
     /// Computed once per view body so both monthly charts AND the
@@ -99,8 +113,21 @@ struct PopoverView: View {
             // remaining vertical space.
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 12) {
+                    if showSettings {
+                        SourcesEditorView(state: state, isExpanded: $showSettings)
+                    }
+                    Picker("Group by", selection: Binding(
+                        get: { state.groupMode },
+                        set: { state.setGroupMode($0) }
+                    )) {
+                        ForEach(GroupMode.allCases, id: \.self) { mode in
+                            Text(mode.label.capitalized).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                     HStack(alignment: .top, spacing: 16) {
-                        ByModelTable(month: monthByModel, topN: topN, palette: palette)
+                        ByModelTable(month: groupedMonth, mode: state.groupMode, topN: topN, palette: palette)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ByProjectTable(month: state.totals.monthProj)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -650,26 +677,35 @@ struct MonthlyTokenChartRow: View {
 
 struct ByModelTable: View {
     let month: [String: ModelDay]
+    /// Which axis `month`'s keys are collapsed by (the segmented
+    /// control above this table). Colour swatches and the "claude-"
+    /// short-name trim only make sense for `.model` — every other mode
+    /// shows a plain row instead of pretending a vendor id or "total"
+    /// is a model with a chart colour.
+    var mode: GroupMode = .model
     var topN: Int = 8
     /// Same palette the monthly charts use — passed in so the small
     /// colour swatch next to each model name matches its bar segment
-    /// in the chart, making this table a self-explanatory legend.
+    /// in the chart, making this table a self-explanatory legend when
+    /// `mode == .model` (the charts themselves are always per-model).
     let palette: ModelPalette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("By model · month")
+            Text("By \(mode.label) · month")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
             ForEach(rows, id: \.0) { name, usd, pct in
                 HStack(spacing: 6) {
                     // Tiny colour swatch — same colour the model has
                     // in the stacked bars above, so the user can
-                    // visually trace a row to its segment.
+                    // visually trace a row to its segment. Only
+                    // meaningful in .model mode; other modes get a
+                    // neutral dot since the palette is model-keyed.
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(palette.colour(for: name))
+                        .fill(mode == .model ? palette.colour(for: name) : Color.secondary.opacity(0.4))
                         .frame(width: 8, height: 8)
-                    Text(shortModel(name)).foregroundStyle(.primary)
+                    Text(mode == .model ? shortModel(name) : name).foregroundStyle(.primary)
                     Spacer()
                     Text(formatUSDCompact(usd))
                         .foregroundStyle(.secondary)
@@ -985,6 +1021,8 @@ struct FooterRow: View {
                     get: { state.settings.notificationsEnabled },
                     set: { newValue in state.setNotificationsEnabled(newValue) }
                 ))
+                Divider()
+                Button("Edit sources…") { showSettings = true }
                 Divider()
                 Button("Refresh pricing from LiteLLM") {
                     Task {

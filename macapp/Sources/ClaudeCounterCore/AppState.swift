@@ -38,6 +38,15 @@ public final class AppState: ObservableObject {
     /// threshold takes effect on both surfaces without either hardcoding
     /// 80.
     @Published public private(set) var warnPct: Int = LimitsConfig.defaultWarnPct
+    /// The resolved source list currently being scanned/watched. A
+    /// missing or malformed `sources.toml` degrades to the single
+    /// implicit source rooted at `projectsRoot` — see `resolveSources`.
+    @Published public private(set) var sources: [SourceEntry] = []
+    /// Which axis the per-model list (and, eventually, other grouped
+    /// views) collapses series onto. Purely a display choice — every
+    /// mode partitions the same underlying totals, so switching it
+    /// never changes what's counted.
+    @Published public private(set) var groupMode: GroupMode = .model
 
     public enum Status: Equatable, Sendable {
         case starting
@@ -51,7 +60,19 @@ public final class AppState: ObservableObject {
     public let projectsRoot: String
     private let aggregator: Aggregator
     private let tracker: SessionTracker
-    private let reader: Reader
+    private let sourcesConfigPath: String
+    /// One `Reader` per configured source, keyed by `SourceEntry.id`.
+    /// Mirrors the Go TUI's `readers[s.ID()] = reader.New(evCh)` — see
+    /// `resolveSources`/`syncReaders` for why this project keeps that
+    /// shape even though Swift's `Reader` never stores a mutable
+    /// "current source" the way Go's does (this app's `onChange` takes
+    /// the source as a per-call argument and stamps events from it, so
+    /// a single shared actor would already be attribution-safe here).
+    /// Per-source instances are kept anyway for parity with the Go
+    /// implementation and because `parseErrors`/offsets stay scoped to
+    /// one subscription instead of commingling across sources when the
+    /// user adds/removes one at runtime via the editor.
+    private var readers: [String: Reader] = [:]
     private var watcher: Watcher?
     private let cacheStore: CacheStore
     private let dockIcon: DockIconController
@@ -70,7 +91,18 @@ public final class AppState: ObservableObject {
     private var snapshotTask: Task<Void, Never>?
     private var watcherTask: Task<Void, Never>?
     private var periodicFlushTask: Task<Void, Never>?
+    /// Mirrors whatever `lastError` `resolveSources` itself most
+    /// recently set (nil once a load last succeeded) — same pattern as
+    /// `lastLimitsError`, so a later clean load clears exactly the
+    /// error it set and nothing else.
+    private var lastSourcesError: String? = nil
 
+    /// `reader` seeds the `Reader` for the single implicit source
+    /// (`vendor: "claude", label: "claude"`, id `"claude/claude"`) —
+    /// exactly the role this parameter always had before multi-source
+    /// support existed. Any additional sources a `sources.toml` goes on
+    /// to configure get their own freshly-created `Reader` in
+    /// `syncReaders`; this parameter never seeds more than the one.
     public init(projectsRoot: String,
                 aggregator: Aggregator,
                 reader: Reader = Reader(),
@@ -80,6 +112,7 @@ public final class AppState: ObservableObject {
                 dockIcon: DockIconController? = nil,
                 settingsStore: SettingsStore? = nil,
                 notifier: SessionNotifier? = nil,
+                sourcesConfigPath: String = Sources.defaultConfigPath(),
                 now: @escaping () -> Date = Date.init,
                 calendar: Calendar = .current) {
         self.projectsRoot = projectsRoot
@@ -87,7 +120,10 @@ public final class AppState: ObservableObject {
         // Tracker shares the same pricing; production omits it and we build
         // one here. Tests can inject a pre-seeded tracker.
         self.tracker = tracker ?? SessionTracker(pricing: pricing)
-        self.reader = reader
+        self.sourcesConfigPath = sourcesConfigPath
+        let defaultSource = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)
+        self.readers = [defaultSource.id: reader]
+        self.sources = [defaultSource]
         self.cacheStore = cacheStore
         self.pricing = pricing
         // Default to the no-op notifier so the test runner never touches
@@ -125,8 +161,16 @@ public final class AppState: ObservableObject {
         // (which doubles as proof the app is running) when enabled.
         dockIcon.setVisible(settings.dockIconEnabled)
 
-        guard FileManager.default.fileExists(atPath: projectsRoot) else {
-            self.status = .noProjectsRoot(path: projectsRoot)
+        self.sources = resolveSources()
+        syncReaders(to: sources)
+
+        // A configured root that doesn't exist contributes nothing and
+        // is not an error (see resolveSources' doc comment); only when
+        // NONE of the configured roots exist do we fall back to the
+        // pre-multi-source "no data" UI, exactly as before.
+        let reachable = sources.filter { FileManager.default.fileExists(atPath: $0.root) }
+        guard !reachable.isEmpty else {
+            self.status = .noProjectsRoot(path: sources.first?.root ?? projectsRoot)
             return
         }
 
@@ -135,7 +179,7 @@ public final class AppState: ObservableObject {
             if cache.version == CacheFile.currentVersion {
                 let offsets = await cache.restore(into: aggregator)
                 self.perFileOffsets = offsets
-                await reader.seedOffsets(offsets)
+                for r in readers.values { await r.seedOffsets(offsets) }
                 cacheWrittenAt = cache.writtenAt
             } else {
                 cacheStore.invalidate()
@@ -148,19 +192,16 @@ public final class AppState: ObservableObject {
         startPeriodicFlush()
 
         self.status = .scanning
-        // Catch-up scan.
+        // Catch-up scan, once per reachable source. A failure scanning
+        // one source surfaces via lastError but does not stop the
+        // others — see scanSource.
         let notBefore = scanCutoff(now: now(), cacheWrittenAt: cacheWrittenAt, calendar: calendar)
-        do {
-            let events = try await reader.initialScan(root: projectsRoot, notBefore: notBefore)
-            for ev in events {
-                if await aggregator.apply(ev) { await tracker.apply(ev) }
-            }
-            // Snapshot once at end of backfill.
-            await publishSnapshot()
-            self.perFileOffsets = await reader.allOffsets()
-        } catch {
-            self.lastError = "Initial scan failed: \(error.localizedDescription)"
+        for source in reachable {
+            await scanSource(source, notBefore: notBefore)
         }
+        // Snapshot once at end of backfill.
+        await publishSnapshot()
+        self.perFileOffsets = await mergedOffsets()
         self.status = .live
         // First paint of the gauge bands, so they show up without the
         // user having to click Refresh.
@@ -182,32 +223,166 @@ public final class AppState: ObservableObject {
     }
 
     /// Manual refresh: invalidate cache, reset aggregator, do a full
-    /// scan from `min(firstOfMonth, now-35d)`.
+    /// scan from `min(firstOfMonth, now-35d)`. Also re-resolves sources
+    /// (the user may have edited `sources.toml` externally since
+    /// launch) and restarts the watcher against whatever roots that
+    /// resolves to.
     public func refresh() async {
         cacheStore.invalidate()
         await aggregator.reset()
         await tracker.reset()
-        await reader.resetAll()
+        for r in readers.values { await r.resetAll() }
         self.perFileOffsets = [:]
         self.notifiedKeys.removeAll()
         self.lastError = nil
         await publishSnapshot()
 
+        self.sources = resolveSources()
+        syncReaders(to: sources)
+        restartWatcher()
+
         self.status = .scanning
         let notBefore = scanCutoff(now: now(), cacheWrittenAt: nil, calendar: calendar)
-        do {
-            let events = try await reader.initialScan(root: projectsRoot, notBefore: notBefore)
-            for ev in events {
-                if await aggregator.apply(ev) { await tracker.apply(ev) }
-            }
-            await publishSnapshot()
-            self.perFileOffsets = await reader.allOffsets()
-        } catch {
-            self.lastError = "Refresh failed: \(error.localizedDescription)"
+        let reachable = sources.filter { FileManager.default.fileExists(atPath: $0.root) }
+        for source in reachable {
+            await scanSource(source, notBefore: notBefore)
         }
+        await publishSnapshot()
+        self.perFileOffsets = await mergedOffsets()
         self.status = .live
         await refreshGauges()
         await flushCache()
+    }
+
+    /// Re-reads `sources.toml` (typically after the GUI editor saves a
+    /// change), adjusts the reader pool, restarts the watcher against
+    /// the new root set, and scans any source whose history hasn't been
+    /// read yet — either because it's brand new, or because an existing
+    /// id's root just changed (the editor's folder picker repointed it)
+    /// — so the result shows up immediately rather than waiting for the
+    /// next filesystem event. Removed sources simply stop contributing —
+    /// their already-aggregated totals stay in `totals` (matching how a
+    /// root going missing behaves), only future events stop arriving.
+    public func reloadSources() async {
+        let previousByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
+        let resolved = resolveSources()
+
+        var needsScan: [SourceEntry] = []
+        for s in resolved {
+            if readers[s.id] == nil {
+                // Brand new id — syncReaders (below) will give it a
+                // fresh Reader.
+                needsScan.append(s)
+            } else if let old = previousByID[s.id], old.root != s.root {
+                // Same id, different root (edited in place): the
+                // existing Reader's offsets are keyed to paths under
+                // the OLD root and say nothing about the new one.
+                // Replace it so the new root's files are read from
+                // scratch rather than silently never scanned.
+                readers[s.id] = Reader()
+                needsScan.append(s)
+            }
+        }
+
+        self.sources = resolved
+        syncReaders(to: resolved)
+        restartWatcher()
+
+        let notBefore = scanCutoff(now: now(), calendar: calendar)
+        for source in needsScan where FileManager.default.fileExists(atPath: source.root) {
+            await scanSource(source, notBefore: notBefore)
+        }
+        await publishSnapshot()
+        self.perFileOffsets = await mergedOffsets()
+        await flushCache()
+    }
+
+    /// Change which axis the per-model list groups by. Pure display
+    /// state — never touches `totals`, so switching modes back and
+    /// forth is free.
+    public func setGroupMode(_ mode: GroupMode) {
+        self.groupMode = mode
+    }
+
+    /// Runs one source's catch-up scan through its own `Reader` and
+    /// applies the resulting events. Errors are scoped to `lastError`
+    /// rather than propagated, so one bad source (permissions, a
+    /// half-written file, ...) never aborts the others — mirrors the Go
+    /// pipeline's per-source `log.Printf` on `InitialScanSource` failure.
+    private func scanSource(_ source: SourceEntry, notBefore: Date) async {
+        guard let r = readers[source.id] else { return }
+        do {
+            let events = try await r.initialScan(root: source.root, source: source, notBefore: notBefore)
+            for ev in events {
+                if await aggregator.apply(ev) { await tracker.apply(ev) }
+            }
+        } catch {
+            self.lastError = "Initial scan failed for \(source.id): \(error.localizedDescription)"
+        }
+    }
+
+    /// Loads the configured source list. A missing `sources.toml`
+    /// yields exactly today's single implicit source rooted at
+    /// `projectsRoot` — deliberately NOT `Sources.defaults(home:)`,
+    /// which would resolve the real `~/.claude/projects` rather than
+    /// whatever root this `AppState` was constructed with. Production
+    /// and test roots happen to coincide there, but a test that injects
+    /// an isolated temp root must keep scanning exactly that root, not
+    /// the machine's real home directory. A malformed config degrades
+    /// to that same single-source fallback with `lastError` set —
+    /// counting never stops over a config typo.
+    private func resolveSources() -> [SourceEntry] {
+        let fallback = [SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)]
+        guard FileManager.default.fileExists(atPath: sourcesConfigPath) else {
+            if lastError != nil && lastError == lastSourcesError { self.lastError = nil }
+            lastSourcesError = nil
+            return fallback
+        }
+        do {
+            let cfg = try Sources.load(path: sourcesConfigPath, home: NSHomeDirectory())
+            if lastError != nil && lastError == lastSourcesError { self.lastError = nil }
+            lastSourcesError = nil
+            return cfg.sources
+        } catch {
+            let message = "sources.toml: \(error.localizedDescription)"
+            self.lastError = message
+            lastSourcesError = message
+            return fallback
+        }
+    }
+
+    /// Keeps `readers` in sync with a resolved source list: a fresh
+    /// `Reader` for every newly-configured source, and drops readers for
+    /// sources no longer configured. The single-implicit-source id
+    /// (`"claude/claude"`) already has a reader from `init` and is left
+    /// alone when it's still present, so its accumulated offsets survive
+    /// a reload that doesn't touch it.
+    private func syncReaders(to newSources: [SourceEntry]) {
+        let ids = Set(newSources.map { $0.id })
+        for id in Set(readers.keys).subtracting(ids) {
+            readers.removeValue(forKey: id)
+        }
+        for s in newSources where readers[s.id] == nil {
+            readers[s.id] = Reader()
+        }
+    }
+
+    /// Merge every reader's offset map into one flat dict for the cache
+    /// file — offsets are keyed by absolute path, and `Sources`'
+    /// overlap check guarantees no two sources' roots can produce the
+    /// same path, so a plain merge can't collide.
+    private func mergedOffsets() async -> [String: Int64] {
+        var merged: [String: Int64] = [:]
+        for r in readers.values {
+            merged.merge(await r.allOffsets()) { _, new in new }
+        }
+        return merged
+    }
+
+    private func totalParseErrors() async -> Int {
+        var total = 0
+        for r in readers.values { total += await r.parseErrors }
+        return total
     }
 
     /// Replace the pricing table. Snapshot will recompute USD on next tick.
@@ -367,8 +542,16 @@ public final class AppState: ObservableObject {
 
     // MARK: Watcher loop
 
+    /// One `FSEventStream` watching every reachable configured root at
+    /// once (see `Watcher.init(roots:)`) — mirrors the Go pipeline's
+    /// single `watcher.New()` with one `AddTree` call per source,
+    /// rather than one OS-level watcher per source. `handle(change:)`
+    /// then maps each reported path back to its owning `SourceEntry`,
+    /// same as Go's `sourceForPath`.
     private func startWatcher() {
-        let w = Watcher(root: projectsRoot)
+        let roots = sources.map { $0.root }.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !roots.isEmpty else { return }
+        let w = Watcher(roots: roots)
         let stream = w.start()
         self.watcher = w
 
@@ -380,11 +563,62 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// Tears down the current watcher/task and starts a fresh one
+    /// against the current `sources`. Used by `refresh()` and
+    /// `reloadSources()`, whose root set may have just changed —
+    /// without cancelling the old task first, its `for await` loop (and
+    /// the FSEventStream underneath it) would keep running alongside
+    /// the new one.
+    private func restartWatcher() {
+        watcherTask?.cancel()
+        watcher?.stop()
+        watcher = nil
+        startWatcher()
+    }
+
+    /// Finds the configured source whose root contains `path`, resolving
+    /// symlinks on both sides first — macOS commonly reports FSEvents
+    /// paths through their real (symlink-resolved) form (e.g. `/tmp` →
+    /// `/private/tmp`), so a literal-string prefix match against the
+    /// configured root can miss even when the file genuinely is under
+    /// that root. Mirrors the Go pipeline's `sourceForPath`.
+    ///
+    /// The common case — exactly one configured source — skips the
+    /// prefix match entirely and always resolves to that source. That
+    /// keeps the no-`sources.toml` path exactly as forgiving as it was
+    /// before multi-source support existed: previously nothing checked
+    /// the watcher's reported path against `projectsRoot` at all, and
+    /// this preserves that for the single-source case rather than
+    /// introducing a new way for it to (mis)fire on a symlink quirk.
+    private func sourceForPath(_ path: String) -> SourceEntry? {
+        if sources.count == 1 { return sources[0] }
+        let resolvedPath = (path as NSString).resolvingSymlinksInPath
+        var best: SourceEntry? = nil
+        var bestLen = -1
+        for s in sources {
+            let resolvedRoot = (s.root as NSString).resolvingSymlinksInPath
+            let matches = resolvedPath == resolvedRoot || resolvedPath.hasPrefix(resolvedRoot + "/")
+            if matches && resolvedRoot.count > bestLen {
+                bestLen = resolvedRoot.count
+                best = s
+            }
+        }
+        return best
+    }
+
     private func handle(change: FileChange) async {
+        guard let source = sourceForPath(change.path), let r = readers[source.id] else {
+            // Should not happen: the watcher only ever watches configured
+            // roots. Surface it rather than silently dropping the event
+            // — a swallowed change here is spend silently lost, not just
+            // mis-attributed.
+            self.lastError = "watcher: \(change.path) does not match any configured source; ignoring"
+            return
+        }
         switch change.kind {
         case .create, .modify:
             do {
-                let events = try await reader.onChange(path: change.path)
+                let events = try await r.onChange(path: change.path, source: source)
                 for ev in events {
                     if await aggregator.apply(ev) { await tracker.apply(ev) }
                 }
@@ -396,7 +630,7 @@ public final class AppState: ObservableObject {
                 self.lastError = "Reader failed on \(change.path): \(error.localizedDescription)"
             }
         case .remove:
-            await reader.forget(path: change.path)
+            await r.forget(path: change.path)
             self.dirty = true
             self.scheduleSnapshotTick()
         }
@@ -501,8 +735,8 @@ public final class AppState: ObservableObject {
     }
 
     private func flushCache() async {
-        let offsets = await reader.allOffsets()
-        let parseErrors = await reader.parseErrors
+        let offsets = await mergedOffsets()
+        let parseErrors = await totalParseErrors()
         let cache = await CacheFile.snapshot(
             aggregator: aggregator,
             offsets: offsets,

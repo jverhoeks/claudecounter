@@ -97,9 +97,56 @@ public enum Sources {
             return SourcesConfig(sources: defaults(home: home))
         }
         let body = try String(contentsOfFile: path, encoding: .utf8)
-
         let entries = try parse(body)
+        return SourcesConfig(sources: try validate(entries, home: home))
+    }
 
+    /// Writes `sources` as `[[source]]` TOML tables to `path`, creating
+    /// the parent directory if needed (same idiom as
+    /// `PricingTable.writeToAppOverride`'s app-override writer) — sits
+    /// beside limits.toml, so that directory already exists once either
+    /// config has been touched, but a fresh install has neither yet.
+    ///
+    /// Validates through the exact same `validate` helper `load` calls,
+    /// so the two can't drift: a file this GUI writes can never be one
+    /// `load` — and therefore the TUI — would then reject. Validation
+    /// runs BEFORE anything touches disk, so a rejected write leaves
+    /// the previous file (if any) untouched rather than replacing it
+    /// with something neither app can read.
+    ///
+    /// Writes the caller's roots verbatim (no `~`-expansion) — the
+    /// stored file should read back as what the user/editor actually
+    /// entered, not a silently rewritten absolute path.
+    public static func write(_ sources: [SourceEntry], to path: String, home: String = NSHomeDirectory()) throws {
+        let raw = sources.map { RawEntry(vendor: $0.vendor, label: $0.label, root: $0.root) }
+        _ = try validate(raw, home: home)
+
+        var body = ""
+        for s in sources {
+            body += "[[source]]\n"
+            body += "vendor = \"\(s.vendor)\"\n"
+            body += "label = \"\(s.label)\"\n"
+            body += "root = \"\(s.root)\"\n\n"
+        }
+
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try body.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private struct RawEntry {
+        var vendor = ""
+        var label = ""
+        var root = ""
+    }
+
+    /// The rules shared by `load` (parsed-from-disk entries) and `write`
+    /// (caller-supplied entries about to be persisted): unknown vendor,
+    /// empty label/root, a `~`-expanded root, duplicate `(vendor,label)`
+    /// ids, and overlapping/nested roots. Kept as the single place both
+    /// callers route through so they cannot drift apart.
+    private static func validate(_ entries: [RawEntry], home: String) throws -> [SourceEntry] {
         var out: [SourceEntry] = []
         out.reserveCapacity(entries.count)
         var seen = Set<String>()
@@ -115,13 +162,7 @@ public enum Sources {
             out.append(entry)
         }
         try checkOverlap(out)
-        return SourcesConfig(sources: out)
-    }
-
-    private struct RawEntry {
-        var vendor = ""
-        var label = ""
-        var root = ""
+        return out
     }
 
     /// Parses the `[[source]]` tables out of a sources.toml body. Lines

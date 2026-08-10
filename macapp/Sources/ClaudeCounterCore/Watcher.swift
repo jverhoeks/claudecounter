@@ -26,14 +26,28 @@ public final class Watcher: @unchecked Sendable {
 
     public typealias Stream = AsyncStream<FileChange>
 
-    private let root: String
+    private let roots: [String]
     private var stream: FSEventStreamRef?
     private let queue: DispatchQueue
     private var continuation: Stream.Continuation?
 
-    public init(root: String) {
-        self.root = root
+    /// One FSEventStream watching every root at once — FSEventStreamCreate
+    /// already takes an array of paths natively, so watching N configured
+    /// sources' roots is exactly this constructor with N entries, not N
+    /// separate `Watcher` instances. Callers that need to know which
+    /// configured source a reported path belongs to (multi-source mode)
+    /// resolve that themselves from `FileChange.path`, mirroring the Go
+    /// watcher's single instance + `sourceForPath` dispatch.
+    public init(roots: [String]) {
+        self.roots = roots
         self.queue = DispatchQueue(label: "claudecounter.watcher", qos: .utility)
+    }
+
+    /// Single-root convenience — the common case (no sources.toml, one
+    /// implicit source) stays exactly as simple as before this type
+    /// grew multi-root support.
+    public convenience init(root: String) {
+        self.init(roots: [root])
     }
 
     /// Start watching. Returns the stream of changes. The stream ends
@@ -64,8 +78,14 @@ public final class Watcher: @unchecked Sendable {
     }
 
     private func startFSEvents() {
-        let pathToWatch = root as CFString
-        let paths = [pathToWatch] as CFArray
+        guard !roots.isEmpty else {
+            // Nothing reachable to watch (e.g. every configured root is
+            // missing) — end the stream instead of asking FSEvents to
+            // watch zero paths.
+            continuation?.finish()
+            return
+        }
+        let paths = roots.map { $0 as CFString } as CFArray
 
         var context = FSEventStreamContext(
             version: 0,
