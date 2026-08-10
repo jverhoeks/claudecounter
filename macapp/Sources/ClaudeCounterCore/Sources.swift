@@ -38,6 +38,7 @@ public enum SourcesError: Error, LocalizedError, Equatable {
     case emptyLabel(index: Int)
     case emptyRoot(index: Int)
     case duplicateSource(id: String)
+    case unsafeCharacter(index: Int, field: String)
     case sharedRoot(idA: String, idB: String, root: String)
     case nestedRoots(innerID: String, innerRoot: String, outerID: String, outerRoot: String)
 
@@ -51,6 +52,8 @@ public enum SourcesError: Error, LocalizedError, Equatable {
             return "source \(index): label must not be empty"
         case .emptyRoot(let index):
             return "source \(index): root must not be empty"
+        case .unsafeCharacter(let index, let field):
+            return "source \(index): \(field) must not contain '#', '\"', '\\', or a newline — the shared TOML writer/parser can't round-trip those characters"
         case .duplicateSource(let id):
             return "duplicate source \(id): two roots under one label would merge two subscriptions"
         case .sharedRoot(let idA, let idB, let root):
@@ -143,9 +146,10 @@ public enum Sources {
 
     /// The rules shared by `load` (parsed-from-disk entries) and `write`
     /// (caller-supplied entries about to be persisted): unknown vendor,
-    /// empty label/root, a `~`-expanded root, duplicate `(vendor,label)`
-    /// ids, and overlapping/nested roots. Kept as the single place both
-    /// callers route through so they cannot drift apart.
+    /// empty label/root, unsafe characters in label/root, a
+    /// `~`-expanded root, duplicate `(vendor,label)` ids, and
+    /// overlapping/nested roots. Kept as the single place both callers
+    /// route through so they cannot drift apart.
     private static func validate(_ entries: [RawEntry], home: String) throws -> [SourceEntry] {
         var out: [SourceEntry] = []
         out.reserveCapacity(entries.count)
@@ -156,6 +160,23 @@ public enum Sources {
             }
             guard !raw.label.isEmpty else { throw SourcesError.emptyLabel(index: index) }
             guard !raw.root.isEmpty else { throw SourcesError.emptyRoot(index: index) }
+            // `write` emits `key = "value"` with no escaping, and
+            // `parse` strips comments quote-unaware from the first `#`
+            // on any line. A label/root containing `#`, `"`, `\`, or a
+            // newline would therefore round-trip through write+load as
+            // a DIFFERENT, silently wrong value instead of failing
+            // loudly — e.g. a folder picked via NSOpenPanel named
+            // "/a/b#c" would be truncated to "/a/b" on the next load,
+            // contribute nothing, and tell the user nothing. Rejecting
+            // here means both `load` (a hand-edited file) and `write`
+            // (the GUI editor, which can then show the error inline)
+            // catch it before it ever becomes a silently-wrong root.
+            guard !containsUnsafeCharacter(raw.label) else {
+                throw SourcesError.unsafeCharacter(index: index, field: "label")
+            }
+            guard !containsUnsafeCharacter(raw.root) else {
+                throw SourcesError.unsafeCharacter(index: index, field: "root")
+            }
             let entry = SourceEntry(vendor: raw.vendor, label: raw.label, root: expand(raw.root, home: home))
             guard !seen.contains(entry.id) else { throw SourcesError.duplicateSource(id: entry.id) }
             seen.insert(entry.id)
@@ -163,6 +184,10 @@ public enum Sources {
         }
         try checkOverlap(out)
         return out
+    }
+
+    private static func containsUnsafeCharacter(_ s: String) -> Bool {
+        s.contains("#") || s.contains("\"") || s.contains("\\") || s.contains(where: { $0.isNewline })
     }
 
     /// Parses the `[[source]]` tables out of a sources.toml body. Lines

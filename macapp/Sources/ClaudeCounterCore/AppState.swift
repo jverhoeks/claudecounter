@@ -179,7 +179,7 @@ public final class AppState: ObservableObject {
             if cache.version == CacheFile.currentVersion {
                 let offsets = await cache.restore(into: aggregator)
                 self.perFileOffsets = offsets
-                for r in readers.values { await r.seedOffsets(offsets) }
+                await seedReaders(from: offsets)
                 cacheWrittenAt = cache.writtenAt
             } else {
                 cacheStore.invalidate()
@@ -367,10 +367,45 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// Distributes a flat, cache-restored offset map to the readers
+    /// that actually own each path, using the same `sourceForPath`
+    /// routing the live watcher uses. This is the ONLY place offsets
+    /// cross from "one dict for everything" back to "one dict per
+    /// reader" — critically, each path lands in exactly one reader's
+    /// dict, never more than one.
+    ///
+    /// A previous version of this method broadcast the *entire* merged
+    /// dict to *every* reader via `Reader.seedOffsets` (which replaces,
+    /// not merges). That left every reader holding entries for every
+    /// OTHER source's paths too — entries it would never itself update,
+    /// since `onChange`/`initialScan` only ever touch paths under that
+    /// reader's own root. `mergedOffsets()` then had to pick one of two
+    /// disagreeing values (the true owner's advanced offset vs. another
+    /// reader's frozen, stale copy) using `Dictionary`'s unspecified
+    /// iteration order — a coin flip that, when it landed on the stale
+    /// value, persisted an offset BEHIND what was actually read. On the
+    /// next launch that portion of the file would be re-scanned and its
+    /// already-counted events re-emitted: double-counted spend, exactly
+    /// what the global constraints forbid. Routing each path to its one
+    /// true owner here removes the ambiguity at its source instead of
+    /// arbitrating it later.
+    private func seedReaders(from offsets: [String: Int64]) async {
+        var bySource: [String: [String: Int64]] = [:]
+        for (path, offset) in offsets {
+            guard let source = sourceForPath(path) else { continue }
+            bySource[source.id, default: [:]][path] = offset
+        }
+        for (id, r) in readers {
+            await r.seedOffsets(bySource[id] ?? [:])
+        }
+    }
+
     /// Merge every reader's offset map into one flat dict for the cache
-    /// file — offsets are keyed by absolute path, and `Sources`'
-    /// overlap check guarantees no two sources' roots can produce the
-    /// same path, so a plain merge can't collide.
+    /// file. Safe as a plain last-wins merge ONLY because `seedReaders`
+    /// (see its doc comment) and the per-path routing in `handle` /
+    /// `scanSource` guarantee each path is ever held by exactly one
+    /// reader — never broadcast to others — so there is never a second,
+    /// disagreeing value to lose here.
     private func mergedOffsets() async -> [String: Int64] {
         var merged: [String: Int64] = [:]
         for r in readers.values {

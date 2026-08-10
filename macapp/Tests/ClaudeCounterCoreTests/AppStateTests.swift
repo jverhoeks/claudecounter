@@ -714,4 +714,121 @@ final class AppStateTests: XCTestCase {
 
         await app.stop()
     }
+
+    /// Regression for a cache-restore bug: seeding EVERY reader with the
+    /// FULL merged offset map (instead of only the slice each reader's
+    /// own source owns) leaves every non-owning reader holding a frozen,
+    /// stale copy of another source's file offset. `mergedOffsets()`
+    /// then has to pick between the true owner's advanced value and a
+    /// stale one via `Dictionary`'s unspecified iteration order — and
+    /// when it picks the stale one, the persisted cache records an
+    /// offset BEHIND what was actually read, so the next launch
+    /// re-scans and re-counts already-counted events: double-counted
+    /// spend, exactly what the global constraints forbid.
+    ///
+    /// Drives this through a REAL two-phase start/stop/restart cycle
+    /// (not a hand-built `CacheFile`) so the seeded offsets are in
+    /// whatever path form the system actually produces — `walkDirLikeGo`
+    /// and FSEvents both report paths through their OS-resolved form
+    /// (e.g. `/private/var/...` under `NSTemporaryDirectory()`), and a
+    /// synthetic cache built from the literal, unresolved path string
+    /// would silently exercise a different (and unrepresentative)
+    /// mismatch than the one this test is meant to catch.
+    ///
+    /// A third restart with no further changes proves the fix is
+    /// durable, not just "happened to net out right once": if any path
+    /// were still being lost or duplicated across readers, re-scanning
+    /// from a stale offset would inflate one of the totals again.
+    func test_appState_restartAfterCacheRestore_advancesOnlyTheChangedSourceOffset() async throws {
+        let base = NSTemporaryDirectory() + "as-seed-\(UUID().uuidString)"
+        let workProjects = base + "/work/projects/p1"
+        let personalProjects = base + "/personal/projects/p1"
+        try FileManager.default.createDirectory(atPath: workProjects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalProjects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workProjects + "/sess.jsonl"
+        let personalPath = personalProjects + "/sess.jsonl"
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let firstLine = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}\#n"#
+        try firstLine.write(toFile: workPath, atomically: true, encoding: .utf8)
+        try firstLine.write(toFile: personalPath, atomically: true, encoding: .utf8)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/work/projects"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(base)/personal/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-seed-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let key = SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")
+
+        func makeApp() -> AppState {
+            AppState(
+                projectsRoot: base + "/work/projects",
+                aggregator: Aggregator(pricing: .defaults),
+                reader: Reader(),
+                cacheStore: cacheStore,
+                pricing: .defaults,
+                dockIcon: InMemoryDockIconController(),
+                settingsStore: InMemorySettingsStore(),
+                sourcesConfigPath: sourcesPath
+            )
+        }
+
+        // Phase 1: fresh scan, no pre-existing cache. Both sources read
+        // their one line ($5 each) and flush a real cache on stop().
+        let app1 = makeApp()
+        await app1.start()
+        XCTAssertEqual(app1.totals.day[key]?.usd ?? 0, 5.0, accuracy: 1e-6)
+        await app1.stop()
+
+        // Append a SECOND line to the WORK file only — new content the
+        // phase-1 cache doesn't know about. personal is untouched.
+        let secondLine = #"{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-7","usage":{"input_tokens":2000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s2","cwd":"/tmp/y","requestId":"r2"}\#n"#
+        try (secondLine).appendTo(path: workPath)
+
+        // Phase 2: a fresh AppState restores the real cache from phase
+        // 1 (cells AND offsets), seeds each reader with only its own
+        // source's offsets, and rescans. work must gain exactly the new
+        // $10 (5 restored + 10 new = 15); personal must gain nothing
+        // (already fully read, nothing new on disk).
+        let app2 = makeApp()
+        await app2.start()
+        XCTAssertEqual(app2.totals.day[key]?.usd ?? 0, 15.0, accuracy: 1e-6,
+                       "work must restore its $5 and add exactly the new line's $10 — not lose the restore, and not double the new line")
+        await app2.stop()
+
+        // Phase 3: restart again with NO further changes. If any
+        // offset were lost or corrupted by cross-source seeding, this
+        // would re-read and re-count something. Dedupe (perMsg) is a
+        // second safety net, but the totals must not even need it here.
+        let app3 = makeApp()
+        await app3.start()
+        XCTAssertEqual(app3.totals.day[key]?.usd ?? 0, 15.0,
+                       accuracy: 1e-6, "a second restart with no new content must not change the total")
+        await app3.stop()
+    }
+}
+
+private extension String {
+    func appendTo(path: String) throws {
+        guard let handle = FileHandle(forWritingAtPath: path) else {
+            try self.write(toFile: path, atomically: true, encoding: .utf8)
+            return
+        }
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(self.utf8))
+    }
 }
