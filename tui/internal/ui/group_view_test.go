@@ -100,8 +100,18 @@ func TestModelBarStyleColorsVendorLabels(t *testing.T) {
 	if render(modelBarStyle("claude-opus-4-7")) != render(modelBarStyle("claude-opus-4-8")) {
 		t.Fatalf("both opus ids should share the opus colour")
 	}
-	if render(modelBarStyle("claude-opus-4-7")) == render(modelBarStyle("claude")) {
-		t.Errorf("a specific model match must win over the vendor-level fallback")
+
+	// A vendor-mode row ("claude") and a model-mode row ("claude-opus-4-7")
+	// must land on different, non-fallback styles — this is the case a
+	// future reordering of modelBarStyle's cases could silently break,
+	// greying out every model bar the moment a vendor case is checked first.
+	modelStyle := render(modelBarStyle("claude-opus-4-7"))
+	vendorStyle := render(modelBarStyle("claude"))
+	if modelStyle == grey || vendorStyle == grey {
+		t.Fatalf("neither a model-mode nor a vendor-mode row may fall back to grey: model=%q vendor=%q grey=%q", modelStyle, vendorStyle, grey)
+	}
+	if modelStyle == vendorStyle {
+		t.Errorf("a specific model match must win over the vendor-level fallback, got the same style for both")
 	}
 }
 
