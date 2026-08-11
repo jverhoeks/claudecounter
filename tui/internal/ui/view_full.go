@@ -8,11 +8,11 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
-func viewFull(t agg.Totals, recent []string, streamlineView string) string {
+func viewFull(t agg.Totals, recent []string, streamlineView string, mode agg.Mode) string {
 	var b strings.Builder
 	// The full view already packs projects + live tail below; it does
 	// not also show the gauge block (that lives in minimal/split).
-	b.WriteString(viewSplit(t, ""))
+	b.WriteString(viewSplit(t, "", mode))
 
 	// Per-project section (this month, sorted by descending cost).
 	b.WriteString(styleDim.Render(strings.Repeat("─", 60)) + "\n")

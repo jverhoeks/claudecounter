@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,7 +10,10 @@ import (
 )
 
 // modelBarStyle assigns a consistent colour per model family so the
-// horizontal bars are readable at a glance.
+// horizontal bars are readable at a glance. The model-specific cases
+// come first and the vendor-level ones after, since a model id like
+// "claude-opus-4-7" contains both "claude" and "opus" — checking vendor
+// first would flatten every Claude model to one colour.
 func modelBarStyle(model string) lipgloss.Style {
 	switch {
 	case strings.Contains(model, "opus"):
@@ -20,6 +22,12 @@ func modelBarStyle(model string) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue
 	case strings.Contains(model, "haiku"):
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
+	case strings.Contains(model, "claude"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("5")) // purple
+	case strings.Contains(model, "codex"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
+	case strings.Contains(model, "grok"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // bright red
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 }
@@ -45,7 +53,12 @@ func inlineBar(width int, frac float64, style lipgloss.Style) string {
 	return bar + track
 }
 
-func viewSplit(t agg.Totals, gauges string) string {
+// splitBarWidth is the inline-bar width passed to renderSeries so the
+// split view keeps its colour-coded bar chart; viewMinimal passes 0 for
+// the same call to render a plain table instead.
+const splitBarWidth = 24
+
+func viewSplit(t agg.Totals, gauges string, mode agg.Mode) string {
 	var b strings.Builder
 	dayTotal := sumUSD(t.Day)
 	monthTotal := sumUSD(t.Month)
@@ -64,26 +77,8 @@ func viewSplit(t agg.Totals, gauges string) string {
 		b.WriteString(gauges)
 	}
 
-	names := make([]string, 0, len(t.Day))
-	for name := range t.Day {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		return t.Day[names[i]].USD > t.Day[names[j]].USD
-	})
-
-	const barW = 24
-	for _, n := range names {
-		md := t.Day[n]
-		frac := 0.0
-		if dayTotal > 0 {
-			frac = md.USD / dayTotal
-		}
-		bar := inlineBar(barW, frac, modelBarStyle(n))
-		line := fmt.Sprintf("  %-7s %s %9s  %4.0f%%\n",
-			shortModel(n), bar, FormatUSD(md.USD), frac*100)
-		b.WriteString(line)
-	}
+	b.WriteString(renderModeBar(mode))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode, splitBarWidth))
 
 	// 30-day spend trend, then the parallel 30-day token-volume trend.
 	// Same renderers as the minimal view so the charts are visually

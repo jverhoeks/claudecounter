@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 )
 
 type Event struct {
@@ -24,6 +25,13 @@ type Event struct {
 	RequestID  string // Anthropic request id; combined with MessageID for dedupe
 	IsSubagent bool   // true when the event came from a subagents/agent-*.jsonl file
 	Usage      pricing.Usage
+	// Vendor is which tool produced this event ("claude"). It comes from
+	// the configured root the file was found under, never from the model
+	// name — inference already fails on real data (codex-auto-review).
+	Vendor string
+	// Source is the series identity "vendor/label", identifying which
+	// subscription or install produced the event.
+	Source string
 }
 
 // rawLine mirrors only the fields we read from a JSONL event.
@@ -87,12 +95,21 @@ type Reader struct {
 	offsets     map[string]int64
 	parseErrors int
 	out         chan<- Event
+	src         sources.Source
 }
 
 func New(out chan<- Event) *Reader {
+	home, err := os.UserHomeDir()
+	var src sources.Source
+	if err != nil {
+		src = sources.Source{Vendor: "claude", Label: "claude"}
+	} else {
+		src = sources.Defaults(home)[0]
+	}
 	return &Reader{
 		offsets: map[string]int64{},
 		out:     out,
+		src:     src,
 	}
 }
 
@@ -115,6 +132,7 @@ func (r *Reader) Forget(path string) {
 func (r *Reader) OnChange(path string) error {
 	r.mu.Lock()
 	start := r.offsets[path]
+	vendor, source := r.src.Vendor, r.src.ID()
 	r.mu.Unlock()
 
 	f, err := os.Open(path)
@@ -169,6 +187,8 @@ func (r *Reader) OnChange(path string) error {
 		slashPath := filepath.ToSlash(path)
 		ev.Project = projectFromPath(slashPath)
 		ev.IsSubagent = strings.Contains(slashPath, "/subagents/")
+		ev.Vendor = vendor
+		ev.Source = source
 		r.out <- ev
 	}
 
@@ -252,4 +272,21 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 	}
 	wg.Wait()
 	return <-walkErr
+}
+
+// InitialScanSource walks one configured source's root, tagging every
+// event with that source's vendor and identity.
+func (r *Reader) InitialScanSource(src sources.Source, notBefore time.Time) error {
+	r.mu.Lock()
+	r.src = src
+	r.mu.Unlock()
+	return r.InitialScan(src.Root, notBefore)
+}
+
+// OnChangeSource handles a changed file belonging to a known source.
+func (r *Reader) OnChangeSource(src sources.Source, path string) error {
+	r.mu.Lock()
+	r.src = src
+	r.mu.Unlock()
+	return r.OnChange(path)
 }

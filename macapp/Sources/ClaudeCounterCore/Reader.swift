@@ -12,9 +12,17 @@ public struct UsageEvent: Equatable, Sendable {
     public var requestID: String     // Anthropic request id
     public var isSubagent: Bool      // path contains "/subagents/"
     public var usage: Usage
+    /// "vendor/label" of the configured source this event came from —
+    /// see `SourceEntry.id`. Defaults to the single implicit source
+    /// (`Sources.defaults`) so every existing single-source call site
+    /// keeps behaving exactly as before; a source-aware scanner
+    /// (multi-source wiring) is expected to pass the real value.
+    public var source: String
+    public var vendor: String
 
     public init(timestamp: Date, sessionID: String, cwd: String, project: String,
-                model: String, messageID: String, requestID: String, isSubagent: Bool, usage: Usage) {
+                model: String, messageID: String, requestID: String, isSubagent: Bool, usage: Usage,
+                source: String = "claude/claude", vendor: String = "claude") {
         self.timestamp = timestamp
         self.sessionID = sessionID
         self.cwd = cwd
@@ -24,6 +32,8 @@ public struct UsageEvent: Equatable, Sendable {
         self.requestID = requestID
         self.isSubagent = isSubagent
         self.usage = usage
+        self.source = source
+        self.vendor = vendor
     }
 }
 
@@ -192,7 +202,14 @@ public actor Reader {
     /// parsed events. Updates the offset to point at the byte just past the
     /// last `\n`. Bytes after the last newline (incomplete tail) stay
     /// unconsumed — they are picked up on the next call.
-    public func onChange(path: String) async throws -> [UsageEvent] {
+    ///
+    /// `source` identifies which configured subscription `path` was
+    /// found under; every returned event is stamped with its
+    /// `id`/`vendor` HERE, at the one place events are produced, so no
+    /// caller can forget to attribute a file's events to the right
+    /// source. There is deliberately no defaulted overload — the
+    /// caller must always know which source it's scanning.
+    public func onChange(path: String, source: SourceEntry) async throws -> [UsageEvent] {
         let stored = offsets[path] ?? 0
 
         let url = URL(fileURLWithPath: path)
@@ -229,6 +246,8 @@ public actor Reader {
             case .event(var ev):
                 ev.project = projectFromPath(path)
                 ev.isSubagent = isSubagentPath(path)
+                ev.source = source.id
+                ev.vendor = source.vendor
                 events.append(ev)
             case .skip:
                 continue
@@ -246,8 +265,9 @@ public actor Reader {
     /// after `notBefore`. Recursion is required to pick up subagent
     /// transcripts at `<project>/<session>/subagents/agent-*.jsonl`.
     /// After this returns, the reader's offset map reflects the end of
-    /// every scanned file.
-    public func initialScan(root: String, notBefore: Date) async throws -> [UsageEvent] {
+    /// every scanned file. `source` is stamped onto every event via
+    /// `onChange` — see its doc comment.
+    public func initialScan(root: String, source: SourceEntry, notBefore: Date) async throws -> [UsageEvent] {
         // Collect candidate paths synchronously first — Swift 6 forbids
         // iterating FileManager.enumerator across async suspension points.
         let candidates = Self.candidateJSONLs(under: root, notBefore: notBefore)
@@ -255,7 +275,7 @@ public actor Reader {
         var allEvents: [UsageEvent] = []
         for path in candidates {
             do {
-                let evs = try await onChange(path: path)
+                let evs = try await onChange(path: path, source: source)
                 allEvents.append(contentsOf: evs)
             } catch {
                 // Don't abort the whole scan if a single file is unreadable.

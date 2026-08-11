@@ -84,6 +84,102 @@ Or build from source — see the [Quick start](#quick-start) below.
 
 → Full TUI docs: **[`tui/README.md`](./tui/README.md)**
 
+## 🗂️ Multiple sources & grouping (TUI key `v` / popover segmented control)
+
+By default there is nothing to configure: both apps read `~/.claude/projects`
+and report it as one series. If you run two Claude subscriptions on the same
+machine — a work account and a personal one, say — point each at its own
+transcripts directory and the two are counted, and shown, separately.
+
+**Why the root path is the only knob.** A session JSONL carries no account
+identifier at all. The one place an identifier does live, `~/.claude.json`,
+is machine-global — it reflects whichever account happens to be logged in
+*right now*, not which account produced last Tuesday's transcripts. The only
+durable signal left is *where the files live*: each install writes its own
+transcripts under its own `~/.claude/projects`, so a distinct root is the one
+thing that reliably tells two subscriptions apart.
+
+```toml
+# ~/.config/claudecounter/sources.toml
+
+[[source]]
+vendor = "claude"
+label  = "personal"
+root   = "~/.claude/projects"
+
+[[source]]
+vendor = "claude"
+label  = "work"
+root   = "~/work-claude/projects"
+```
+
+- **No file → today's behaviour, unchanged.** With no `sources.toml`, both
+  apps fall back to exactly one implicit source (`claude`/`claude`, rooted at
+  `~/.claude/projects`) — an existing user sees no change at all.
+- **`(vendor, label)` is the series identity**, rendered `vendor/label` (e.g.
+  `claude/work`). A label only has to be unique *within* a vendor —
+  `claude/personal` and `grok/personal` are two distinct, legitimate series.
+- **Duplicate or nested roots are rejected at load**, not silently merged:
+  two entries pointing at the same directory, or one nested inside the
+  other, would double-count every event under both, so loading fails with
+  an error naming the two sources and the shared root instead of quietly
+  producing a wrong total.
+- `~` expands to `$HOME`. `vendor` must be `claude` (the only reader Phase A
+  ships) or `grok` (accepted so a config can name it ahead of that reader
+  landing, without the file failing to load).
+
+**A missing root is not the same as a broken one.** A root named in
+`sources.toml` that simply doesn't exist on this machine (e.g. a
+work-only profile that isn't installed on your personal laptop) is
+silently skipped — that's the normal "not on this machine" case. A root
+that exists but can't be scanned (permission denied, a dropped network
+mount, …) is also skipped, but comes with a warning, since a confident
+total that quietly omits a broken subscription would be worse than no
+total at all. Contrast a **typed** `--root` that doesn't exist: that has no
+legitimate "not on this machine" reading, so it stays fatal exactly as it
+was before `--sources-config` existed — the only plausible explanation for
+a typed path that isn't there is a typo.
+
+### The four grouping modes
+
+Every cost view can collapse its rows along four axes without re-scanning
+anything — grouping only changes how already-counted totals are displayed,
+so all four modes always sum to the same grand total:
+
+| Mode | Collapses to |
+|---|---|
+| `model` (default) | one row per model, merged across every source — today's behaviour |
+| `vendor` | one row per vendor (`claude`, and `grok` once its reader ships) |
+| `source` | one row per configured subscription, e.g. `claude/work` vs `claude/personal` |
+| `total` | a single row |
+
+In the Go TUI, press **`v`** to cycle model → vendor → source → total → model
+(views `1`/`2`/`3`; the active mode is bracketed in the `group:` line, and
+the breakdown below it is of **today's** spend — it sums to the `Today`
+figure on the header line above it, not `Month`):
+
+```
+Today  $334.50    Month $5,209.80
+────────────────────────────────────────────────────────────
+group: model vendor [source] total   (v)
+  claude/work            ███████████████░░░░░░░░░    $210.40   63%
+  claude/personal        █████████░░░░░░░░░░░░░░░    $124.10   37%
+────────────────────────────────────────────────────────────
+```
+
+The menu bar app has the same four modes as a segmented control above its
+by-model/vendor/source/total table in the popover — that table is scoped to
+**this month**, not today, matching its existing "By model · month" label.
+
+```bash
+claudecounter --sources-config ~/work/sources.toml   # non-default sources.toml
+```
+
+An explicit `--root` still overrides the configured list entirely, with a
+single implicit source rooted there — the override `--root` has always had,
+kept for anyone who hasn't adopted `sources.toml` yet. The macapp has a GUI
+editor for the same file — see [`macapp/README.md`](./macapp/README.md).
+
 ## 📈 Git activity & ROI (TUI view `4` / `--report`)
 
 Press **`4`** in the TUI (or run `claudecounter --report`) for a per-repo
@@ -151,7 +247,6 @@ warn_pct = 80
 ── short window
  claude  daily ████████░░  78%  $39.00/$50.00
  codex   5h    █████████░  92%  ↻ 2h14m
- grok    —     n/a (weekly only)
 ── weekly
  claude  wk    █████░░░░░  52%  $130.00/$250.00
  codex   7d    ██████████ 100%  ↻ Mon ⚠
@@ -174,10 +269,9 @@ resets:
 | `codex` | `~/.codex/sessions/**/*.jsonl`, vendor-reported | % of plan |
 | `grok` | `~/.grok/logs/unified.jsonl`, vendor-reported | % of plan |
 
-Grok reports no short window, so that row reads `n/a (weekly only)`
-rather than vanishing (in the weekly band, a vendor with no row instead
-reads `n/a (no weekly window)`). Claude is the reverse — it has a dollar
-figure but publishes no utilisation percentage locally.
+Grok reports no short window, so it simply has no row in the short-window
+group — it appears only under weekly. Claude is the reverse — it has a
+dollar figure but publishes no utilisation percentage locally.
 
 > **Correction.** An earlier version of this section said Grok can never
 > carry a dollar figure, because its transcripts log cumulative context
@@ -203,9 +297,7 @@ without changing colour behaviour) and carries the threshold signal on
 its percentage text only. A window whose reset time has already passed
 renders dimmed and labelled `stale`, and is excluded from the menu-bar
 glyph's escalation; only plan (Codex/Grok) rows can go stale, since a
-budget row is always evaluated against "right now". An `n/a` row
-renders in that same dimmed style, though it isn't itself stale — it's
-just a vendor with nothing to show in this band.
+budget row is always evaluated against "right now".
 
 ```bash
 claudecounter --limits                        # one-shot gauge block
@@ -573,6 +665,7 @@ tui/                          ← Go TUI (`claudecounter` binary)
   cmd/claudecounter/            main, CLI reports, integration test
   internal/{pricing,reader,    pricing math · JSONL tailing · token aggregator
             agg,watcher,ui}/    · fsnotify wrapper · bubbletea views
+  internal/sources/             sources.toml load + validate (multiple subscriptions)
   internal/{report,gitstat}/    git activity & ROI report
   internal/{safety,session}/    permission-mode report · per-session parser
   internal/phases/              subagent phase/lang/tier scanner + session cache-read analysis
@@ -581,9 +674,10 @@ tui/                          ← Go TUI (`claudecounter` binary)
 macapp/                       ← Swift menu bar app (ClaudeCounterBar.app)
   Package.swift
   Sources/ClaudeCounterCore/    headless library (Pricing, Reader,
-                                Aggregator, Watcher, Cache, AppState)
-  Sources/ClaudeCounterBar/     SwiftUI MenuBarExtra + popover
-  Tests/                        72 unit tests, incl. cross-language
+                                Aggregator, Watcher, Cache, AppState,
+                                Sources, Grouping)
+  Sources/ClaudeCounterBar/     SwiftUI MenuBarExtra + popover + sources editor
+  Tests/                        215 unit tests, incl. cross-language
                                 conformance against the Go fixtures
   scripts/build-app.sh          assemble `.app` from the SPM exe
 

@@ -3,6 +3,11 @@ import XCTest
 
 final class ReaderTests: XCTestCase {
 
+    /// These tests exercise pure parsing/offset behaviour, not source
+    /// attribution — any fixed `SourceEntry` will do, since none of
+    /// them assert on `.source`/`.vendor`.
+    private let testSource = SourceEntry(vendor: "claude", label: "claude", root: "/tmp")
+
     // MARK: - parseLine
 
     func test_parseLine_assistantWithUsage_returnsEvent() throws {
@@ -89,14 +94,14 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        let events = try await reader.onChange(path: path)
+        let events = try await reader.onChange(path: path, source: testSource)
 
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(events[0].model, "claude-opus-4-7")
         XCTAssertEqual(events[1].model, "claude-sonnet-4-6")
 
         // Calling again with no new content yields no events.
-        let again = try await reader.onChange(path: path)
+        let again = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(again.count, 0)
     }
 
@@ -107,12 +112,12 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        let first = try await reader.onChange(path: path)
+        let first = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(first.count, 1)
 
         // Append a new line and re-trigger.
         try appendLine(path: path, line: sample(model: "claude-haiku-4-5", input: 5, msgID: "m2", reqID: "r2"))
-        let second = try await reader.onChange(path: path)
+        let second = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(second.count, 1)
         XCTAssertEqual(second[0].model, "claude-haiku-4-5")
     }
@@ -125,13 +130,13 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        _ = try await reader.onChange(path: path)
+        _ = try await reader.onChange(path: path, source: testSource)
 
         // Truncate and rewrite with a different single line.
         try Data().write(to: URL(fileURLWithPath: path))
         try appendLine(path: path, line: sample(model: "claude-haiku-4-5", input: 5, msgID: "m3", reqID: "r3"))
 
-        let after = try await reader.onChange(path: path)
+        let after = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(after.count, 1)
         XCTAssertEqual(after[0].model, "claude-haiku-4-5")
     }
@@ -149,12 +154,12 @@ final class ReaderTests: XCTestCase {
         try (String(partial)).appendToFile(atPath: path)
 
         let reader = Reader()
-        let first = try await reader.onChange(path: path)
+        let first = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(first.count, 1, "only the complete line should be emitted")
 
         // Now complete the partial line by appending the missing closing brace + newline.
         try "}\n".appendToFile(atPath: path)
-        let second = try await reader.onChange(path: path)
+        let second = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(second.count, 1, "the previously-partial line should now be emitted")
     }
 
@@ -166,7 +171,7 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        let events = try await reader.onChange(path: path)
+        let events = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(events.count, 2)
     }
 
@@ -179,7 +184,7 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let reader = Reader()
-        let events = try await reader.onChange(path: path)
+        let events = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(events.count, 2)
         let errs = await reader.parseErrors
         XCTAssertEqual(errs, 1)
@@ -194,7 +199,7 @@ final class ReaderTests: XCTestCase {
         try body.write(toFile: path, atomically: true, encoding: .utf8)
 
         let reader = Reader()
-        let events = try await reader.onChange(path: path)
+        let events = try await reader.onChange(path: path, source: testSource)
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events[0].project, "encoded-x")
         XCTAssertTrue(events[0].isSubagent)
@@ -209,7 +214,7 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
 
         let reader = Reader()
-        let events = try await reader.onChange(path: staged.path)
+        let events = try await reader.onChange(path: staged.path, source: testSource)
         // session_normal has 4 lines: permission-mode (skip), user (skip — no usage),
         // assistant opus, assistant sonnet → 2 events.
         XCTAssertEqual(events.count, 2)
@@ -224,7 +229,7 @@ final class ReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
 
         let reader = Reader()
-        let events = try await reader.onChange(path: staged.path)
+        let events = try await reader.onChange(path: staged.path, source: testSource)
         XCTAssertEqual(events.count, 2)
         let errs = await reader.parseErrors
         XCTAssertEqual(errs, 1)

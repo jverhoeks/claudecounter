@@ -33,16 +33,16 @@ func TestApplyAndSnapshot_TodayAndMonth(t *testing.T) {
 		"claude-sonnet-4-6", 0, 1_000_000))
 
 	snap := a.Snapshot()
-	if got := snap.Day["claude-opus-4-7"].USD; got != 15 {
+	if got := snap.Day[SeriesKey{Model: "claude-opus-4-7"}].USD; got != 15 {
 		t.Errorf("today opus USD: %v", got)
 	}
-	if _, ok := snap.Day["claude-sonnet-4-6"]; ok {
+	if _, ok := snap.Day[SeriesKey{Model: "claude-sonnet-4-6"}]; ok {
 		t.Error("today should not include sonnet event from yesterday")
 	}
-	if got := snap.Month["claude-opus-4-7"].USD; got != 15 {
+	if got := snap.Month[SeriesKey{Model: "claude-opus-4-7"}].USD; got != 15 {
 		t.Errorf("month opus USD: %v", got)
 	}
-	if got := snap.Month["claude-sonnet-4-6"].USD; got != 15 {
+	if got := snap.Month[SeriesKey{Model: "claude-sonnet-4-6"}].USD; got != 15 {
 		t.Errorf("month sonnet USD: %v", got)
 	}
 }
@@ -55,10 +55,10 @@ func TestApply_UnknownModelCounted(t *testing.T) {
 	if snap.Unknown != 1 {
 		t.Errorf("unknown count: %d", snap.Unknown)
 	}
-	if _, ok := snap.Day["claude-foo-x"]; !ok {
+	if _, ok := snap.Day[SeriesKey{Model: "claude-foo-x"}]; !ok {
 		t.Error("unknown model still needs token accounting")
 	}
-	if snap.Day["claude-foo-x"].USD != 0 {
+	if snap.Day[SeriesKey{Model: "claude-foo-x"}].USD != 0 {
 		t.Error("unknown model cost must be 0")
 	}
 }
@@ -80,7 +80,7 @@ func TestApply_FirstSeenWinsByMsgIDAndReqID(t *testing.T) {
 	a.Apply(e2)
 
 	snap := a.Snapshot()
-	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 100 {
+	if got := snap.Day[SeriesKey{Model: "claude-opus-4-7"}].Tokens.In; got != 100 {
 		t.Errorf("input tokens: got %d want 100 (first-seen)", got)
 	}
 	if snap.Dupes != 1 {
@@ -100,7 +100,7 @@ func TestApply_NoDedupeWhenMsgIDOrReqIDMissing(t *testing.T) {
 	}
 
 	snap := a.Snapshot()
-	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 2_000_000 {
+	if got := snap.Day[SeriesKey{Model: "claude-opus-4-7"}].Tokens.In; got != 2_000_000 {
 		t.Errorf("input tokens: got %d want 2,000,000", got)
 	}
 	if snap.Dupes != 0 {
@@ -120,7 +120,7 @@ func TestApply_DifferentReqIDsForSameMsgIDBothCount(t *testing.T) {
 	}
 
 	snap := a.Snapshot()
-	if got := snap.Day["claude-opus-4-7"].Tokens.In; got != 2_000_000 {
+	if got := snap.Day[SeriesKey{Model: "claude-opus-4-7"}].Tokens.In; got != 2_000_000 {
 		t.Errorf("input tokens: got %d want 2,000,000 (msgid:reqid distinct)", got)
 	}
 }
@@ -155,7 +155,7 @@ func TestSnapshot_ExcludesPreviousMonth(t *testing.T) {
 	a.Apply(mkEvent(prev.UTC().Format(time.RFC3339), "claude-opus-4-7", 1_000_000, 0))
 
 	snap := a.Snapshot()
-	if _, ok := snap.Month["claude-opus-4-7"]; ok {
+	if _, ok := snap.Month[SeriesKey{Model: "claude-opus-4-7"}]; ok {
 		t.Error("last month's event must not appear in this-month snapshot")
 	}
 }
@@ -286,6 +286,65 @@ func TestProjectDaily_PerProjectPerDayCostAndCwd(t *testing.T) {
 	}
 	if cwds["-Users-me-alpha"] != "/Users/me/alpha" {
 		t.Errorf("alpha cwd = %q", cwds["-Users-me-alpha"])
+	}
+}
+
+func TestSnapshotKeysBySeries(t *testing.T) {
+	a := NewWithClock(priced(), func() time.Time {
+		return time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	})
+	base := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+
+	// Same model, two different subscriptions.
+	a.Apply(reader.Event{
+		Timestamp: base, Project: "p", Model: "claude-opus-4-7",
+		Vendor: "claude", Source: "claude/work",
+		MessageID: "m1", RequestID: "r1",
+		Usage: pricing.Usage{InputTokens: 1000, OutputTokens: 100},
+	})
+	a.Apply(reader.Event{
+		Timestamp: base, Project: "p", Model: "claude-opus-4-7",
+		Vendor: "claude", Source: "claude/personal",
+		MessageID: "m2", RequestID: "r2",
+		Usage: pricing.Usage{InputTokens: 2000, OutputTokens: 200},
+	})
+
+	snap := a.Snapshot()
+	work := SeriesKey{Source: "claude/work", Vendor: "claude", Model: "claude-opus-4-7"}
+	pers := SeriesKey{Source: "claude/personal", Vendor: "claude", Model: "claude-opus-4-7"}
+
+	if len(snap.Day) != 2 {
+		t.Fatalf("two sources must stay two series, got %d: %+v", len(snap.Day), snap.Day)
+	}
+	if snap.Day[work].Tokens.In != 1000 {
+		t.Fatalf("work series wrong: %+v", snap.Day[work])
+	}
+	if snap.Day[pers].Tokens.In != 2000 {
+		t.Fatalf("personal series wrong: %+v", snap.Day[pers])
+	}
+}
+
+// Dedupe must still be by messageID:requestID and must not become
+// per-source — the same message seen under two roots is still one event.
+func TestDedupeIsUnaffectedBySource(t *testing.T) {
+	a := NewWithClock(priced(), func() time.Time {
+		return time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	})
+	base := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	for _, src := range []string{"claude/work", "claude/personal"} {
+		a.Apply(reader.Event{
+			Timestamp: base, Project: "p", Model: "claude-opus-4-7",
+			Vendor: "claude", Source: src,
+			MessageID: "same", RequestID: "same",
+			Usage: pricing.Usage{InputTokens: 1000},
+		})
+	}
+	if a.Dupes() != 1 {
+		t.Fatalf("Dupes = %d, want 1", a.Dupes())
+	}
+	snap := a.Snapshot()
+	if len(snap.Day) != 1 {
+		t.Fatalf("a deduped event must produce one series, got %+v", snap.Day)
 	}
 }
 

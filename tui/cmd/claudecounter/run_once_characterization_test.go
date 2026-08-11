@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 )
 
 // runOnceGolden pins the exact stdout of runOnce against a fixed fixture.
-// It exists so Task 6's extraction of scanSnapshot out of runOnce cannot
-// silently change --once output: --once must remain byte-identical.
+// It exists so Task 6's move of runOnce onto scanSnapshotSources (and the
+// underlying sources.Source list) cannot silently change --once output:
+// --once must remain byte-identical for a single implicit source.
 //
 // Every number below is chosen to avoid ties (sort.Slice is not stable)
 // and to force both a dupe and a parse error, since those two counters
@@ -92,8 +94,9 @@ func TestRunOnce_StdoutIsByteIdentical(t *testing.T) {
 	root := buildRunOnceFixture(t)
 	table := pricing.Defaults()
 
+	srcs := []sources.Source{{Vendor: "claude", Label: "claude", Root: root}}
 	out := captureStdout(t, func() {
-		runOnce(root, table, "sentinel pricing warn")
+		runOnce(srcs, table, "sentinel pricing warn")
 	})
 
 	if out != runOnceGolden {

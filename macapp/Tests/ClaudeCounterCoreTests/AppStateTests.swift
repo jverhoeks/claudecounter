@@ -81,6 +81,10 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
+            // Isolates this test from whatever real
+            // ~/.config/claudecounter/sources.toml a developer machine
+            // happens to have configured.
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
             now: now
         )
         await app.start()
@@ -99,7 +103,7 @@ final class AppStateTests: XCTestCase {
         var finalUSD: Double = 0
         while Date() < deadline {
             try await Task.sleep(nanoseconds: 250_000_000)
-            let total = app.totals.day["claude-opus-4-7"]?.usd ?? 0
+            let total = app.totals.day[SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
             if total > 0 {
                 finalUSD = total
                 break
@@ -134,13 +138,15 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
-            settingsStore: InMemorySettingsStore()
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
-        XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0)
+        let opusKey = SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")
+        XCTAssertGreaterThan(app.totals.day[opusKey]?.usd ?? 0, 0)
 
         await app.refresh()
-        XCTAssertGreaterThan(app.totals.day["claude-opus-4-7"]?.usd ?? 0, 0,
+        XCTAssertGreaterThan(app.totals.day[opusKey]?.usd ?? 0, 0,
                              "Refresh should rebuild totals from disk")
         await app.stop()
     }
@@ -176,7 +182,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
-            settingsStore: InMemorySettingsStore()
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
         // Whatever start()'s own full rescan found (real machine state,
@@ -221,7 +228,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
-            settingsStore: InMemorySettingsStore()
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
         await app.refreshBudgets(configPath: configPath)
@@ -262,7 +270,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
-            settingsStore: InMemorySettingsStore()
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
 
@@ -318,7 +327,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: dock,
-            settingsStore: store
+            settingsStore: store,
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
         await app.stop()
@@ -350,7 +360,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: dock,
-            settingsStore: store
+            settingsStore: store,
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
         await app.stop()
@@ -383,7 +394,8 @@ final class AppStateTests: XCTestCase {
             cacheStore: CacheStore(url: cacheURL),
             pricing: .defaults,
             dockIcon: dock,
-            settingsStore: store
+            settingsStore: store,
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
         )
         await app.start()
         XCTAssertFalse(dock.isVisible)
@@ -403,5 +415,583 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(store.load().dockIconEnabled)
 
         await app.stop()
+    }
+
+    // MARK: - Multi-source scanning (Task 10 global constraints)
+
+    /// Two configured sources with disjoint roots must each accumulate
+    /// their own totals under their own `SeriesKey.source`, never
+    /// merged and never dropped. This is the test that would fail if a
+    /// call site forgot to stamp the real source/vendor onto an event.
+    func test_appState_twoSources_attributeIndependently() async throws {
+        let base = NSTemporaryDirectory() + "as-multi-\(UUID().uuidString)"
+        let workProjects = base + "/work/projects/p1"
+        let personalProjects = base + "/personal/projects/p1"
+        try FileManager.default.createDirectory(atPath: workProjects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalProjects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let ts = ISO8601DateFormatter().string(from: Date())
+        // 1M opus input tokens ($5) under "work", 2M under "personal" —
+        // distinct amounts so a bug that merges or drops one source's
+        // events instead of properly separating them is visible, not
+        // just "both happen to read the same number".
+        let workLine = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        let personalLine = #"{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-7","usage":{"input_tokens":2000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s2","cwd":"/tmp/y","requestId":"r2"}"#
+        try (workLine + "\n").write(toFile: workProjects + "/sess.jsonl", atomically: true, encoding: .utf8)
+        try (personalLine + "\n").write(toFile: personalProjects + "/sess.jsonl", atomically: true, encoding: .utf8)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/work/projects"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(base)/personal/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-multi-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: base + "/work/projects", // unused once sources.toml resolves
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+
+        XCTAssertEqual(Set(app.sources.map { $0.id }), ["claude/work", "claude/personal"])
+
+        let workUSD = app.totals.day[SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
+        let personalUSD = app.totals.day[SeriesKey(source: "claude/personal", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
+        XCTAssertEqual(workUSD, 5.0, accuracy: 1e-6, "work source's 1M input tokens should price at $5")
+        XCTAssertEqual(personalUSD, 10.0, accuracy: 1e-6, "personal source's 2M input tokens should price at $10")
+
+        await app.stop()
+    }
+
+    /// A malformed sources.toml must never stop counting: it degrades to
+    /// the single implicit source rooted at `projectsRoot`, surfaces via
+    /// `lastError`, and the projects root it falls back to is still
+    /// scanned normally.
+    func test_appState_malformedSourcesConfig_degradesToFallback_countingContinues() async throws {
+        let root = NSTemporaryDirectory() + "as-badsrc-\(UUID().uuidString)"
+        let projects = root + "/projects/p1"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let line = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ISO8601DateFormatter().string(from: Date()))","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        try (line + "\n").write(toFile: projects + "/sess.jsonl", atomically: true, encoding: .utf8)
+
+        let sourcesPath = root + "/sources.toml"
+        // Unknown vendor -> Sources.load throws.
+        try """
+        [[source]]
+        vendor = "openai"
+        label = "x"
+        root = "/tmp/x"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-badsrc-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+
+        XCTAssertEqual(app.sources, [SourceEntry(vendor: "claude", label: "claude", root: root + "/projects")],
+                       "a malformed sources.toml must degrade to the single implicit source")
+        XCTAssertNotNil(app.lastError, "the malformed config must surface once via lastError")
+
+        let usd = app.totals.day[SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
+        XCTAssertEqual(usd, 5.0, accuracy: 1e-6, "counting must continue against the fallback root")
+
+        await app.stop()
+    }
+
+    /// A configured source whose root doesn't exist on disk contributes
+    /// nothing and is NOT an error — the other, reachable source must
+    /// still be scanned and must not itself trip `lastError`.
+    func test_appState_missingConfiguredRoot_isNotAnError_otherSourceStillCounts() async throws {
+        let base = NSTemporaryDirectory() + "as-missing-\(UUID().uuidString)"
+        let realProjects = base + "/real/projects/p1"
+        try FileManager.default.createDirectory(atPath: realProjects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        // "ghost"'s root is deliberately never created.
+
+        let line = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ISO8601DateFormatter().string(from: Date()))","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        try (line + "\n").write(toFile: realProjects + "/sess.jsonl", atomically: true, encoding: .utf8)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "real"
+        root = "\(base)/real/projects"
+
+        [[source]]
+        vendor = "claude"
+        label = "ghost"
+        root = "\(base)/ghost/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-missing-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: base + "/real/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+
+        XCTAssertNil(app.lastError, "a merely-missing configured root must not be treated as an error")
+        let usd = app.totals.day[SeriesKey(source: "claude/real", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
+        XCTAssertEqual(usd, 5.0, accuracy: 1e-6, "the reachable source must still be scanned")
+
+        await app.stop()
+    }
+
+    /// Exercises the LIVE watcher path with more than one configured
+    /// source — `test_appState_twoSources_attributeIndependently` only
+    /// covers the initial backfill (files existed before `start()`).
+    /// `sourceForPath`'s prefix-match branch only runs once
+    /// `sources.count > 1`, is brand new code, and is exactly where a
+    /// `resolvingSymlinksInPath` mismatch (e.g. `/var` vs `/private/var`
+    /// under `NSTemporaryDirectory()`) would silently misroute an event
+    /// into `lastError` instead of `totals` — spend quietly lost, not
+    /// just mis-attributed. Mirrors `test_appState_picksUpNewEventLive`
+    /// but with two sources.
+    func test_appState_twoSources_liveWatcherAttributesToCorrectSource() async throws {
+        let base = NSTemporaryDirectory() + "as-multilive-\(UUID().uuidString)"
+        let workProjects = base + "/work/projects/p1"
+        let personalProjects = base + "/personal/projects/p1"
+        try FileManager.default.createDirectory(atPath: workProjects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalProjects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/work/projects"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(base)/personal/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-multilive-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let now: () -> Date = { Date() }
+        let agg = Aggregator(pricing: .defaults, now: now)
+        let app = AppState(
+            projectsRoot: base + "/work/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath,
+            now: now
+        )
+        await app.start()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Drop a fresh JSONL line under the SECOND source's root, after
+        // start() — not present during the initial backfill, so this
+        // can only show up via the live watcher.
+        let path = personalProjects + "/sess.jsonl"
+        let line = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ISO8601DateFormatter().string(from: Date()))","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        try (line + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let deadline = Date().addingTimeInterval(5.0)
+        var finalUSD: Double = 0
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            let total = app.totals.day[SeriesKey(source: "claude/personal", vendor: "claude", model: "claude-opus-4-7")]?.usd ?? 0
+            if total > 0 {
+                finalUSD = total
+                break
+            }
+        }
+
+        await app.stop()
+        XCTAssertEqual(finalUSD, 5.0, accuracy: 1e-6,
+                       "the live watcher must attribute a personal-source event to claude/personal")
+        XCTAssertNil(app.lastError, "sourceForPath must resolve the watched path to a configured source")
+    }
+
+    /// Editing a source's root in place (same vendor/label — what the
+    /// GUI editor's folder picker does when a user repoints an existing
+    /// row) must backfill the NEW root's history on the next reload.
+    /// Without this, the stale reader from before the edit just starts
+    /// watching the new root going forward and the user sees zero for
+    /// that source until some future event arrives.
+    func test_appState_reloadSources_rootChange_backfillsNewRoot() async throws {
+        let base = NSTemporaryDirectory() + "as-rootchange-\(UUID().uuidString)"
+        let oldRoot = base + "/old/projects/p1"
+        let newRoot = base + "/new/projects/p1"
+        try FileManager.default.createDirectory(atPath: oldRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: newRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let oldLine = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}"#
+        let newLine = #"{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-7","usage":{"input_tokens":3000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s2","cwd":"/tmp/y","requestId":"r2"}"#
+        try (oldLine + "\n").write(toFile: oldRoot + "/sess.jsonl", atomically: true, encoding: .utf8)
+        try (newLine + "\n").write(toFile: newRoot + "/sess.jsonl", atomically: true, encoding: .utf8)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/old/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-rootchange-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: base + "/old/projects",
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+        let key = SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")
+        XCTAssertEqual(app.totals.day[key]?.usd ?? 0, 5.0, accuracy: 1e-6,
+                       "initial scan should see the old root's event")
+
+        // Edit the source's root in place — same vendor/label (same
+        // id), pointed at a different folder: exactly what the GUI
+        // editor's folder picker does.
+        try Sources.write([SourceEntry(vendor: "claude", label: "work", root: base + "/new/projects")], to: sourcesPath)
+        await app.reloadSources()
+
+        XCTAssertEqual(app.totals.day[key]?.usd ?? 0, 20.0, accuracy: 1e-6,
+                       "reloadSources must backfill the new root ($15 more), not just start watching it going forward")
+
+        await app.stop()
+    }
+
+    /// Regression for a cache-restore bug: seeding EVERY reader with the
+    /// FULL merged offset map (instead of only the slice each reader's
+    /// own source owns) leaves every non-owning reader holding a frozen,
+    /// stale copy of another source's file offset. `mergedOffsets()`
+    /// then has to pick between the true owner's advanced value and a
+    /// stale one via `Dictionary`'s unspecified iteration order — and
+    /// when it picks the stale one, the persisted cache records an
+    /// offset BEHIND what was actually read, so the next launch
+    /// re-scans and re-counts already-counted events: double-counted
+    /// spend, exactly what the global constraints forbid.
+    ///
+    /// Drives this through a REAL two-phase start/stop/restart cycle
+    /// (not a hand-built `CacheFile`) so the seeded offsets are in
+    /// whatever path form the system actually produces — `walkDirLikeGo`
+    /// and FSEvents both report paths through their OS-resolved form
+    /// (e.g. `/private/var/...` under `NSTemporaryDirectory()`), and a
+    /// synthetic cache built from the literal, unresolved path string
+    /// would silently exercise a different (and unrepresentative)
+    /// mismatch than the one this test is meant to catch.
+    ///
+    /// A third restart with no further changes proves the fix is
+    /// durable, not just "happened to net out right once": if any path
+    /// were still being lost or duplicated across readers, re-scanning
+    /// from a stale offset would inflate one of the totals again.
+    func test_appState_restartAfterCacheRestore_advancesOnlyTheChangedSourceOffset() async throws {
+        let base = NSTemporaryDirectory() + "as-seed-\(UUID().uuidString)"
+        let workProjects = base + "/work/projects/p1"
+        let personalProjects = base + "/personal/projects/p1"
+        try FileManager.default.createDirectory(atPath: workProjects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalProjects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workProjects + "/sess.jsonl"
+        let personalPath = personalProjects + "/sess.jsonl"
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let firstLine = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}\#n"#
+        try firstLine.write(toFile: workPath, atomically: true, encoding: .utf8)
+        try firstLine.write(toFile: personalPath, atomically: true, encoding: .utf8)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/work/projects"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(base)/personal/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-seed-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let key = SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")
+
+        func makeApp() -> AppState {
+            AppState(
+                projectsRoot: base + "/work/projects",
+                aggregator: Aggregator(pricing: .defaults),
+                reader: Reader(),
+                cacheStore: cacheStore,
+                pricing: .defaults,
+                dockIcon: InMemoryDockIconController(),
+                settingsStore: InMemorySettingsStore(),
+                sourcesConfigPath: sourcesPath
+            )
+        }
+
+        // Phase 1: fresh scan, no pre-existing cache. Both sources read
+        // their one line ($5 each) and flush a real cache on stop().
+        let app1 = makeApp()
+        await app1.start()
+        XCTAssertEqual(app1.totals.day[key]?.usd ?? 0, 5.0, accuracy: 1e-6)
+        await app1.stop()
+
+        // Append a SECOND line to the WORK file only — new content the
+        // phase-1 cache doesn't know about. personal is untouched.
+        let secondLine = #"{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-7","usage":{"input_tokens":2000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s2","cwd":"/tmp/y","requestId":"r2"}\#n"#
+        try (secondLine).appendTo(path: workPath)
+
+        // Phase 2: a fresh AppState restores the real cache from phase
+        // 1 (cells AND offsets), seeds each reader with only its own
+        // source's offsets, and rescans. work must gain exactly the new
+        // $10 (5 restored + 10 new = 15); personal must gain nothing
+        // (already fully read, nothing new on disk).
+        let app2 = makeApp()
+        await app2.start()
+        XCTAssertEqual(app2.totals.day[key]?.usd ?? 0, 15.0, accuracy: 1e-6,
+                       "work must restore its $5 and add exactly the new line's $10 — not lose the restore, and not double the new line")
+        await app2.stop()
+
+        // Phase 3: restart again with NO further changes. If any
+        // offset were lost or corrupted by cross-source seeding, this
+        // would re-read and re-count something. Dedupe (perMsg) is a
+        // second safety net, but the totals must not even need it here.
+        let app3 = makeApp()
+        await app3.start()
+        XCTAssertEqual(app3.totals.day[key]?.usd ?? 0, 15.0,
+                       accuracy: 1e-6, "a second restart with no new content must not change the total")
+        await app3.stop()
+    }
+
+    /// Pins the invariant that makes `mergedOffsets()`'s plain
+    /// last-wins merge safe, DIRECTLY rather than through the
+    /// downstream double-counting symptom: after cache restore, every
+    /// reader's offset dict must contain ONLY paths under its own
+    /// source's root, and a cached path belonging to no configured
+    /// source must be dropped rather than land in some reader anyway.
+    ///
+    /// A restart-cycle test (`test_appState_restartAfterCacheRestore_…`
+    /// above) observes this only through whether a total comes out
+    /// right, which depends on `mergedOffsets()`'s merge happening to
+    /// pick the correct value out of an *unordered* `Dictionary` when
+    /// two readers disagree about a path — a re-review transplanted an
+    /// earlier version of that kind of test onto the pre-fix (broadcast
+    /// seed) code and found it failed only 2 of 14 runs (~14%): most
+    /// runs stayed green by accident. This test instead asserts the
+    /// membership property itself, which has no dependence on
+    /// iteration order and fails 100% of the time if the broadcast seed
+    /// is ever reintroduced.
+    ///
+    /// Uses empty source roots (no `.jsonl` files) so `start()`'s
+    /// subsequent scan phase finds nothing to read and can't mutate the
+    /// seeded offsets before this test inspects them via
+    /// `AppState.readerOffsetsByID()`.
+    func test_appState_seedReaders_scopesEachOffsetToExactlyOneOwningReader() async throws {
+        let base = NSTemporaryDirectory() + "as-invariant-\(UUID().uuidString)"
+        let workRoot = base + "/work/projects"
+        let personalRoot = base + "/personal/projects"
+        try FileManager.default.createDirectory(atPath: workRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: personalRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workRoot + "/p1/sess.jsonl"
+        let personalPath = personalRoot + "/p1/sess.jsonl"
+        // Under NEITHER configured root — simulates a source that was
+        // removed from sources.toml since this offset was cached.
+        let orphanPath = base + "/orphan/projects/p1/sess.jsonl"
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(workRoot)"
+
+        [[source]]
+        vendor = "claude"
+        label = "personal"
+        root = "\(personalRoot)"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-invariant-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let seededCache = CacheFile(
+            writtenAt: Date(),
+            cells: [],
+            perMsg: [],
+            offsets: [workPath: 111, personalPath: 222, orphanPath: 333],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: workRoot,
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+        await app.stop()
+
+        let bySource = await app.readerOffsetsByID()
+
+        XCTAssertEqual(bySource["claude/work"], [workPath: 111],
+                       "the work reader must hold exactly its own path, nothing more")
+        XCTAssertEqual(bySource["claude/personal"], [personalPath: 222],
+                       "the personal reader must hold exactly its own path, nothing more")
+
+        let allSeededPaths = Set(bySource.values.flatMap { $0.keys })
+        XCTAssertEqual(allSeededPaths, [workPath, personalPath],
+                       "each mapped path must appear in exactly one reader — never duplicated across readers, never missing")
+        XCTAssertFalse(bySource.values.contains { $0[orphanPath] != nil },
+                       "a cached path matching no configured source must be dropped, not assigned to some reader anyway")
+    }
+
+    /// Pins final-review.md item 3: `sourceForPath`'s `sources.count ==
+    /// 1` shortcut resolves ANY path to the lone source, no matter
+    /// where it actually lives — a shortcut that's fine for the
+    /// watcher (see `sourceForPath`'s doc comment) but wrong for
+    /// `seedReaders`, which must drop an unmatched cached path exactly
+    /// as the multi-source case does. With exactly ONE configured
+    /// source, a cached path that lies OUTSIDE that source's root must
+    /// still be dropped rather than seeded into its reader — seeding it
+    /// anyway is the identical failure mode Task 10 fixed (an offset
+    /// persisted behind what was read, re-triggering a re-read and, for
+    /// events missing a `messageID`/`requestID`, a re-count).
+    ///
+    /// This must FAIL against the un-fixed shortcut: with only one
+    /// source configured, `sourceForPath("...")` returns that source
+    /// unconditionally, so `orphanPath` below would land in its reader
+    /// instead of being dropped.
+    func test_appState_seedReaders_singleSource_dropsPathOutsideRoot() async throws {
+        let base = NSTemporaryDirectory() + "as-single-source-\(UUID().uuidString)"
+        let workRoot = base + "/work/projects"
+        try FileManager.default.createDirectory(atPath: workRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workRoot + "/p1/sess.jsonl"
+        // Under the ONE configured source's root — must be kept.
+        // A path from a DIFFERENT, no-longer-configured root — must be
+        // dropped, even though there's only one reader to (mis)assign
+        // it to.
+        let orphanPath = base + "/orphan/projects/p1/sess.jsonl"
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(workRoot)"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-single-source-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let seededCache = CacheFile(
+            writtenAt: Date(),
+            cells: [],
+            perMsg: [],
+            offsets: [workPath: 111, orphanPath: 333],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: workRoot,
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath
+        )
+        await app.start()
+        await app.stop()
+
+        let bySource = await app.readerOffsetsByID()
+
+        XCTAssertEqual(bySource["claude/work"], [workPath: 111],
+                       "the sole reader must hold only its own path — the orphan must not be seeded into it just because it's the only reader available")
+    }
+}
+
+private extension String {
+    func appendTo(path: String) throws {
+        guard let handle = FileHandle(forWritingAtPath: path) else {
+            try self.write(toFile: path, atomically: true, encoding: .utf8)
+            return
+        }
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(self.utf8))
     }
 }

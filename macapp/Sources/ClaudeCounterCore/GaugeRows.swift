@@ -14,7 +14,6 @@ public struct GaugeRow: Equatable, Sendable, Identifiable {
     public var windowLabel: String
     public var budget: LimitStatus?
     public var plan: PlanGauge?
-    public var notApplicable: String?
 
     /// SwiftUI requires this to be unique within a rendered band, or
     /// ForEach misbehaves. This is NOT derived from `PlanGauge`'s raw
@@ -54,22 +53,16 @@ public enum GaugeRows {
                 let want: LimitWindow = band == .weekly ? .week : .day
                 if let s = statuses.first(where: { $0.window == want && $0.state != .unset }) {
                     rows.append(GaugeRow(vendor: "claude", windowLabel: s.window.label,
-                                         budget: s, plan: nil, notApplicable: nil))
+                                         budget: s, plan: nil))
                 }
                 continue
             }
             guard installed.contains(vendor) else { continue }
 
             let matches = gauges.filter { $0.vendor == vendor && bandOf($0) == band }
-            if matches.isEmpty {
-                rows.append(GaugeRow(vendor: vendor, windowLabel: "—", budget: nil, plan: nil,
-                                     notApplicable: band == .short ? "weekly only" : "no weekly window"))
-            } else {
-                rows.append(contentsOf: matches.map {
-                    GaugeRow(vendor: vendor, windowLabel: $0.windowLabel,
-                             budget: nil, plan: $0, notApplicable: nil)
-                })
-            }
+            rows.append(contentsOf: matches.map {
+                GaugeRow(vendor: vendor, windowLabel: $0.windowLabel, budget: nil, plan: $0)
+            })
         }
         return rows
     }

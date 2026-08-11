@@ -48,22 +48,18 @@ type Segment struct {
 	Style lipgloss.Style
 }
 
-// Row is one rendered line. Exactly one of Budget, Plan or NotApplicable
-// is meaningful.
+// Row is one rendered line. Exactly one of Budget or Plan is meaningful.
 type Row struct {
-	Vendor        string
-	WindowLbl     string
-	Budget        *limits.Status
-	Segments      []Segment
-	Plan          *planlimits.Gauge
-	NotApplicable string
+	Vendor    string
+	WindowLbl string
+	Budget    *limits.Status
+	Segments  []Segment
+	Plan      *planlimits.Gauge
 }
 
-// BuildRows assembles one band's rows in fixed display order,
-// synthesising an "n/a" placeholder for a vendor that is installed but
-// reports nothing in this band. A vendor absent altogether is omitted:
-// showing n/a for a tool you do not use would be noise, while hiding a
-// real gap would read as zero usage.
+// BuildRows assembles one band's rows in fixed display order. A vendor
+// with nothing to show in this band — whether not installed at all, or
+// installed but reporting no window in this band — is simply omitted.
 func BuildRows(band Band, st []limits.Status, gs []planlimits.Gauge) []Row {
 	installed := map[string]bool{}
 	for _, g := range gs {
@@ -86,31 +82,15 @@ func BuildRows(band Band, st []limits.Status, gs []planlimits.Gauge) []Row {
 		if !installed[vendor] {
 			continue
 		}
-		matched := false
 		for i := range gs {
 			g := gs[i]
 			if g.Vendor != vendor || bandOf(g) != band {
 				continue
 			}
 			rows = append(rows, Row{Vendor: vendor, WindowLbl: g.WindowLbl, Plan: &gs[i]})
-			matched = true
-		}
-		if !matched {
-			rows = append(rows, Row{
-				Vendor:        vendor,
-				WindowLbl:     "—",
-				NotApplicable: naReason(band),
-			})
 		}
 	}
 	return rows
-}
-
-func naReason(band Band) string {
-	if band == BandShort {
-		return "weekly only"
-	}
-	return "no weekly window"
 }
 
 // bandOf places a gauge by its label: anything measured in hours is a
@@ -165,10 +145,6 @@ func renderGaugeGroup(title string, rows []Row, warnPct int) string {
 
 func renderRow(r Row, warnPct int) string {
 	label := fmt.Sprintf(" %-7s %-5s", r.Vendor, r.WindowLbl)
-
-	if r.NotApplicable != "" {
-		return styleStale.Render(label + " n/a (" + r.NotApplicable + ")")
-	}
 
 	switch {
 	case r.Budget != nil:

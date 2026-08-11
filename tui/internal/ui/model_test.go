@@ -4,6 +4,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/jverhoeks/claudecounter/tui/internal/agg"
 )
 
 // TestModelGaugesMsg_ErrorSurfacesAsFooterWarning is the model-level
@@ -55,5 +59,38 @@ func TestModelGaugesMsg_ErrorSurfacesAsFooterWarning(t *testing.T) {
 	}
 	if !strings.Contains(view, "NEW-GAUGES") || strings.Contains(view, "GOOD-GAUGES") {
 		t.Fatalf("expected gauges to update to the latest successful render:\n%s", view)
+	}
+}
+
+// TestUpdate_VCyclesGroupMode locks in that "v" ("view by") cycles the
+// grouping shown in the cost views. "b" was the original choice but
+// turned out to already be bound as the report/safety scroll-back key
+// (model.go's up/down/pgup/pgdown/j/k/space/b/f case); "v" is a plain,
+// dedicated case with no mode guard to keep in sync with that one.
+func TestUpdate_VCyclesGroupMode(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeSplit
+	if m.groupMode != agg.GroupModel {
+		t.Fatalf("expected default groupMode=GroupModel, got %v", m.groupMode)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = next.(Model)
+	if m.groupMode != agg.GroupVendor {
+		t.Errorf("pressing v in ModeSplit did not cycle model -> vendor, got %v", m.groupMode)
+	}
+}
+
+// TestUpdate_BDoesNotCycleGroupMode is the executable record of the
+// collision discovered while implementing this feature: "b" is bound
+// (model.go:245) as a report/safety viewport page-back key and must
+// never touch groupMode, in any mode — that's why grouping got its own
+// "v" case instead of piggybacking on "b".
+func TestUpdate_BDoesNotCycleGroupMode(t *testing.T) {
+	m := NewModel()
+	start := m.groupMode
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = next.(Model)
+	if m.groupMode != start {
+		t.Errorf("pressing b must not cycle groupMode, got %v -> %v", start, m.groupMode)
 	}
 }

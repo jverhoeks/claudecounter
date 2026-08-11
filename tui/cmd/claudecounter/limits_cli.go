@@ -9,6 +9,7 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/limits"
 	"github.com/jverhoeks/claudecounter/tui/internal/planlimits"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 	"github.com/jverhoeks/claudecounter/tui/internal/ui"
 )
 
@@ -40,8 +41,11 @@ func gatherGauges(cfgPath string, daily []agg.DailyTotal, now time.Time) (string
 // routes the same error into the model as a footer warning instead:
 // the live counting path must never exit, or spam the alt screen, over
 // a config typo.
-func runLimits(root string, table pricing.Table, cfgPath string) {
-	snap, _, _ := scanSnapshot(root, table)
+func runLimits(srcs []sources.Source, table pricing.Table, cfgPath string) {
+	snap, _, _, warnings := scanSnapshotSources(srcs, table)
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	out, err := gatherGauges(cfgPath, snap.Daily, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

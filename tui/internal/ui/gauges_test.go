@@ -37,25 +37,36 @@ func vendors(rows []Row) []string {
 }
 
 // Display order is fixed regardless of value, so a vendor never moves
-// between refreshes and the popover cannot disagree with the TUI.
+// between refreshes and the popover cannot disagree with the TUI. The
+// weekly band is where all three vendors actually have a row (grok has
+// no short window).
 func TestBuildRowsFixedDisplayOrder(t *testing.T) {
-	rows := BuildRows(BandShort, statuses(), gauges())
+	rows := BuildRows(BandWeekly, statuses(), gauges())
 	got := strings.Join(vendors(rows), ",")
 	if got != "claude,codex,grok" {
 		t.Fatalf("order = %q, want claude,codex,grok", got)
 	}
 }
 
-// Grok reports no short window. That gap must be visible, not an absent
-// row that reads as "no usage".
-func TestBuildRowsSynthesisesNotApplicable(t *testing.T) {
+// Codex stopped emitting its 5h window and Grok never had one, so the
+// short band was one real row plus two placeholders. A vendor with
+// nothing in a band is now simply not listed.
+func TestBuildRowsOmitsVendorWithNothingInBand(t *testing.T) {
 	rows := BuildRows(BandShort, statuses(), gauges())
-	last := rows[len(rows)-1]
-	if last.Vendor != "grok" || last.NotApplicable == "" {
-		t.Fatalf("grok short-window row must be n/a, got %+v", last)
+	if got := strings.Join(vendors(rows), ","); got != "claude,codex" {
+		t.Fatalf("order = %q, want claude,codex (grok has no short window)", got)
 	}
-	if last.Plan != nil {
-		t.Fatal("an n/a row must carry no gauge")
+	for _, r := range rows {
+		if r.Plan == nil && r.Budget == nil {
+			t.Fatalf("no placeholder rows should remain: %+v", r)
+		}
+	}
+}
+
+func TestRenderGaugesHasNoNaText(t *testing.T) {
+	out := RenderGauges(statuses(), gauges(), limits.DefaultWarnPct)
+	if strings.Contains(out, "n/a") {
+		t.Fatalf("no n/a rows should render:\n%s", out)
 	}
 }
 
@@ -75,8 +86,8 @@ func TestBuildRowsOmitsUnsetBudget(t *testing.T) {
 		{Window: limits.WindowWeek, State: limits.StateUnset},
 	}
 	rows := BuildRows(BandShort, unset, gauges())
-	if got := strings.Join(vendors(rows), ","); got != "codex,grok" {
-		t.Fatalf("order = %q, want codex,grok (no budget configured)", got)
+	if got := strings.Join(vendors(rows), ","); got != "codex" {
+		t.Fatalf("order = %q, want codex (no budget configured, grok has no short window)", got)
 	}
 }
 

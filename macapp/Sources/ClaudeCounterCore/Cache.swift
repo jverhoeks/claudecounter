@@ -14,6 +14,11 @@ import Foundation
 ///   file-level `hourBucketsDay` is gone) so the hourly chart can
 ///   drill into any day of the monthly chart. Old caches are
 ///   invalidated on load → one full rescan rebuilds the history.
+/// - 4: cells are keyed by (day, project, source, vendor, model, isSub)
+///   so multiple configured sources stay distinct. Old caches are
+///   invalidated on load → one full rescan re-tags every cell with the
+///   source it came from. Without the bump, cached cells would carry no
+///   source and silently merge into one series.
 public struct CacheFile: Codable, Sendable {
     public let version: Int
     public let writtenAt: Date
@@ -28,11 +33,13 @@ public struct CacheFile: Codable, Sendable {
     /// writers always emit.
     public let hourBuckets: [HourEntry]?
 
-    public static let currentVersion = 3
+    public static let currentVersion = 4
 
     public struct CellEntry: Codable, Sendable {
         public let day: String       // YYYY-MM-DD (matches civilDayString)
         public let project: String
+        public let source: String
+        public let vendor: String
         public let model: String
         public let isSub: Bool
         public let input: UInt64
@@ -40,10 +47,13 @@ public struct CacheFile: Codable, Sendable {
         public let cacheCreate: UInt64
         public let cacheRead: UInt64
 
-        public init(day: String, project: String, model: String, isSub: Bool,
+        public init(day: String, project: String, source: String, vendor: String,
+                    model: String, isSub: Bool,
                     input: UInt64, output: UInt64,
                     cacheCreate: UInt64, cacheRead: UInt64) {
-            self.day = day; self.project = project; self.model = model
+            self.day = day; self.project = project
+            self.source = source; self.vendor = vendor
+            self.model = model
             self.isSub = isSub
             self.input = input; self.output = output
             self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
@@ -148,6 +158,8 @@ extension CacheFile {
             CellEntry(
                 day: civilDayString(key.day),
                 project: key.project,
+                source: key.source,
+                vendor: key.vendor,
                 model: key.model,
                 isSub: key.isSub,
                 input: t.input, output: t.output,
@@ -183,7 +195,8 @@ extension CacheFile {
         for e in self.cells {
             guard let cd = parseCivilDayString(e.day) else { continue }
             let key = Aggregator.CellKey(
-                day: cd, project: e.project, model: e.model, isSub: e.isSub
+                day: cd, project: e.project, source: e.source, vendor: e.vendor,
+                model: e.model, isSub: e.isSub
             )
             cells[key] = TokenCounts(
                 input: e.input, output: e.output,

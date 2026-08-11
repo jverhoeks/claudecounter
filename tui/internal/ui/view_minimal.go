@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -16,7 +14,7 @@ var (
 	styleHead  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 )
 
-func sumUSD(m map[string]agg.ModelDay) float64 {
+func sumUSD(m map[agg.SeriesKey]agg.ModelDay) float64 {
 	var s float64
 	for _, v := range m {
 		s += v.USD
@@ -38,7 +36,7 @@ func shortModel(id string) string {
 	}
 }
 
-func viewMinimal(t agg.Totals, gauges string) string {
+func viewMinimal(t agg.Totals, gauges string, mode agg.Mode) string {
 	var b strings.Builder
 	b.WriteString(styleHead.Render("Today") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Day))) + "\n")
 	b.WriteString(styleHead.Render("Month") + "     " + styleMoney.Render(FormatUSD(sumUSD(t.Month))) + "\n")
@@ -52,19 +50,7 @@ func viewMinimal(t agg.Totals, gauges string) string {
 	b.WriteString(renderDailySparkline(t.Daily))
 	b.WriteString(renderDailyTokensSparkline(t.Daily))
 
-	names := make([]string, 0, len(t.Day))
-	for name := range t.Day {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		return t.Day[names[i]].USD > t.Day[names[j]].USD
-	})
-	parts := make([]string, 0, len(names))
-	for _, n := range names {
-		parts = append(parts, fmt.Sprintf("%s %s", shortModel(n), FormatUSD(t.Day[n].USD)))
-	}
-	if len(parts) > 0 {
-		b.WriteString(styleDim.Render(strings.Join(parts, " · ")) + "\n")
-	}
+	b.WriteString(renderModeBar(mode))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode, 0))
 	return b.String()
 }

@@ -12,8 +12,8 @@ import (
 // a sparkline body (non-empty extra lines below the totals).
 func TestViewMinimal_SparklineRenders(t *testing.T) {
 	totals := agg.Totals{
-		Day:   map[string]agg.ModelDay{"claude-opus-4-7": {USD: 12.34}},
-		Month: map[string]agg.ModelDay{"claude-opus-4-7": {USD: 100.00}},
+		Day:   map[agg.SeriesKey]agg.ModelDay{{Model: "claude-opus-4-7"}: {USD: 12.34}},
+		Month: map[agg.SeriesKey]agg.ModelDay{{Model: "claude-opus-4-7"}: {USD: 100.00}},
 		Daily: []agg.DailyTotal{
 			{Day: "2026-04-01", USD: 5},
 			{Day: "2026-04-02", USD: 12},
@@ -23,7 +23,7 @@ func TestViewMinimal_SparklineRenders(t *testing.T) {
 			{Day: "2026-04-06", USD: 16},
 		},
 	}
-	out := viewMinimal(totals, "")
+	out := viewMinimal(totals, "", agg.GroupModel)
 	if !strings.Contains(out, "last 30 days") {
 		t.Errorf("expected sparkline header in output:\n%s", out)
 	}

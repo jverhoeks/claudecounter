@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jverhoeks/claudecounter/tui/internal/sources"
 )
 
 func TestParseLine_Assistant(t *testing.T) {
@@ -204,5 +206,66 @@ func TestInitialScan_SkipsFilesOlderThanNotBefore(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("want 1 event (from projB), got %d", len(events))
+	}
+}
+
+func TestInitialScanSourceTagsEvents(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj-a")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join("testdata", "session_normal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan Event, 256)
+	r := New(ch)
+	src := sources.Source{Vendor: "claude", Label: "work", Root: root}
+	if err := r.InitialScanSource(src, time.Time{}); err != nil {
+		t.Fatalf("InitialScanSource: %v", err)
+	}
+	close(ch)
+
+	n := 0
+	for e := range ch {
+		n++
+		if e.Vendor != "claude" {
+			t.Fatalf("Vendor = %q, want claude", e.Vendor)
+		}
+		if e.Source != "claude/work" {
+			t.Fatalf("Source = %q, want claude/work", e.Source)
+		}
+	}
+	if n == 0 {
+		t.Fatal("expected at least one event from the fixture")
+	}
+}
+
+// The old single-root entry point must keep working unchanged, tagged
+// with the default source, so existing callers see no behaviour change.
+func TestInitialScanDefaultsToClaudeSource(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj-a")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(filepath.Join("testdata", "session_normal.jsonl"))
+	_ = os.WriteFile(filepath.Join(dir, "s.jsonl"), body, 0o644)
+
+	ch := make(chan Event, 256)
+	r := New(ch)
+	if err := r.InitialScan(root, time.Time{}); err != nil {
+		t.Fatalf("InitialScan: %v", err)
+	}
+	close(ch)
+	for e := range ch {
+		if e.Vendor != "claude" || e.Source != "claude/claude" {
+			t.Fatalf("default tagging wrong: vendor=%q source=%q", e.Vendor, e.Source)
+		}
 	}
 }

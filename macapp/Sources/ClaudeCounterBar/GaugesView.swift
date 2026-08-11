@@ -42,21 +42,15 @@ private struct GaugeRowView: View {
             Text(row.windowLabel).font(.system(size: 10)).foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .leading)
 
-            if let reason = row.notApplicable {
-                Text("n/a (\(reason))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            } else {
-                ProgressView(value: min(row.pct, 100), total: 100)
-                    .progressViewStyle(.linear)
-                    .tint(tint)
-                    .frame(width: 90)
-                Text(String(format: "%.0f%%", row.pct))
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
+            ProgressView(value: min(row.pct, 100), total: 100)
+                .progressViewStyle(.linear)
+                .tint(tint)
+                .frame(width: 90)
+            Text(String(format: "%.0f%%", row.pct))
+                .font(.system(size: 10, weight: .medium).monospacedDigit())
+            Text(detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
         }
         .opacity(row.isStale ? 0.45 : 1)
     }
