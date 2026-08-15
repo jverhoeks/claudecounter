@@ -1,6 +1,7 @@
 package agg
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -365,5 +366,87 @@ func TestProjectDaily_FirstSeenCwdWins(t *testing.T) {
 	}
 	if cwd != "/Users/me/alpha" {
 		t.Errorf("cwd = %q, want first-seen /Users/me/alpha", cwd)
+	}
+}
+
+// A costed event's dollars are used as given and never touched by the
+// pricing table — a Grok model has no LiteLLM entry, so a pricing path
+// would silently zero it.
+func TestApply_CostedEventIgnoresPricingTable(t *testing.T) {
+	table := pricing.Table{Models: map[string]pricing.ModelPrice{
+		// Deliberately price the same model name absurdly: if Snapshot
+		// ever consults the table for a costed cell, the assertion below
+		// fails loudly instead of drifting by cents.
+		"grok-4.6-build": {InputPerMTok: 1000, OutputPerMTok: 1000},
+	}}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(table, func() time.Time { return now })
+
+	a.Apply(reader.Event{
+		Timestamp: now,
+		Project:   "-Users-me-proj",
+		Vendor:    "grok",
+		Source:    "grok/grok",
+		Model:     "grok-4.6-build",
+		MessageID: "prompt-1",
+		RequestID: "grok-4.6-build",
+		Usage:     pricing.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+		CostUSD:   0.37,
+		Costed:    true,
+	})
+
+	got := a.Snapshot()
+	key := SeriesKey{Source: "grok/grok", Vendor: "grok", Model: "grok-4.6-build"}
+	if math.Abs(got.Month[key].USD-0.37) > 1e-9 {
+		t.Fatalf("month USD = %v, want 0.37 (vendor-reported, not priced)", got.Month[key].USD)
+	}
+	if math.Abs(got.Day[key].USD-0.37) > 1e-9 {
+		t.Fatalf("day USD = %v, want 0.37", got.Day[key].USD)
+	}
+	if math.Abs(got.Daily[len(got.Daily)-1].USD-0.37) > 1e-9 {
+		t.Fatalf("today's daily USD = %v, want 0.37", got.Daily[len(got.Daily)-1].USD)
+	}
+	if got.MonthProj["-Users-me-proj"].USD() != 0.37 {
+		t.Fatalf("project USD = %v, want 0.37", got.MonthProj["-Users-me-proj"].USD())
+	}
+	// A costed model is never "unknown" — there is nothing to look up.
+	if got.Unknown != 0 {
+		t.Fatalf("Unknown = %d, want 0 for a costed cell", got.Unknown)
+	}
+}
+
+// Priced and costed cells sum together in one snapshot without either
+// path swallowing the other.
+func TestSnapshot_PricedAndCostedCellsSum(t *testing.T) {
+	table := pricing.Table{Models: map[string]pricing.ModelPrice{
+		"claude-opus-4-7": {InputPerMTok: 15, OutputPerMTok: 75},
+	}}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(table, func() time.Time { return now })
+
+	a.Apply(reader.Event{
+		Timestamp: now, Project: "p", Vendor: "claude", Source: "claude/claude",
+		Model: "claude-opus-4-7", MessageID: "m1", RequestID: "r1",
+		Usage: pricing.Usage{InputTokens: 1_000_000}, // $15.00
+	})
+	a.Apply(reader.Event{
+		Timestamp: now, Project: "p", Vendor: "grok", Source: "grok/grok",
+		Model: "grok-4.6-build", MessageID: "prompt-1", RequestID: "grok-4.6-build",
+		Usage: pricing.Usage{InputTokens: 500}, CostUSD: 2.5, Costed: true,
+	})
+
+	got := a.Snapshot()
+	total := 0.0
+	for _, md := range got.Month {
+		total += md.USD
+	}
+	if math.Abs(total-17.5) > 1e-9 {
+		t.Fatalf("month total = %v, want 17.5 (15.00 priced + 2.50 costed)", total)
+	}
+	if math.Abs(got.MonthProj["p"].USD()-17.5) > 1e-9 {
+		t.Fatalf("project total = %v, want 17.5", got.MonthProj["p"].USD())
+	}
+	if math.Abs(got.Daily[len(got.Daily)-1].USD-17.5) > 1e-9 {
+		t.Fatalf("daily total = %v, want 17.5", got.Daily[len(got.Daily)-1].USD)
 	}
 }

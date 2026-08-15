@@ -32,6 +32,16 @@ type Event struct {
 	// Source is the series identity "vendor/label", identifying which
 	// subscription or install produced the event.
 	Source string
+	// CostUSD is a dollar figure the vendor reported for this event.
+	// Grok emits costUsdTicks (nano-dollars) per turn and per model; that
+	// is authoritative in a way our pricing table can never be, so it is
+	// used as given rather than re-derived from Usage.
+	CostUSD float64
+	// Costed marks CostUSD as authoritative. A costed event's tokens are
+	// still recorded (the token charts want them) but never priced, and
+	// its model never counts toward the Unknown tally — there is no
+	// pricing entry to be missing.
+	Costed bool
 }
 
 // rawLine mirrors only the fields we read from a JSONL event.

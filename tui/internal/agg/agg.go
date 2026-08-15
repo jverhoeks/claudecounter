@@ -107,10 +107,35 @@ type cellKey struct {
 	IsSub   bool
 }
 
+// cellVal is one cell's accumulated contribution. Tokens is everything
+// the cell saw and drives the token charts. The dollar side is split in
+// two because a cell may hold both kinds of contribution: CostedUSD is
+// summed as-is from vendor-reported figures, PricedTokens is the subset
+// that must go through the pricing table at snapshot time.
+//
+// Keeping them separate rather than branching on "is this series costed"
+// matters for the per-project and per-day aggregations, which key on
+// Model alone — there, a costed and a priced contribution can land in
+// one bucket, and summing both sides is correct without assuming they
+// never mix.
+type cellVal struct {
+	Tokens       TokenCounts
+	CostedUSD    float64
+	PricedTokens TokenCounts
+}
+
+func (a cellVal) Add(b cellVal) cellVal {
+	return cellVal{
+		Tokens:       a.Tokens.Add(b.Tokens),
+		CostedUSD:    a.CostedUSD + b.CostedUSD,
+		PricedTokens: a.PricedTokens.Add(b.PricedTokens),
+	}
+}
+
 type Aggregator struct {
 	mu          sync.Mutex
 	pricing     pricing.Table
-	cells       map[cellKey]TokenCounts
+	cells       map[cellKey]cellVal
 	perMsg      map[string]struct{} // msgid:reqid seen-set for dedupe
 	unknownMsgs map[string]struct{}
 	dupes       int
@@ -125,7 +150,7 @@ func New(p pricing.Table) *Aggregator {
 func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 	return &Aggregator{
 		pricing:     p,
-		cells:       map[cellKey]TokenCounts{},
+		cells:       map[cellKey]cellVal{},
 		perMsg:      map[string]struct{}{},
 		unknownMsgs: map[string]struct{}{},
 		now:         now,
@@ -149,7 +174,9 @@ func (a *Aggregator) Apply(e reader.Event) {
 		a.perMsg[key] = struct{}{}
 	}
 
-	if !a.pricing.Has(e.Model) {
+	// A costed event has no pricing lookup to miss, so it can never be
+	// "unknown". Only priced events feed the diagnostic.
+	if !e.Costed && !a.pricing.Has(e.Model) {
 		uid := e.MessageID
 		if uid == "" {
 			uid = e.Model + ":" + e.Timestamp.String()
@@ -170,13 +197,19 @@ func (a *Aggregator) Apply(e reader.Event) {
 			a.projectCwd[e.Project] = e.Cwd
 		}
 	}
-	cur := a.cells[k]
-	a.cells[k] = cur.Add(TokenCounts{
+	tok := TokenCounts{
 		In:          e.Usage.InputTokens,
 		Out:         e.Usage.OutputTokens,
 		CacheCreate: e.Usage.CacheCreationInputTokens,
 		CacheRead:   e.Usage.CacheReadInputTokens,
-	})
+	}
+	contrib := cellVal{Tokens: tok}
+	if e.Costed {
+		contrib.CostedUSD = e.CostUSD
+	} else {
+		contrib.PricedTokens = tok
+	}
+	a.cells[k] = a.cells[k].Add(contrib)
 }
 
 // Dupes returns the number of msgid:reqid duplicates skipped.
@@ -213,8 +246,8 @@ func (a *Aggregator) Snapshot() Totals {
 		Scope, Project string
 		IsSub          bool
 	}
-	modelTok := map[modelKey]TokenCounts{}
-	projTok := map[projKey]TokenCounts{}
+	modelTok := map[modelKey]cellVal{}
+	projTok := map[projKey]cellVal{}
 
 	inMonth := func(d civilDay) bool { return d.Y == now.Year() && d.M == now.Month() }
 
@@ -245,12 +278,12 @@ func (a *Aggregator) Snapshot() Totals {
 		AsOf:      now,
 	}
 
-	for mk, tok := range modelTok {
-		usd := 0.0
+	for mk, v := range modelTok {
+		usd := v.CostedUSD
 		if a.pricing.Has(mk.Key.Model) {
-			usd = a.pricing.Cost(mk.Key.Model, tok.ToUsage())
+			usd += a.pricing.Cost(mk.Key.Model, v.PricedTokens.ToUsage())
 		}
-		md := ModelDay{USD: usd, Tokens: tok}
+		md := ModelDay{USD: usd, Tokens: v.Tokens}
 		switch mk.Scope {
 		case "day":
 			out.Day[mk.Key] = md
@@ -268,7 +301,7 @@ func (a *Aggregator) Snapshot() Totals {
 		IsSub          bool
 		Model          string
 	}
-	pmTok := map[pmk]TokenCounts{}
+	pmTok := map[pmk]cellVal{}
 	for k, t := range a.cells {
 		if k.Day == today {
 			pmTok[pmk{"day", k.Project, k.IsSub, k.Model}] =
@@ -280,10 +313,10 @@ func (a *Aggregator) Snapshot() Totals {
 		}
 	}
 
-	for k, tok := range pmTok {
-		var usd float64
+	for k, v := range pmTok {
+		usd := v.CostedUSD
 		if a.pricing.Has(k.Model) {
-			usd = a.pricing.Cost(k.Model, tok.ToUsage())
+			usd += a.pricing.Cost(k.Model, v.PricedTokens.ToUsage())
 		}
 		var bucket map[string]ProjectDay
 		switch k.Scope {
@@ -294,10 +327,10 @@ func (a *Aggregator) Snapshot() Totals {
 		}
 		pd := bucket[k.Project]
 		if k.IsSub {
-			pd.Sub = pd.Sub.Add(tok)
+			pd.Sub = pd.Sub.Add(v.Tokens)
 			pd.SubUSD += usd
 		} else {
-			pd.Main = pd.Main.Add(tok)
+			pd.Main = pd.Main.Add(v.Tokens)
 			pd.MainUSD += usd
 		}
 		bucket[k.Project] = pd
@@ -310,20 +343,23 @@ func (a *Aggregator) Snapshot() Totals {
 		Day   civilDay
 		Model string
 	}
-	byDM := map[dmKey]TokenCounts{}
+	byDM := map[dmKey]cellVal{}
 	for k, t := range a.cells {
 		byDM[dmKey{k.Day, k.Model}] = byDM[dmKey{k.Day, k.Model}].Add(t)
 	}
-	// Cost only counts priced models so the dollar sparkline matches
-	// the rest of the UI; tokens count ALL models so the token chart
-	// reflects raw activity even when an unpriced model is in use.
+	// Cost counts vendor-reported dollars plus priced models, so the
+	// dollar sparkline matches the rest of the UI; tokens count ALL
+	// models so the token chart reflects raw activity even when an
+	// unpriced model is in use.
 	dayCost := map[civilDay]float64{}
 	dayTokens := map[civilDay]uint64{}
-	for k, tok := range byDM {
+	for k, v := range byDM {
+		dayCost[k.Day] += v.CostedUSD
 		if a.pricing.Has(k.Model) {
-			dayCost[k.Day] += a.pricing.Cost(k.Model, tok.ToUsage())
+			dayCost[k.Day] += a.pricing.Cost(k.Model, v.PricedTokens.ToUsage())
 		}
-		dayTokens[k.Day] += tok.In + tok.Out + tok.CacheCreate + tok.CacheRead
+		t := v.Tokens
+		dayTokens[k.Day] += t.In + t.Out + t.CacheCreate + t.CacheRead
 	}
 	out.Daily = make([]DailyTotal, 0, DailyWindow)
 	for i := DailyWindow - 1; i >= 0; i-- {
@@ -378,24 +414,25 @@ func (a *Aggregator) ProjectDaily() []ProjDayCost {
 		day   civilDay
 		model string
 	}
-	byPDM := map[pdmKey]TokenCounts{}
+	byPDM := map[pdmKey]cellVal{}
 	for ck, t := range a.cells {
 		pk := pdmKey{ck.Project, ck.Day, ck.Model}
 		byPDM[pk] = byPDM[pk].Add(t)
 	}
 
 	m := map[key]*acc{}
-	for pk, tok := range byPDM {
+	for pk, v := range byPDM {
 		kk := key{pk.proj, pk.day}
 		e := m[kk]
 		if e == nil {
 			e = &acc{}
 			m[kk] = e
 		}
+		e.usd += v.CostedUSD
 		if a.pricing.Has(pk.model) {
-			e.usd += a.pricing.Cost(pk.model, tok.ToUsage())
+			e.usd += a.pricing.Cost(pk.model, v.PricedTokens.ToUsage())
 		}
-		e.tok = e.tok.Add(tok)
+		e.tok = e.tok.Add(v.Tokens)
 	}
 
 	out := make([]ProjDayCost, 0, len(m))
