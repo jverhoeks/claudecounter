@@ -72,20 +72,19 @@ func projectUnderRoot(root: String, slashPath: String) -> (segment: String, ok: 
 
 // MARK: - ClaudeParser (today's behaviour, extracted unchanged)
 
-/// `ClaudeParser` is today's behaviour, extracted unchanged — a faithful
-/// wrapper over the existing `parseLine`/`projectFromPath`/`isSubagentPath`,
-/// not a rewrite. Mirrors Go's `claudeParser`.
+/// `ClaudeParser` is today's behaviour, extracted mostly unchanged — a
+/// faithful wrapper over the existing `parseLine`/`isSubagentPath`, not a
+/// rewrite. Mirrors Go's `claudeParser`.
 ///
-/// Deliberate divergence from Go: Go's `claudeParser.Project` was moved
-/// onto `projectUnderRoot` (root-relative) in the same follow-up that
-/// fixed `grokParser` (commit `eb0c323`). This type ignores `root` and
-/// keeps the marker-based `projectFromPath`, because `ReaderTests`'
-/// existing `test_onChange_attributesProjectAndSubagent` builds its path
-/// under `NSTemporaryDirectory()` with an unrelated `SourceEntry(root:
-/// "/tmp")` — a root-relative switch here would silently return "" and
-/// break that (and any other) pre-existing test relying on the marker.
-/// Porting the Claude side of `eb0c323` is unassigned Swift work, flagged
-/// to the controller rather than done here.
+/// `project` is the one exception: it derives the project key as the
+/// first path segment under the source root (`projectUnderRoot`) rather
+/// than anchoring on a literal `"/projects/"` marker — see
+/// `projectFromPath`, which remains in this file only because
+/// `ReaderTests` exercises it directly. Note this is deliberately not
+/// `projectFromPath`: a custom Claude root has the same mis-attribution
+/// risk `eb0c323` fixed for Grok (a root not literally named "projects"
+/// would otherwise silently return "" for every event). Mirrors Go's
+/// `claudeParser.Project` after that same commit.
 public struct ClaudeParser: VendorParser {
     public init() {}
 
@@ -102,7 +101,8 @@ public struct ClaudeParser: VendorParser {
     }
 
     public func project(_ path: String, root: String) -> String {
-        projectFromPath(path)
+        let (seg, ok) = projectUnderRoot(root: root, slashPath: normalizeSlashes(path))
+        return ok ? seg : ""
     }
 
     /// "/subagents/" is a fixed subdirectory name under any session

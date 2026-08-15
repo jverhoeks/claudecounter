@@ -69,6 +69,19 @@ final class ReaderTests: XCTestCase {
         XCTAssertEqual(projectFromPath("/tmp/random/file.jsonl"), "")
     }
 
+    // MARK: - ClaudeParser.project (root-relative, mirrors Go's eb0c323)
+
+    // A configured Claude root need not be named "projects" — Sources.load
+    // places no such requirement on a custom root. Before this fix, a
+    // marker-anchored parser would silently return "" for every event
+    // under a root missing that literal segment. Mirrors Go's
+    // `TestClaudeParser_Project_RootWithoutProjectsSegment`.
+    func test_claudeParser_project_rootWithoutProjectsSegment() {
+        let root = "/Users/me/my-claude-archive"
+        let path = root + "/-foo-bar/abc.jsonl"
+        XCTAssertEqual(ClaudeParser().project(path, root: root), "-foo-bar")
+    }
+
     // MARK: - isSubagentPath
 
     func test_isSubagentPath_subagentsSegment_isTrue() {
@@ -191,15 +204,23 @@ final class ReaderTests: XCTestCase {
     }
 
     func test_onChange_attributesProjectAndSubagent() async throws {
-        // Construct a path that includes /projects/<encoded>/sess/subagents/agent-1.jsonl
-        let dir = NSTemporaryDirectory() + "rt-attr-\(UUID().uuidString)/projects/encoded-x/sess/subagents"
+        // Construct a path that includes /projects/<encoded>/sess/subagents/agent-1.jsonl,
+        // rooted so the source's configured root actually contains it —
+        // `ClaudeParser.project` is root-relative, so the root must be
+        // coherent with the path for attribution to work at all (a
+        // mismatched root, like the shared `testSource`'s "/tmp", would
+        // silently attribute everything to "").
+        let base = NSTemporaryDirectory() + "rt-attr-\(UUID().uuidString)"
+        let projectsRoot = base + "/projects"
+        let dir = projectsRoot + "/encoded-x/sess/subagents"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = dir + "/agent-1.jsonl"
         let body = sample(model: "claude-opus-4-7", input: 1, msgID: "m1", reqID: "r1") + "\n"
         try body.write(toFile: path, atomically: true, encoding: .utf8)
 
+        let source = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)
         let reader = Reader()
-        let events = try await reader.onChange(path: path, source: testSource)
+        let events = try await reader.onChange(path: path, source: source)
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events[0].project, "encoded-x")
         XCTAssertTrue(events[0].isSubagent)
@@ -210,11 +231,12 @@ final class ReaderTests: XCTestCase {
     func test_conformance_sessionNormal_yieldsTwoUsageEvents() async throws {
         let url = try fixtureURL(named: "session_normal.jsonl")
         // Copy into a known path under .../projects/<x>/sess.jsonl so attribution works.
-        let staged = try stageFixtureUnderProjects(url: url, projectName: "p1", filename: "sess.jsonl")
-        defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+        let (staged, projectsRoot) = try stageFixtureUnderProjects(url: url, projectName: "p1", filename: "sess.jsonl")
+        defer { try? FileManager.default.removeItem(at: projectsRoot.deletingLastPathComponent()) }
 
+        let source = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot.path)
         let reader = Reader()
-        let events = try await reader.onChange(path: staged.path, source: testSource)
+        let events = try await reader.onChange(path: staged.path, source: source)
         // session_normal has 4 lines: permission-mode (skip), user (skip — no usage),
         // assistant opus, assistant sonnet → 2 events.
         XCTAssertEqual(events.count, 2)
@@ -225,11 +247,12 @@ final class ReaderTests: XCTestCase {
 
     func test_conformance_sessionMalformed_yieldsTwoEventsAndOneParseError() async throws {
         let url = try fixtureURL(named: "session_malformed.jsonl")
-        let staged = try stageFixtureUnderProjects(url: url, projectName: "p2", filename: "sess.jsonl")
-        defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+        let (staged, projectsRoot) = try stageFixtureUnderProjects(url: url, projectName: "p2", filename: "sess.jsonl")
+        defer { try? FileManager.default.removeItem(at: projectsRoot.deletingLastPathComponent()) }
 
+        let source = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot.path)
         let reader = Reader()
-        let events = try await reader.onChange(path: staged.path, source: testSource)
+        let events = try await reader.onChange(path: staged.path, source: source)
         XCTAssertEqual(events.count, 2)
         let errs = await reader.parseErrors
         XCTAssertEqual(errs, 1)
@@ -263,15 +286,23 @@ final class ReaderTests: XCTestCase {
         return url
     }
 
-    private func stageFixtureUnderProjects(url: URL, projectName: String, filename: String) throws -> URL {
+    /// Returns the staged file and the `projects/` directory it sits
+    /// under — the latter is the coherent source root for this fixture
+    /// (mirrors Go's golden fixtures, which root at `<tmpdir>/projects`):
+    /// `ClaudeParser.project` is root-relative, so a caller must pass a
+    /// root that actually contains the path it's deriving a project key
+    /// from, or the two won't agree on anything real production would
+    /// produce.
+    private func stageFixtureUnderProjects(url: URL, projectName: String,
+                                            filename: String) throws -> (file: URL, projectsRoot: URL) {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("rt-stage-\(UUID().uuidString)", isDirectory: true)
-        let projectsDir = root.appendingPathComponent("projects", isDirectory: true)
-            .appendingPathComponent(projectName, isDirectory: true)
+        let projectsRoot = root.appendingPathComponent("projects", isDirectory: true)
+        let projectsDir = projectsRoot.appendingPathComponent(projectName, isDirectory: true)
         try FileManager.default.createDirectory(at: projectsDir, withIntermediateDirectories: true)
         let dest = projectsDir.appendingPathComponent(filename)
         try FileManager.default.copyItem(at: url, to: dest)
-        return dest
+        return (dest, projectsRoot)
     }
 }
 
