@@ -42,6 +42,16 @@ type Event struct {
 	// its model never counts toward the Unknown tally — there is no
 	// pricing entry to be missing.
 	Costed bool
+	// CoverageOnly marks a bookkeeping event that carries no usage and
+	// must not be counted as spend. Grok's `usage` object is present on
+	// only a fraction of historical turns, so a Grok total over an old
+	// month is a floor rather than a total. One coverage event per
+	// turn_completed lets the aggregator report that fraction instead of
+	// presenting an undercount as authoritative.
+	CoverageOnly bool
+	// HasUsage is meaningful only on a CoverageOnly event: it is the
+	// numerator of that fraction.
+	HasUsage bool
 }
 
 // rawLine mirrors only the fields we read from a JSONL event.
