@@ -302,6 +302,48 @@ final class CacheTests: XCTestCase {
                        0.37, accuracy: 1e-9)
     }
 
+    /// Regression for the reason `HourBucketKey`/`HourEntry` gained
+    /// `vendor`: two vendors sharing a model name, in the same hour, one
+    /// costed and one priced. Without vendor in the key they collapse into
+    /// one `HourEntry` whose single `costed` Bool can only describe one
+    /// side — reconstruction then re-prices the costed side's leftover
+    /// tokens on top of its already-counted dollar figure, inflating the
+    /// hour. This test only fails if that key collapses; it passes
+    /// trivially (even with `vendor` missing) if the two vendors don't
+    /// share a model name, which is why the model name here is deliberate.
+    func test_cache_hourlyVendorKey_preventsSharedModelNameMixing() async throws {
+        let table = PricingTable(models: ["shared-model":
+            ModelPrice(inputPerMTok: 10, outputPerMTok: 10,
+                       cacheCreationPerMTok: 0, cacheReadPerMTok: 0)])
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let source = Aggregator(pricing: table, now: { now })
+
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "shared-model", messageID: "grok-1", requestID: "grok-1",
+            isSubagent: false,
+            usage: Usage(input: 100, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "grok/grok", vendor: "grok", costUSD: 5.0, costed: true))
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "shared-model", messageID: "claude-1", requestID: "claude-1",
+            isSubagent: false,
+            usage: Usage(input: 1_000_000, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "claude/claude", vendor: "claude"))
+
+        let hour = Calendar.current.component(.hour, from: now)
+        let expected = 5.0 + 10.0 // $5 costed + 1M input @ $10/Mtok priced.
+        let before = await source.snapshot()
+        XCTAssertEqual(before.todayHourlyUSD[hour], expected, accuracy: 1e-9)
+
+        let file = await CacheFile.snapshot(aggregator: source, offsets: [:], parseErrors: 0)
+        let restored = Aggregator(pricing: table, now: { now })
+        _ = await file.restore(into: restored)
+        let after = await restored.snapshot()
+        XCTAssertEqual(after.todayHourlyUSD[hour], expected, accuracy: 1e-9,
+                       "vendor must keep the costed and priced sides from merging into one hour bucket")
+    }
+
     // MARK: - helpers
 
     private func tempURL() -> URL {
