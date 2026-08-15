@@ -115,6 +115,20 @@ func TestTUISourcesNoOverrideNoConfigMissingDefaultRootIsFatal(t *testing.T) {
 	}
 }
 
+// requireDefaultRoots guards the Claude default only. An auto-discovered
+// vendor root is added by Defaults only when it exists, so treating its
+// disappearance as fatal would kill the process over a directory the
+// user never configured.
+func TestRequireDefaultRoots_OnlyClaudeIsFatal(t *testing.T) {
+	srcs := []sources.Source{
+		{Vendor: "claude", Label: "claude", Root: t.TempDir()},
+		{Vendor: "grok", Label: "grok", Root: filepath.Join(t.TempDir(), "gone")},
+	}
+	// Must not call log.Fatalf. If it does, the test binary exits and
+	// this line is never reached.
+	requireDefaultRoots(srcs)
+}
+
 // Contrast case: a root named IN sources.toml (never typed by the
 // user) that doesn't exist is silently skipped, not fatal — this is
 // TestScanSnapshotSkipsMissingRoot in sources_cli_test.go, exercised

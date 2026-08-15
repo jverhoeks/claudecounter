@@ -178,9 +178,20 @@ func loadSourcesOrExit(cfgPath, home string) []sources.Source {
 // this machine" — not for the fallback nobody configured. Without this,
 // a first-run user (or a cron/CI wrapper with a wrong $HOME) gets a
 // confident, silent $0.00 with nothing distinguishing "you spent
-// nothing" from "I couldn't find your transcripts".
+// nothing" from "I couldn't find your transcripts". This applies to the
+// Claude default only: every other entry in the implicit list is
+// auto-discovered by Defaults, which adds one only when its root
+// already exists on this machine, so it is never subject to this rule.
 func requireDefaultRoots(srcs []sources.Source) {
 	for _, s := range srcs {
+		// Only the Claude default is unconditional. Every other entry in
+		// the implicit list was auto-discovered — Defaults added it only
+		// because its directory existed — so a stat failure here means a
+		// race or an unmount, not a misconfiguration, and must not take
+		// the process down.
+		if s.Vendor != "claude" {
+			continue
+		}
 		requireRoot(s.Root)
 	}
 }

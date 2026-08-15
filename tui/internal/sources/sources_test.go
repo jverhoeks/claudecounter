@@ -45,6 +45,80 @@ func TestDefaultsAreClaudeProjectsUnderHome(t *testing.T) {
 	}
 }
 
+// A Grok install is picked up without any configuration, matching how
+// planlimits already discovers ~/.grok with zero config. The Claude
+// entry stays first so callers can rely on the ordering.
+func TestDefaults_DiscoversGrokWhenPresent(t *testing.T) {
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".claude", "projects"))
+	mustMkdirAll(t, filepath.Join(home, ".grok", "sessions"))
+
+	got := Defaults(home)
+	if len(got) != 2 {
+		t.Fatalf("got %d sources, want 2: %+v", len(got), got)
+	}
+	if got[0].Vendor != "claude" {
+		t.Fatalf("got[0].Vendor = %q, want claude first", got[0].Vendor)
+	}
+	want := Source{
+		Vendor: "grok", Label: "grok",
+		Root: filepath.Join(home, ".grok", "sessions"),
+	}
+	if got[1] != want {
+		t.Fatalf("got[1] = %+v, want %+v", got[1], want)
+	}
+}
+
+// No ~/.grok means no Grok source and, critically, no change whatsoever
+// for the existing Claude-only user.
+func TestDefaults_OmitsGrokWhenAbsent(t *testing.T) {
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".claude", "projects"))
+
+	got := Defaults(home)
+	if len(got) != 1 || got[0].Vendor != "claude" {
+		t.Fatalf("got %+v, want exactly the Claude default", got)
+	}
+}
+
+// The Claude default root is still required to exist — that contract
+// predates sources.toml and guards against a confident silent $0.00.
+// An auto-discovered vendor is not: it is only ever added when its
+// directory exists, and a race that removes it must not kill the process.
+func TestDefaults_ClaudeRootStillRequiredButGrokIsNot(t *testing.T) {
+	home := t.TempDir()
+	// No .claude at all.
+	mustMkdirAll(t, filepath.Join(home, ".grok", "sessions"))
+	got := Defaults(home)
+	if len(got) != 2 || got[0].Vendor != "claude" {
+		t.Fatalf("got %+v, want the Claude default present even when absent on disk", got)
+	}
+}
+
+// A discovered root nested inside the Claude root is dropped. Load()
+// rejects that arrangement outright; a list we assemble ourselves must
+// not be able to produce it, or every event in the overlap counts twice.
+// Reachable via a CLAUDE_CONFIG_DIR pointing under ~/.grok.
+func TestDefaults_DropsAnOverlappingDiscoveredRoot(t *testing.T) {
+	home := t.TempDir()
+	// Make the Claude root an ancestor of where Grok would be found.
+	claudeRoot := filepath.Join(home, ".claude", "projects")
+	mustMkdirAll(t, claudeRoot)
+	mustMkdirAll(t, filepath.Join(home, ".grok", "sessions"))
+
+	got := DefaultsWithClaudeRoot(home, home)
+	if len(got) != 1 || got[0].Vendor != "claude" {
+		t.Fatalf("got %+v, want only the Claude entry when the discovered root nests inside it", got)
+	}
+}
+
+func mustMkdirAll(t *testing.T, p string) {
+	t.Helper()
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIDIsVendorSlashLabel(t *testing.T) {
 	s := Source{Vendor: "claude", Label: "work"}
 	if s.ID() != "claude/work" {
