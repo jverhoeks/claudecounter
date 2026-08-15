@@ -144,10 +144,16 @@ func (p grokParser) Parse(line []byte, slashPath string) ([]Event, error) {
 // spend.
 func (grokParser) Project(slashPath string) string { return grokProjectKey(slashPath) }
 
-func grokProjectKey(slashPath string) string {
+// grokSessionDir extracts the session-directory segment (the percent-
+// encoded working directory that sits immediately under sessions/) from
+// a Grok transcript path. ok is false when slashPath has no /sessions/
+// segment at all. Both grokProjectKey and IsSubagent need this same
+// segment — project attribution and subagent detection must never drift
+// apart on where that boundary is.
+func grokSessionDir(slashPath string) (decoded string, ok bool) {
 	idx := strings.Index(slashPath, "/sessions/")
 	if idx < 0 {
-		return ""
+		return "", false
 	}
 	rest := slashPath[idx+len("/sessions/"):]
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
@@ -158,6 +164,14 @@ func grokProjectKey(slashPath string) string {
 		// Undecodable is still a stable key; better a slightly ugly row
 		// than a project's spend vanishing into the empty-key bucket.
 		decoded = rest
+	}
+	return decoded, true
+}
+
+func grokProjectKey(slashPath string) string {
+	decoded, ok := grokSessionDir(slashPath)
+	if !ok {
+		return ""
 	}
 	return strings.NewReplacer("/", "-", ".", "-").Replace(decoded)
 }
@@ -178,17 +192,9 @@ func grokProjectKey(slashPath string) string {
 // path, so a user whose own worktree happens to be named "subagent-foo"
 // does not get their main-session spend filed under the subagent column.
 func (grokParser) IsSubagent(slashPath string) bool {
-	idx := strings.Index(slashPath, "/sessions/")
-	if idx < 0 {
+	decoded, ok := grokSessionDir(slashPath)
+	if !ok {
 		return false
-	}
-	rest := slashPath[idx+len("/sessions/"):]
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		rest = rest[:i]
-	}
-	decoded, err := url.PathUnescape(rest)
-	if err != nil {
-		decoded = rest
 	}
 	last := decoded
 	if i := strings.LastIndexByte(decoded, '/'); i >= 0 {
