@@ -60,3 +60,24 @@ func Group(in map[SeriesKey]ModelDay, m Mode) map[string]ModelDay {
 	}
 	return out
 }
+
+// GroupCoverage collapses per-vendor coverage onto the same display rows
+// Group produces, so the two maps always share a key set — a row without
+// an entry would silently render unmarked.
+//
+// A row spanning several vendors takes the worst of them. Averaging, or
+// weighting by spend, would let a large complete Claude figure hide a
+// small partial Grok one inside the same row, which is exactly the
+// failure this marker exists to prevent.
+func GroupCoverage(in map[SeriesKey]ModelDay, cov map[string]Coverage, m Mode) map[string]Coverage {
+	out := make(map[string]Coverage, len(in))
+	for k := range in {
+		name := m.label(k)
+		c := cov[k.Vendor]
+		if cur, ok := out[name]; ok && cur.Fraction() <= c.Fraction() {
+			continue
+		}
+		out[name] = c
+	}
+	return out
+}

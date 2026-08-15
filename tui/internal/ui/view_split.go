@@ -78,7 +78,7 @@ func viewSplit(t agg.Totals, gauges string, mode agg.Mode) string {
 	}
 
 	b.WriteString(renderModeBar(mode))
-	b.WriteString(renderSeries(agg.Group(t.Day, mode), mode, splitBarWidth))
+	b.WriteString(renderSeries(agg.Group(t.Day, mode), agg.GroupCoverage(t.Day, t.Coverage, mode), mode, splitBarWidth))
 
 	// 30-day spend trend, then the parallel 30-day token-volume trend.
 	// Same renderers as the minimal view so the charts are visually

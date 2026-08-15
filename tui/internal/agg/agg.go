@@ -73,6 +73,31 @@ type SeriesKey struct {
 	Model  string
 }
 
+// PartialCoverageThreshold is the usage-bearing fraction below which a
+// vendor's figures are presented as a floor rather than a total.
+const PartialCoverageThreshold = 0.95
+
+// Coverage is how much of a vendor's activity carried usable usage data.
+// Grok added its usage object to turn_completed only recently, so an old
+// month's total is a fraction of the truth while looking exactly as
+// authoritative as a correct one. This is what lets the UI say so.
+type Coverage struct {
+	Turns     int // turns seen
+	WithUsage int // turns that carried usage
+}
+
+// Fraction returns the usage-bearing share. A vendor that reported no
+// turns at all is complete by definition, not 0% — Claude emits no
+// coverage events and must never render as a partial figure.
+func (c Coverage) Fraction() float64 {
+	if c.Turns == 0 {
+		return 1
+	}
+	return float64(c.WithUsage) / float64(c.Turns)
+}
+
+func (c Coverage) Partial() bool { return c.Fraction() < PartialCoverageThreshold }
+
 type Totals struct {
 	Day       map[SeriesKey]ModelDay // series (source, vendor, model) -> totals for today
 	Month     map[SeriesKey]ModelDay // series (source, vendor, model) -> totals for this month
@@ -81,7 +106,10 @@ type Totals struct {
 	Daily     []DailyTotal           // last N days (ascending), N set by Snapshot caller via DailyWindow
 	Unknown   int                    // distinct unpriced message ids
 	Dupes     int                    // events skipped as msgid:reqid duplicates
-	AsOf      time.Time
+	// Coverage is keyed by vendor and scoped to the current month, the
+	// same scope as Month.
+	Coverage map[string]Coverage
+	AsOf     time.Time
 }
 
 type civilDay struct {
@@ -105,6 +133,13 @@ type cellKey struct {
 	Vendor  string
 	Model   string
 	IsSub   bool
+}
+
+// covKey scopes a coverage tally to a (day, vendor) so Snapshot can
+// restrict it to the displayed month rather than the whole scan range.
+type covKey struct {
+	Day    civilDay
+	Vendor string
 }
 
 // cellVal is one cell's accumulated contribution. Tokens is everything
@@ -136,6 +171,7 @@ type Aggregator struct {
 	mu          sync.Mutex
 	pricing     pricing.Table
 	cells       map[cellKey]cellVal
+	coverage    map[covKey]Coverage
 	perMsg      map[string]struct{} // msgid:reqid seen-set for dedupe
 	unknownMsgs map[string]struct{}
 	dupes       int
@@ -151,6 +187,7 @@ func NewWithClock(p pricing.Table, now func() time.Time) *Aggregator {
 	return &Aggregator{
 		pricing:     p,
 		cells:       map[cellKey]cellVal{},
+		coverage:    map[covKey]Coverage{},
 		perMsg:      map[string]struct{}{},
 		unknownMsgs: map[string]struct{}{},
 		now:         now,
@@ -172,6 +209,22 @@ func (a *Aggregator) Apply(e reader.Event) {
 			return
 		}
 		a.perMsg[key] = struct{}{}
+	}
+
+	if e.CoverageOnly {
+		// Bookkeeping only: a coverage event records that a turn
+		// happened and whether it carried usable cost. It must never
+		// reach the cell write — the fields it shares with a real event
+		// (Usage, CostUSD) are not spend. It has already been through
+		// dedupe above, which is what keeps a re-scan from inflating it.
+		k := covKey{Day: dayOf(e.Timestamp), Vendor: e.Vendor}
+		c := a.coverage[k]
+		c.Turns++
+		if e.HasUsage {
+			c.WithUsage++
+		}
+		a.coverage[k] = c
+		return
 	}
 
 	// A costed event has no pricing lookup to miss, so it can never be
@@ -275,6 +328,7 @@ func (a *Aggregator) Snapshot() Totals {
 		MonthProj: map[string]ProjectDay{},
 		Unknown:   len(a.unknownMsgs),
 		Dupes:     a.dupes,
+		Coverage:  map[string]Coverage{},
 		AsOf:      now,
 	}
 
@@ -370,6 +424,17 @@ func (a *Aggregator) Snapshot() Totals {
 			USD:    dayCost[cd],
 			Tokens: dayTokens[cd],
 		})
+	}
+
+	// Coverage is scoped to the displayed month, matching out.Month.
+	for k, c := range a.coverage {
+		if !inMonth(k.Day) {
+			continue
+		}
+		cur := out.Coverage[k.Vendor]
+		cur.Turns += c.Turns
+		cur.WithUsage += c.WithUsage
+		out.Coverage[k.Vendor] = cur
 	}
 
 	return out

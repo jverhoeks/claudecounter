@@ -62,4 +62,7 @@ func TestScan_DuplicateTurnAcrossSessionDirsIsCountedOnce(t *testing.T) {
 	if math.Abs(total-1.656) > 1e-9 {
 		t.Fatalf("month total = %v, want 1.656 — the turn appears in two session dirs and must be counted once", total)
 	}
+	if got.Coverage["grok"].Turns != 1 {
+		t.Fatalf("Coverage[grok].Turns = %d, want 1 — the coverage event is deduped the same way", got.Coverage["grok"].Turns)
+	}
 }

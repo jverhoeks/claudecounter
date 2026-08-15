@@ -16,7 +16,11 @@ import (
 // bar (reusing view_split.go's inlineBar/modelBarStyle): 0 renders a
 // plain table (viewMinimal), any positive width renders a bar of that
 // width (viewSplit/viewFull, which pass splitBarWidth).
-func renderSeries(series map[string]agg.ModelDay, mode agg.Mode, barWidth int) string {
+//
+// rowCoverage carries each row's usage-bearing coverage (from
+// agg.GroupCoverage, keyed the same way as series) so a row computed
+// from partial data can be marked as a floor rather than a total.
+func renderSeries(series map[string]agg.ModelDay, rowCoverage map[string]agg.Coverage, mode agg.Mode, barWidth int) string {
 	if len(series) == 0 {
 		return ""
 	}
@@ -45,10 +49,21 @@ func renderSeries(series map[string]agg.ModelDay, mode agg.Mode, barWidth int) s
 		}
 		// The name is not shortened: a source label like "claude/work"
 		// loses its meaning if truncated to its vendor.
-		b.WriteString(fmt.Sprintf("  %-22s %s%10s  %3.0f%%\n",
-			n, bar, FormatUSD(series[n].USD), frac*100))
+		b.WriteString(fmt.Sprintf("  %-22s %s%10s  %3.0f%%%s\n",
+			n, bar, FormatUSD(series[n].USD), frac*100, coverageSuffix(rowCoverage[n])))
 	}
 	return b.String()
+}
+
+// coverageSuffix marks a figure computed from partial data. Rendered
+// inline rather than as a footnote: a user scanning the table for a
+// dollar amount must see the caveat attached to that amount, not at the
+// bottom of the pane.
+func coverageSuffix(c agg.Coverage) string {
+	if !c.Partial() {
+		return ""
+	}
+	return styleDim.Render(fmt.Sprintf(" ~%.0f%%", c.Fraction()*100))
 }
 
 // renderModeBar shows the four modes with the active one bracketed, so

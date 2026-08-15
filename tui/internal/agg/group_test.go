@@ -90,6 +90,37 @@ func TestModeNextCycles(t *testing.T) {
 	}
 }
 
+// A row that spans vendors takes the worst of their coverage. Averaging
+// would let a large complete Claude figure hide a small partial Grok one
+// inside the same row.
+func TestGroupCoverage_RowTakesTheWorstContributingVendor(t *testing.T) {
+	in := map[SeriesKey]ModelDay{
+		{Source: "claude/claude", Vendor: "claude", Model: "m"}: {USD: 100},
+		{Source: "grok/grok", Vendor: "grok", Model: "m"}:       {USD: 1},
+	}
+	cov := map[string]Coverage{"grok": {Turns: 100, WithUsage: 20}}
+
+	// GroupTotal merges everything into one row, which therefore spans
+	// both vendors.
+	got := GroupCoverage(in, cov, GroupTotal)
+	if !got["total"].Partial() {
+		t.Fatalf("total row coverage = %+v, want partial", got["total"])
+	}
+	// GroupVendor keeps them apart.
+	byVendor := GroupCoverage(in, cov, GroupVendor)
+	if byVendor["claude"].Partial() {
+		t.Fatal("the claude row must not be marked partial")
+	}
+	if !byVendor["grok"].Partial() {
+		t.Fatal("the grok row must be marked partial")
+	}
+	// Key sets match Group's exactly, or a row would render without its
+	// marker.
+	if len(Group(in, GroupVendor)) != len(byVendor) {
+		t.Fatal("GroupCoverage and Group must share a key set")
+	}
+}
+
 func TestModeStrings(t *testing.T) {
 	for m, want := range map[Mode]string{
 		GroupModel: "model", GroupVendor: "vendor",
