@@ -56,4 +56,26 @@ public enum Grouping {
         }
         return out
     }
+
+    /// Collapses per-vendor coverage onto the same display rows `group`
+    /// produces, so the two dictionaries always share a key set — a row
+    /// without an entry would silently render unmarked.
+    ///
+    /// A row spanning several vendors takes the worst of them. Averaging,
+    /// or weighting by spend, would let a large complete Claude figure
+    /// hide a small partial Grok one inside the same row, which is
+    /// exactly the failure this marker exists to prevent. Mirrors
+    /// `agg.GroupCoverage` in `tui/internal/agg/group.go`.
+    public static func groupCoverage(_ input: [SeriesKey: ModelDay],
+                                     coverage: [String: Coverage],
+                                     by mode: GroupMode) -> [String: Coverage] {
+        var out: [String: Coverage] = [:]
+        for key in input.keys {
+            let name = mode.seriesName(for: key)
+            let c = coverage[key.vendor] ?? Coverage()
+            if let cur = out[name], cur.fraction <= c.fraction { continue }
+            out[name] = c
+        }
+        return out
+    }
 }

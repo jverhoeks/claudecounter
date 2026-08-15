@@ -6,7 +6,10 @@ Both apps tail `~/.claude/projects/**/*.jsonl` (recursively, including
 subagent transcripts) via OS-native file events, dedupe by
 `messageId:requestId`, and apply the same LiteLLM pricing table that
 [ccusage](https://github.com/ryoppippi/ccusage) uses. Same JSONL in →
-same dollars out, to the cent.
+same dollars out, to the cent. Grok spend is counted too, if
+`~/.grok/sessions` exists — but its dollars come straight from the
+figure xAI reports per turn, not from a pricing table (see
+[Multiple sources & grouping](#-multiple-sources--grouping-tui-key-v--popover-segmented-control)).
 
 | | [Go TUI](./tui) | [Mac menu bar](./macapp) |
 |---|---|---|
@@ -17,6 +20,7 @@ same dollars out, to the cent.
 | **One-shot mode** | `claudecounter --once` · `--phases` · `--report` | (use the TUI) |
 | **Persists between runs?** | No | Yes (`~/Library/Application Support/...`) |
 | **Live updates** | fsnotify-driven | FSEventStream-driven |
+| **Vendors counted** | Claude (priced from LiteLLM) + Grok (vendor-reported \$) | Claude (priced from LiteLLM) + Grok (vendor-reported \$) |
 
 Pick the one that fits your workflow — they're independent, run side
 by side without conflict, and produce identical numbers.
@@ -124,9 +128,15 @@ root   = "~/work-claude/projects"
   other, would double-count every event under both, so loading fails with
   an error naming the two sources and the shared root instead of quietly
   producing a wrong total.
-- `~` expands to `$HOME`. `vendor` must be `claude` (the only reader Phase A
-  ships) or `grok` (accepted so a config can name it ahead of that reader
-  landing, without the file failing to load).
+- `~` expands to `$HOME`. `vendor` must be `claude` or `grok` — both have a
+  reader now. Claude's dollars are priced from the LiteLLM table; Grok's
+  are vendor-reported — the number xAI computed for that turn, used as
+  given rather than derived from any pricing table.
+- **Grok is auto-discovered with zero configuration.** If
+  `~/.grok/sessions` exists, it becomes a `grok/grok` source automatically,
+  the same way the implicit Claude root works, even with no `sources.toml`
+  at all. It never appears if that directory doesn't exist, so a machine
+  that has never run the Grok CLI sees no change.
 
 **A missing root is not the same as a broken one.** A root named in
 `sources.toml` that simply doesn't exist on this machine (e.g. a
@@ -149,7 +159,7 @@ so all four modes always sum to the same grand total:
 | Mode | Collapses to |
 |---|---|
 | `model` (default) | one row per model, merged across every source — today's behaviour |
-| `vendor` | one row per vendor (`claude`, and `grok` once its reader ships) |
+| `vendor` | one row per vendor (`claude`, `grok`) |
 | `source` | one row per configured subscription, e.g. `claude/work` vs `claude/personal` |
 | `total` | a single row |
 
@@ -179,6 +189,35 @@ An explicit `--root` still overrides the configured list entirely, with a
 single implicit source rooted there — the override `--root` has always had,
 kept for anyone who hasn't adopted `sources.toml` yet. The macapp has a GUI
 editor for the same file — see [`macapp/README.md`](./macapp/README.md).
+
+### Grok's coverage marker: the figure is a floor
+
+xAI only recently added a `usage` object to Grok's `turn_completed` events,
+so a Grok month can mix turns that carry real cost data with older ones
+that don't. Both apps tally, per vendor, how many of this month's turns had
+usable usage; once that fraction drops below 95% the affected row gets a
+dimmed `~NN%` suffix instead of being shown as if it were complete:
+
+```
+  grok/personal          ████░░░░░░░░░░░░░░░░░░░░    $12.40   8%  ~20%
+```
+
+Read `~20%` as **"this figure is a floor, not a total"** — only a fifth of
+this vendor's turns this month reported a cost, so the real number is
+higher. The TUI shows it inline on every grouping mode's rows
+(`renderSeries`'s coverage suffix); the menu bar's by-model/vendor/
+source/total table shows the same `~NN%` next to any row it applies to. A
+row spanning several vendors (e.g. `total`) takes the *worst* coverage
+among its contributors, so a large complete Claude figure can never hide a
+small partial Grok one. Claude never carries this marker — it emits no
+coverage events and is complete by definition.
+
+Coverage genuinely varies by when the turns happened: this project's own
+corpus had `usage` on roughly 20% of July 2026 turns versus 92% of August
+2026 turns, since xAI rolled the field out mid-month. A live check on the
+machine this was written on found 118 of 134 Grok turns so far this month
+carrying usable cost (88%) — recent activity is trustworthy; older months
+undercount and will always show the marker.
 
 ## 📈 Git activity & ROI (TUI view `4` / `--report`)
 
@@ -279,10 +318,13 @@ dollar figure but publishes no utilisation percentage locally.
 > `_meta.totalTokens`, which *is* cumulative context — but the same files
 > also emit `turn_completed` events carrying a full `usage` object with a
 > per-model breakdown and a directly reported `costUsdTicks`. Grok in fact
-> has the richest local data of the three vendors. Wiring it into the
-> per-model spend view is designed in
-> `docs/superpowers/specs/2026-08-10-multi-vendor-usage-design.md`; until
-> that ships, the gauges above still show Grok as a percentage only.
+> has the richest local data of the three vendors, and its per-model spend
+> now IS wired into the monthly breakdown above (see
+> [Multiple sources & grouping](#-multiple-sources--grouping-tui-key-v--popover-segmented-control)),
+> using that reported dollar figure as given rather than a pricing table.
+> The gauges in *this* section are unaffected — Grok publishes no short-
+> or long-window budget locally, so it still shows only a plan percentage
+> here.
 
 Codex can be short a row too: newer Codex CLI builds sometimes report
 only the 7-day window and omit the 5-hour one, so a missing `codex 5h`

@@ -70,4 +70,31 @@ final class GroupingTests: XCTestCase {
         XCTAssertEqual(GroupMode.source.label, "source")
         XCTAssertEqual(GroupMode.total.label, "total")
     }
+
+    // A row that spans vendors takes the worst of their coverage. Averaging
+    // would let a large complete Claude figure hide a small partial Grok one
+    // inside the same row. Mirrors Go's
+    // TestGroupCoverage_RowTakesTheWorstContributingVendor in group_test.go.
+    func test_groupCoverage_rowTakesTheWorstContributingVendor() {
+        let input: [SeriesKey: ModelDay] = [
+            SeriesKey(source: "claude/claude", vendor: "claude", model: "m"): ModelDay(usd: 100, tokens: .zero),
+            SeriesKey(source: "grok/grok", vendor: "grok", model: "m"): ModelDay(usd: 1, tokens: .zero),
+        ]
+        let coverage: [String: Coverage] = ["grok": Coverage(turns: 100, withUsage: 20)]
+
+        // .total merges everything into one row, which therefore spans
+        // both vendors.
+        let got = Grouping.groupCoverage(input, coverage: coverage, by: .total)
+        XCTAssertTrue(got["total"]?.partial ?? false, "total row coverage must be partial")
+
+        // .vendor keeps them apart.
+        let byVendor = Grouping.groupCoverage(input, coverage: coverage, by: .vendor)
+        XCTAssertFalse(byVendor["claude"]?.partial ?? true, "the claude row must not be marked partial")
+        XCTAssertTrue(byVendor["grok"]?.partial ?? false, "the grok row must be marked partial")
+
+        // Key sets match group's exactly, or a row would render without
+        // its marker.
+        XCTAssertEqual(Grouping.group(input, by: .vendor).count, byVendor.count,
+                        "groupCoverage and group must share a key set")
+    }
 }

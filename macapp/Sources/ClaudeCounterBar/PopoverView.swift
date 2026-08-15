@@ -56,6 +56,15 @@ struct PopoverView: View {
         Grouping.group(state.totals.month, by: state.groupMode)
     }
 
+    /// Per-row coverage for `groupedMonth`, keyed the same way — so a row
+    /// computed from partial data (a Grok month whose usage field only
+    /// recently started appearing) can be marked as a floor rather than
+    /// a total. Mirrors the TUI's `agg.GroupCoverage(t.Day, t.Coverage, mode)`
+    /// call, scoped to month here since `groupedMonth` is too.
+    private var groupedCoverage: [String: Coverage] {
+        Grouping.groupCoverage(state.totals.month, coverage: state.totals.coverage, by: state.groupMode)
+    }
+
     /// Computed once per view body so both monthly charts AND the
     /// by-model table share the same model→colour mapping. Recomputed
     /// every snapshot publish (cheap — small dictionary), so the
@@ -127,7 +136,8 @@ struct PopoverView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     HStack(alignment: .top, spacing: 16) {
-                        ByModelTable(month: groupedMonth, mode: state.groupMode, topN: topN, palette: palette)
+                        ByModelTable(month: groupedMonth, mode: state.groupMode, topN: topN,
+                                     palette: palette, coverage: groupedCoverage)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ByProjectTable(month: state.totals.monthProj)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -689,6 +699,12 @@ struct ByModelTable: View {
     /// in the chart, making this table a self-explanatory legend when
     /// `mode == .model` (the charts themselves are always per-model).
     let palette: ModelPalette
+    /// Per-row coverage, keyed the same way as `month`. A row computed
+    /// from partial data (e.g. a Grok month whose usage field only
+    /// recently started appearing) renders a dimmed `~NN%` suffix,
+    /// matching the TUI's `coverageSuffix`. Empty by default so callers
+    /// that never see a costed vendor need not pass anything.
+    var coverage: [String: Coverage] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -715,6 +731,17 @@ struct ByModelTable: View {
                         .foregroundStyle(.green)
                         .font(.system(size: 11))
                         .monospacedDigit()
+                    if let c = coverage[name], c.partial {
+                        // Rendered inline, right after the figure it
+                        // qualifies, not as a footnote — a user scanning
+                        // for a dollar amount must see the caveat
+                        // attached to that amount. Mirrors the TUI's
+                        // `coverageSuffix`.
+                        Text("~\(Int((c.fraction * 100).rounded()))%")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 }
                 .font(.system(size: 12))
             }
