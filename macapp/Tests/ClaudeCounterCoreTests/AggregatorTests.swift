@@ -441,7 +441,12 @@ final class AggregatorTests: XCTestCase {
         XCTAssertEqual(got.coverage["grok"]?.fraction ?? 0, 0.75, accuracy: 1e-9)
         XCTAssertTrue(got.coverage["grok"]?.partial ?? false)
         // A vendor that emits no coverage events reads as complete, not 0%.
-        XCTAssertFalse(got.coverage["claude"]?.partial ?? false)
+        // `got.coverage["claude"]` is nil (claude never appears in the map),
+        // so this must construct the zero-turns `Coverage` itself and check
+        // its `.partial` — `?? false` would make this pass unconditionally,
+        // never exercising `Coverage.fraction`'s `turns == 0 → 1` branch.
+        XCTAssertFalse((got.coverage["claude"] ?? Coverage()).partial,
+                       "a vendor with zero turns must read as complete, not partial")
     }
 
     // MARK: - Fixtures / helpers

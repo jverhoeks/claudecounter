@@ -59,10 +59,24 @@ public struct CacheFile: Codable, Sendable {
         public let usd: Double
         /// Whether this cell's dollar figure is vendor-reported. Together
         /// with `usd` this is what lets `pricedTokens` be reconstructed on
-        /// restore without a second token quartet on disk: a cell only
-        /// ever holds one kind of contribution because both `CellKey` and
-        /// `HourBucketKey` carry `vendor`, so `pricedTokens = costed ?
-        /// .zero : tokens` is exact.
+        /// restore without a second token quartet on disk:
+        /// `pricedTokens = costed ? .zero : tokens`.
+        ///
+        /// That reconstruction is exact only if a cell never mixes the two
+        /// kinds of contribution. `CellKey` carrying `vendor` is necessary
+        /// for that (so two vendors sharing a model name land in different
+        /// cells) but not sufficient on its own — it also requires that one
+        /// vendor's events are *uniformly* costed or uniformly priced,
+        /// never both across a cell's lifetime. Nothing in this schema
+        /// enforces that; it holds because of how the readers construct
+        /// events: the Grok reader (`grok.go`'s `Parse`) marks every usage
+        /// event it emits `Costed = true` unconditionally, and a turn with
+        /// no usage produces only a coverage-only event (no cell write at
+        /// all) rather than a priced one. So no cell keyed by vendor+model
+        /// ever sees both kinds. If a future reader ever emits both costed
+        /// and non-costed events for the same vendor+model, this
+        /// reconstruction silently mis-restores — preserve that invariant
+        /// rather than relaxing it.
         public let costed: Bool
 
         public init(day: String, project: String, source: String, vendor: String,
@@ -82,11 +96,12 @@ public struct CacheFile: Codable, Sendable {
 
     /// One row of the hourly distribution. Keyed by (day YYYY-MM-DD,
     /// hour 0–23, vendor, model). Tokens are the same UInt64 quartet as
-    /// `CellEntry`; `usd` and `costed` round-trip the vendor-reported
-    /// side the same way — see `CellEntry.costed`. Vendor is part of the
-    /// key for the same reason it was added to `HourBucketKey`: without
-    /// it, two vendors sharing a model name would mix into one bucket and
-    /// the single `costed` Bool could no longer describe it exactly.
+    /// `CellEntry`; `usd` and `costed` reconstruct `pricedTokens` the same
+    /// way, under the same precondition — see `CellEntry.costed` for the
+    /// full exactness argument. Vendor is part of the key for the same
+    /// reason it was added to `HourBucketKey`: without it, two vendors
+    /// sharing a model name would mix into one bucket and the single
+    /// `costed` Bool could no longer describe it exactly.
     public struct HourEntry: Codable, Sendable {
         public let day: String
         public let hour: Int
@@ -255,10 +270,10 @@ extension CacheFile {
                 input: e.input, output: e.output,
                 cacheCreate: e.cacheCreate, cacheRead: e.cacheRead
             )
-            // `pricedTokens` is recovered exactly (not merely
-            // approximated) because a cell only ever holds one kind of
-            // contribution: `CellKey` carries vendor, so a costed cell's
-            // tokens never mix with a priced cell's under the same key.
+            // `pricedTokens` is recovered exactly, not merely
+            // approximated — see `CellEntry.costed` for the full
+            // precondition (vendor in the key, plus one vendor's events
+            // never mixing costed and priced under one model).
             cells[key] = CellValue(
                 tokens: tokens, costedUSD: e.usd,
                 pricedTokens: e.costed ? .zero : tokens
