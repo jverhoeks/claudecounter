@@ -152,8 +152,10 @@ func (r *Reader) Forget(path string) {
 func (r *Reader) OnChange(path string) error {
 	r.mu.Lock()
 	start := r.offsets[path]
-	vendor, source := r.src.Vendor, r.src.ID()
+	src := r.src
 	r.mu.Unlock()
+	vendor, source := src.Vendor, src.ID()
+	p := parserFor(vendor)
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -192,24 +194,25 @@ func (r *Reader) OnChange(path string) error {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		ev, ok, perr := parseLine(line)
+		// Normalise to forward-slash so the project + subagent detection
+		// works the same on Windows as on Unix.
+		slashPath := filepath.ToSlash(path)
+		evs, perr := p.Parse(line, slashPath)
 		if perr != nil {
 			r.mu.Lock()
 			r.parseErrors++
 			r.mu.Unlock()
 			continue
 		}
-		if !ok {
-			continue
+		project := p.Project(slashPath)
+		isSub := p.IsSubagent(slashPath)
+		for _, ev := range evs {
+			ev.Project = project
+			ev.IsSubagent = isSub
+			ev.Vendor = vendor
+			ev.Source = source
+			r.out <- ev
 		}
-		// Normalise to forward-slash so the project + subagent detection
-		// works the same on Windows as on Unix.
-		slashPath := filepath.ToSlash(path)
-		ev.Project = projectFromPath(slashPath)
-		ev.IsSubagent = strings.Contains(slashPath, "/subagents/")
-		ev.Vendor = vendor
-		ev.Source = source
-		r.out <- ev
 	}
 
 	r.mu.Lock()
@@ -247,6 +250,11 @@ func projectFromPath(path string) string {
 // volume on heavy days. After this returns, the reader's offset map
 // reflects the end of every scanned file.
 func (r *Reader) InitialScan(root string, notBefore time.Time) error {
+	r.mu.Lock()
+	vendor := r.src.Vendor
+	r.mu.Unlock()
+	p := parserFor(vendor)
+
 	paths := make(chan string, 256)
 
 	walkErr := make(chan error, 1)
@@ -255,7 +263,7 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if filepath.Ext(d.Name()) != ".jsonl" {
+			if !p.Walkable(d.Name()) {
 				return nil
 			}
 			info, err := d.Info()
