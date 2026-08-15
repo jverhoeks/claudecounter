@@ -137,6 +137,12 @@ func TestRenderSeries_CompleteCoverageIsUnmarked(t *testing.T) {
 	if strings.Contains(out, "~") {
 		t.Fatalf("unexpected coverage marker in:\n%s", out)
 	}
+	// "no stray spacing": a coverageSuffix that returned a bare space for
+	// a complete vendor would pass the check above while still leaving
+	// trailing whitespace on every row.
+	if !strings.HasSuffix(out, "100%\n") {
+		t.Fatalf("a complete row must end exactly as before, no trailing suffix:\n%q", out)
+	}
 }
 
 func TestRenderModeBarMarksActiveMode(t *testing.T) {
