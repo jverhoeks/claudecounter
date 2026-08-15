@@ -20,11 +20,38 @@ type vendorParser interface {
 	// line with nothing we want). An error means the line was not valid
 	// JSON and is counted as a parse error, never as spend.
 	Parse(line []byte, slashPath string) ([]Event, error)
-	// Project returns the canonical project key for a transcript path.
-	Project(slashPath string) string
+	// Project returns the canonical project key for a transcript path,
+	// given the source's configured root.
+	Project(root, slashPath string) string
 	// IsSubagent reports whether the path belongs to a subagent
-	// transcript rather than a main session.
-	IsSubagent(slashPath string) bool
+	// transcript rather than a main session, given the source's
+	// configured root.
+	IsSubagent(root, slashPath string) bool
+}
+
+// projectUnderRoot returns the first path segment of slashPath below
+// root, or ok=false when slashPath isn't under root at all.
+//
+// This is root-relative rather than anchored on a literal marker
+// ("/projects/" for Claude, "/sessions/" for Grok): sources.Load places
+// no requirement that a configured root be named "projects" or
+// "sessions", so a marker search silently misfiles every event under a
+// root that omits it — flagged 2026-08-15 as a live risk for a custom
+// Grok root, where it would mis-attribute subagent spend as main-session
+// spend with no error and no log. Root-relative derivation is a no-op
+// for every shipped configuration: under ~/.claude/projects the first
+// segment below root already is the encoded project key, and under
+// ~/.grok/sessions it already is the encoded cwd.
+func projectUnderRoot(root, slashPath string) (segment string, ok bool) {
+	slashRoot := strings.TrimSuffix(filepath.ToSlash(root), "/")
+	if slashRoot == "" || !strings.HasPrefix(slashPath, slashRoot+"/") {
+		return "", false
+	}
+	rest := slashPath[len(slashRoot)+1:]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i], true
+	}
+	return rest, true
 }
 
 func parserFor(vendor string) vendorParser {
@@ -52,8 +79,19 @@ func (claudeParser) Parse(line []byte, _ string) ([]Event, error) {
 	return []Event{ev}, nil
 }
 
-func (claudeParser) Project(slashPath string) string { return projectFromPath(slashPath) }
+// Project derives the project key as the first path segment under the
+// source root — see projectUnderRoot. Note this is deliberately not
+// projectFromPath (which anchors on a literal "/projects/" marker and
+// remains in this package only because TestProjectFromPath_BothSeparators
+// exercises it directly): a custom Claude root has the same
+// mis-attribution risk this replaces for Grok.
+func (claudeParser) Project(root, slashPath string) string {
+	seg, _ := projectUnderRoot(root, slashPath)
+	return seg
+}
 
-func (claudeParser) IsSubagent(slashPath string) bool {
+// IsSubagent doesn't need root: "/subagents/" is a fixed subdirectory
+// name under any session directory regardless of where the root sits.
+func (claudeParser) IsSubagent(_, slashPath string) bool {
 	return strings.Contains(slashPath, "/subagents/")
 }

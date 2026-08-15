@@ -142,34 +142,38 @@ func (p grokParser) Parse(line []byte, slashPath string) ([]Event, error) {
 // Claude way (every '/' and '.' becomes '-') keeps one working directory
 // one row in the per-project table no matter which vendor produced the
 // spend.
-func (grokParser) Project(slashPath string) string { return grokProjectKey(slashPath) }
+func (grokParser) Project(root, slashPath string) string { return grokProjectKey(root, slashPath) }
 
 // grokSessionDir extracts the session-directory segment (the percent-
-// encoded working directory that sits immediately under sessions/) from
-// a Grok transcript path. ok is false when slashPath has no /sessions/
-// segment at all. Both grokProjectKey and IsSubagent need this same
+// encoded working directory that sits immediately under the configured
+// root) from a Grok transcript path. ok is false when slashPath isn't
+// under root at all. Both grokProjectKey and IsSubagent need this same
 // segment — project attribution and subagent detection must never drift
 // apart on where that boundary is.
-func grokSessionDir(slashPath string) (decoded string, ok bool) {
-	idx := strings.Index(slashPath, "/sessions/")
-	if idx < 0 {
+//
+// This is root-relative (via projectUnderRoot) rather than anchored on a
+// literal "/sessions/" marker: sources.Load places no requirement that a
+// configured Grok root be named "sessions", and the marker search
+// silently misfiled every event under a root that omits it — flagged
+// 2026-08-15. Root-relative derivation is a no-op for the shipped
+// default (~/.grok/sessions), since the first segment under that root is
+// exactly what the old marker search returned.
+func grokSessionDir(root, slashPath string) (decoded string, ok bool) {
+	seg, ok := projectUnderRoot(root, slashPath)
+	if !ok {
 		return "", false
 	}
-	rest := slashPath[idx+len("/sessions/"):]
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		rest = rest[:i]
-	}
-	decoded, err := url.PathUnescape(rest)
+	decoded, err := url.PathUnescape(seg)
 	if err != nil {
 		// Undecodable is still a stable key; better a slightly ugly row
 		// than a project's spend vanishing into the empty-key bucket.
-		decoded = rest
+		decoded = seg
 	}
 	return decoded, true
 }
 
-func grokProjectKey(slashPath string) string {
-	decoded, ok := grokSessionDir(slashPath)
+func grokProjectKey(root, slashPath string) string {
+	decoded, ok := grokSessionDir(root, slashPath)
 	if !ok {
 		return ""
 	}
@@ -191,8 +195,8 @@ func grokProjectKey(slashPath string) string {
 // The match is on the final path segment rather than anywhere in the
 // path, so a user whose own worktree happens to be named "subagent-foo"
 // does not get their main-session spend filed under the subagent column.
-func (grokParser) IsSubagent(slashPath string) bool {
-	decoded, ok := grokSessionDir(slashPath)
+func (grokParser) IsSubagent(root, slashPath string) bool {
+	decoded, ok := grokSessionDir(root, slashPath)
 	if !ok {
 		return false
 	}

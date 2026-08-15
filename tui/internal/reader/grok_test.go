@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-const grokPath = "/Users/me/.grok/sessions/%2FUsers%2Fme%2Fsrc%2Fproj/01a0-sess/updates.jsonl"
+const grokRoot = "/Users/me/.grok/sessions"
+const grokPath = grokRoot + "/%2FUsers%2Fme%2Fsrc%2Fproj/01a0-sess/updates.jsonl"
 
 func parseGrokFixture(t *testing.T) (events []Event, parseErrs int) {
 	t.Helper()
@@ -161,14 +162,14 @@ func TestGrokProjectKey_MatchesClaudeEncoding(t *testing.T) {
 	// The session directory is the percent-encoded cwd. Decoding it and
 	// re-encoding the Claude way keeps one project one row in the
 	// per-project table regardless of which vendor produced the spend.
-	got := grokProjectKey(grokPath)
+	got := grokProjectKey(grokRoot, grokPath)
 	if got != "-Users-me-src-proj" {
 		t.Fatalf("project = %q, want -Users-me-src-proj", got)
 	}
 	// A dot in the path becomes a dash, exactly as Claude encodes it
 	// (~/.claude -> -Users-me--claude).
-	dotted := "/Users/me/.grok/sessions/%2FUsers%2Fme%2F.config%2Fx/sess/updates.jsonl"
-	if got := grokProjectKey(dotted); got != "-Users-me--config-x" {
+	dotted := grokRoot + "/%2FUsers%2Fme%2F.config%2Fx/sess/updates.jsonl"
+	if got := grokProjectKey(grokRoot, dotted); got != "-Users-me--config-x" {
 		t.Fatalf("project = %q, want -Users-me--config-x", got)
 	}
 }
@@ -189,11 +190,11 @@ func TestGrokParser_WalkableOnlyMatchesUpdatesJSONL(t *testing.T) {
 
 func TestGrokParser_IsSubagent(t *testing.T) {
 	p := grokParser{}
-	sub := "/Users/me/.grok/sessions/%2FUsers%2Fme%2F.grok%2Fworktrees%2Fx%2Fsubagent-01a0/01a0/updates.jsonl"
-	if !p.IsSubagent(sub) {
+	sub := grokRoot + "/%2FUsers%2Fme%2F.grok%2Fworktrees%2Fx%2Fsubagent-01a0/01a0/updates.jsonl"
+	if !p.IsSubagent(grokRoot, sub) {
 		t.Fatal("a subagent worktree session must be flagged")
 	}
-	if p.IsSubagent(grokPath) {
+	if p.IsSubagent(grokRoot, grokPath) {
 		t.Fatal("a main session must not be flagged")
 	}
 }

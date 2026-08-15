@@ -204,8 +204,8 @@ func (r *Reader) OnChange(path string) error {
 			r.mu.Unlock()
 			continue
 		}
-		project := p.Project(slashPath)
-		isSub := p.IsSubagent(slashPath)
+		project := p.Project(src.Root, slashPath)
+		isSub := p.IsSubagent(src.Root, slashPath)
 		for _, ev := range evs {
 			ev.Project = project
 			ev.IsSubagent = isSub
