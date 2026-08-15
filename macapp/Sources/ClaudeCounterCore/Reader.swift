@@ -163,8 +163,11 @@ public func isSubagentPath(_ path: String) -> Bool {
     return normalizeSlashes(path).contains("/subagents/")
 }
 
+// Shared with GrokReader.swift's projectUnderRoot/grokProjectKey, which
+// need the same Windows-backslash normalisation on the configured root
+// that this applies to the path.
 @inline(__always)
-private func normalizeSlashes(_ path: String) -> String {
+func normalizeSlashes(_ path: String) -> String {
     if path.contains("\\") {
         return path.replacingOccurrences(of: "\\", with: "/")
     }
@@ -252,6 +255,17 @@ public actor Reader {
         try handle.seek(toOffset: UInt64(start))
         let data = try handle.readToEnd() ?? Data()
 
+        // The parser is picked from the source's vendor rather than
+        // hardcoded to Claude's — same change as Go's Task 4. Project and
+        // subagent status depend only on `path`/`source.root`, which are
+        // both constant across every line of this file, so they're
+        // computed once here rather than per line (Go recomputes them
+        // per line inside OnChange's loop; observationally identical
+        // since neither input varies within one call).
+        let parser = parserFor(vendor: source.vendor)
+        let project = parser.project(path, root: source.root)
+        let isSub = parser.isSubagent(path, root: source.root)
+
         // Walk newline-terminated lines. Bytes after the last \n are not consumed.
         var consumed = 0
         var events: [UsageEvent] = []
@@ -263,15 +277,15 @@ public actor Reader {
 
             if isWhitespaceOnly(line) { continue }
 
-            switch parseLine(Data(line)) {
-            case .event(var ev):
-                ev.project = projectFromPath(path)
-                ev.isSubagent = isSubagentPath(path)
-                ev.source = source.id
-                ev.vendor = source.vendor
-                events.append(ev)
-            case .skip:
-                continue
+            switch parser.parse(Data(line), path: path) {
+            case .events(let evs):
+                for var ev in evs {
+                    ev.project = project
+                    ev.isSubagent = isSub
+                    ev.source = source.id
+                    ev.vendor = source.vendor
+                    events.append(ev)
+                }
             case .parseError:
                 parseErrors += 1
                 continue
@@ -291,7 +305,12 @@ public actor Reader {
     public func initialScan(root: String, source: SourceEntry, notBefore: Date) async throws -> [UsageEvent] {
         // Collect candidate paths synchronously first — Swift 6 forbids
         // iterating FileManager.enumerator across async suspension points.
-        let candidates = Self.candidateJSONLs(under: root, notBefore: notBefore)
+        // Which base names are walkable comes from the source's vendor —
+        // same change as Go's Task 4 — so Grok's sessions/ directory
+        // doesn't have its non-usage sibling files (e.g. messages.jsonl)
+        // scanned as if they were updates.jsonl.
+        let walkable = parserFor(vendor: source.vendor).walkable
+        let candidates = Self.candidateFiles(under: root, notBefore: notBefore, walkable: walkable)
 
         var allEvents: [UsageEvent] = []
         for path in candidates {
@@ -306,26 +325,29 @@ public actor Reader {
         return allEvents
     }
 
-    /// Synchronously enumerate `*.jsonl` files under `root` whose mtime
-    /// is at or after `notBefore`. Returns absolute paths in the same
-    /// depth-first lexical order Go's `filepath.WalkDir` produces — at
-    /// each directory, entries are sorted by name and dirs are recursed
-    /// in place. This matters because Claude Code's main session file
-    /// `<uuid>.jsonl` and its subagents directory `<uuid>/subagents/...`
-    /// share messageIds for ~30% of turns; first-seen wins the dedupe,
-    /// so traversal order decides whether those shared events are
-    /// attributed to main or sub. WalkDir visits the dir `<uuid>` before
-    /// the file `<uuid>.jsonl` (because `.` > nothing lexically), so
-    /// subagent files are read first → sub wins the dedupe. We mirror
-    /// that exactly.
-    private static func candidateJSONLs(under root: String, notBefore: Date) -> [String] {
+    /// Synchronously enumerate the files under `root` that `walkable`
+    /// accepts (by base name) whose mtime is at or after `notBefore`.
+    /// Returns absolute paths in the same depth-first lexical order Go's
+    /// `filepath.WalkDir` produces — at each directory, entries are
+    /// sorted by name and dirs are recursed in place. This matters
+    /// because Claude Code's main session file `<uuid>.jsonl` and its
+    /// subagents directory `<uuid>/subagents/...` share messageIds for
+    /// ~30% of turns; first-seen wins the dedupe, so traversal order
+    /// decides whether those shared events are attributed to main or
+    /// sub. WalkDir visits the dir `<uuid>` before the file
+    /// `<uuid>.jsonl` (because `.` > nothing lexically), so subagent
+    /// files are read first → sub wins the dedupe. We mirror that
+    /// exactly.
+    private static func candidateFiles(under root: String, notBefore: Date,
+                                        walkable: (String) -> Bool) -> [String] {
         var paths: [String] = []
         walkDirLikeGo(URL(fileURLWithPath: root, isDirectory: true),
-                      notBefore: notBefore, into: &paths)
+                      notBefore: notBefore, walkable: walkable, into: &paths)
         return paths
     }
 
-    private static func walkDirLikeGo(_ dir: URL, notBefore: Date, into paths: inout [String]) {
+    private static func walkDirLikeGo(_ dir: URL, notBefore: Date,
+                                       walkable: (String) -> Bool, into paths: inout [String]) {
         let fm = FileManager.default
         let entries = (try? fm.contentsOfDirectory(
             at: dir,
@@ -340,9 +362,9 @@ public actor Reader {
             let values = try? entry.resourceValues(
                 forKeys: [.isDirectoryKey, .isRegularFileKey, .contentModificationDateKey])
             if values?.isDirectory == true {
-                walkDirLikeGo(entry, notBefore: notBefore, into: &paths)
+                walkDirLikeGo(entry, notBefore: notBefore, walkable: walkable, into: &paths)
             } else if values?.isRegularFile == true,
-                      entry.pathExtension == "jsonl" {
+                      walkable(entry.lastPathComponent) {
                 if let mtime = values?.contentModificationDate, mtime < notBefore { continue }
                 paths.append(entry.path)
             }

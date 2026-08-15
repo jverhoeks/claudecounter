@@ -167,10 +167,31 @@ public actor SessionTracker {
     }
 
     /// Fold one event into its session. `ev` must already be de-duplicated.
+    ///
+    /// `coverageOnly` events (Grok's per-turn bookkeeping — see
+    /// `UsageEvent.coverageOnly`) are bookkeeping, not a turn: they carry
+    /// no model and no tokens, and `AppState` feeds this tracker every
+    /// event `Aggregator.apply` accepts, coverage events included. Folding
+    /// one in here would double-count that turn's turn/age tally against
+    /// its sibling usage event(s), and — since both share the same
+    /// `Timestamp` and `apply`'s tie-break is `>=` — could clobber the
+    /// real turn's `latestMainModel`/context with the coverage event's
+    /// blank ones depending on apply order. There is no equivalent
+    /// concept in the Go TUI's `session.Tracker` (tokens only, no USD
+    /// field, no coverage events), so this guard has no Go counterpart to
+    /// mirror; beyond-the-ruling addition, flagged for the controller.
     public func apply(_ ev: UsageEvent) {
-        let usd = pricing.cost(model: ev.model, usage: ev.usage)
-        let cacheUSD = pricing.cost(model: ev.model,
-                                    usage: Usage(cacheCreate: ev.usage.cacheCreate))
+        guard !ev.coverageOnly else { return }
+
+        // A costed event's dollar figure is authoritative and used as
+        // given (Grok emits costUsdTicks per turn/model — the pricing
+        // table has no Grok entry and would silently price it at $0).
+        // There is no cache-creation breakdown for a costed blob, so
+        // cache-creation cost is 0 rather than run through the table —
+        // same rule `Aggregator.apply` uses for `CellValue.costedUSD`.
+        let usd = ev.costed ? ev.costUSD : pricing.cost(model: ev.model, usage: ev.usage)
+        let cacheUSD = ev.costed ? 0 :
+            pricing.cost(model: ev.model, usage: Usage(cacheCreate: ev.usage.cacheCreate))
 
         var s = sessions[ev.sessionID] ?? SessionAgg(
             sessionID: ev.sessionID,

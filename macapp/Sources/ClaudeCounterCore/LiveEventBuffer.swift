@@ -25,7 +25,11 @@ public struct LiveEvent: Equatable, Identifiable, Sendable {
             timestamp: ev.timestamp,
             project: ev.project,
             model: ev.model,
-            usd: pricing.cost(model: ev.model, usage: ev.usage),
+            // A costed event's dollar figure is authoritative and used as
+            // given — the pricing table has no entry for a Grok model
+            // and would otherwise silently show $0 for every Grok turn.
+            // Same rule as `Aggregator.apply`'s `CellValue.costedUSD`.
+            usd: ev.costed ? ev.costUSD : pricing.cost(model: ev.model, usage: ev.usage),
             isSubagent: ev.isSubagent
         )
     }

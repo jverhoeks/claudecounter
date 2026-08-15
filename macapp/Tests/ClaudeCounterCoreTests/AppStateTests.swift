@@ -25,6 +25,29 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(buf.items.map { $0.project }, ["p4", "p3"])
     }
 
+    // A costed event's dollar figure must be used as given, not re-priced
+    // from the table — the table has no entry for a Grok model and would
+    // otherwise show $0 for every Grok row in the popover's Live section.
+    func test_liveEvent_from_costedEvent_usesCostUSDNotPricingTable() {
+        let costed = UsageEvent(
+            timestamp: Date(), sessionID: "s1", cwd: "", project: "-Users-me-src-proj",
+            model: "grok-4.6-build", messageID: "p1", requestID: "grok-4.6-build",
+            isSubagent: false, usage: Usage(input: 100, output: 50),
+            costUSD: 0.3721028, costed: true
+        )
+        XCTAssertEqual(LiveEvent.from(costed, pricing: .defaults).usd, 0.3721028, accuracy: 1e-9)
+    }
+
+    // A non-costed (Claude) event still prices from the table, unchanged.
+    func test_liveEvent_from_nonCostedEvent_pricesFromTable() {
+        let priced = UsageEvent(
+            timestamp: Date(), sessionID: "s1", cwd: "", project: "-Users-me-src-proj",
+            model: "claude-opus-4-8", messageID: "p1", requestID: "r1",
+            isSubagent: false, usage: Usage(input: 1_000_000)
+        )
+        XCTAssertEqual(LiveEvent.from(priced, pricing: .defaults).usd, 5.0, accuracy: 1e-9)
+    }
+
     // MARK: - scanCutoff
 
     func test_scanCutoff_noCache_usesGoFloor() {
