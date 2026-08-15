@@ -19,6 +19,11 @@ import Foundation
 ///   invalidated on load → one full rescan re-tags every cell with the
 ///   source it came from. Without the bump, cached cells would carry no
 ///   source and silently merge into one series.
+/// - 5: cells and hour buckets carry a vendor-reported `usd` alongside
+///   the token quartet, and the file carries per-(day, vendor) coverage
+///   counts. Old caches are invalidated on load → one full rescan. Without
+///   the bump, a restored Grok cell would have no cost and every past day
+///   would render as $0.00 while looking correct.
 public struct CacheFile: Codable, Sendable {
     public let version: Int
     public let writtenAt: Date
@@ -32,8 +37,12 @@ public struct CacheFile: Codable, Sendable {
     /// Optional in JSON for forward-compat / older caches; current
     /// writers always emit.
     public let hourBuckets: [HourEntry]?
+    /// Optional for the same reason. Absent means "no coverage data",
+    /// which restores as every vendor reading complete — correct for
+    /// caches written before Grok existed.
+    public let coverage: [CoverageEntry]?
 
-    public static let currentVersion = 4
+    public static let currentVersion = 5
 
     public struct CellEntry: Codable, Sendable {
         public let day: String       // YYYY-MM-DD (matches civilDayString)
@@ -46,38 +55,73 @@ public struct CacheFile: Codable, Sendable {
         public let output: UInt64
         public let cacheCreate: UInt64
         public let cacheRead: UInt64
+        /// `CellValue.costedUSD`, persisted as-is.
+        public let usd: Double
+        /// Whether this cell's dollar figure is vendor-reported. Together
+        /// with `usd` this is what lets `pricedTokens` be reconstructed on
+        /// restore without a second token quartet on disk: a cell only
+        /// ever holds one kind of contribution because both `CellKey` and
+        /// `HourBucketKey` carry `vendor`, so `pricedTokens = costed ?
+        /// .zero : tokens` is exact.
+        public let costed: Bool
 
         public init(day: String, project: String, source: String, vendor: String,
                     model: String, isSub: Bool,
                     input: UInt64, output: UInt64,
-                    cacheCreate: UInt64, cacheRead: UInt64) {
+                    cacheCreate: UInt64, cacheRead: UInt64,
+                    usd: Double = 0, costed: Bool = false) {
             self.day = day; self.project = project
             self.source = source; self.vendor = vendor
             self.model = model
             self.isSub = isSub
             self.input = input; self.output = output
             self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
+            self.usd = usd; self.costed = costed
         }
     }
 
     /// One row of the hourly distribution. Keyed by (day YYYY-MM-DD,
-    /// hour 0–23, model). Tokens are the same UInt64 quartet as
-    /// `CellEntry`; hour-USD is computed at snapshot time.
+    /// hour 0–23, vendor, model). Tokens are the same UInt64 quartet as
+    /// `CellEntry`; `usd` and `costed` round-trip the vendor-reported
+    /// side the same way — see `CellEntry.costed`. Vendor is part of the
+    /// key for the same reason it was added to `HourBucketKey`: without
+    /// it, two vendors sharing a model name would mix into one bucket and
+    /// the single `costed` Bool could no longer describe it exactly.
     public struct HourEntry: Codable, Sendable {
         public let day: String
         public let hour: Int
+        public let vendor: String
         public let model: String
         public let input: UInt64
         public let output: UInt64
         public let cacheCreate: UInt64
         public let cacheRead: UInt64
+        public let usd: Double
+        public let costed: Bool
 
-        public init(day: String, hour: Int, model: String,
+        public init(day: String, hour: Int, vendor: String, model: String,
                     input: UInt64, output: UInt64,
-                    cacheCreate: UInt64, cacheRead: UInt64) {
-            self.day = day; self.hour = hour; self.model = model
+                    cacheCreate: UInt64, cacheRead: UInt64,
+                    usd: Double = 0, costed: Bool = false) {
+            self.day = day; self.hour = hour; self.vendor = vendor; self.model = model
             self.input = input; self.output = output
             self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
+            self.usd = usd; self.costed = costed
+        }
+    }
+
+    /// One (day, vendor) coverage tally. Persisted because cells persist:
+    /// a restored month whose coverage reset to zero would present a
+    /// known-partial Grok figure as complete.
+    public struct CoverageEntry: Codable, Sendable {
+        public let day: String
+        public let vendor: String
+        public let turns: Int
+        public let withUsage: Int
+
+        public init(day: String, vendor: String, turns: Int, withUsage: Int) {
+            self.day = day; self.vendor = vendor
+            self.turns = turns; self.withUsage = withUsage
         }
     }
 
@@ -85,7 +129,8 @@ public struct CacheFile: Codable, Sendable {
                 cells: [CellEntry], perMsg: [String],
                 offsets: [String: Int64], parseErrors: Int, dupes: Int,
                 unknownMsgs: [String],
-                hourBuckets: [HourEntry]? = nil) {
+                hourBuckets: [HourEntry]? = nil,
+                coverage: [CoverageEntry]? = nil) {
         self.version = version
         self.writtenAt = writtenAt
         self.cells = cells
@@ -95,6 +140,7 @@ public struct CacheFile: Codable, Sendable {
         self.dupes = dupes
         self.unknownMsgs = unknownMsgs
         self.hourBuckets = hourBuckets
+        self.coverage = coverage
     }
 }
 
@@ -154,7 +200,7 @@ extension CacheFile {
                                 parseErrors: Int,
                                 writtenAt: Date = Date()) async -> CacheFile {
         let state = await aggregator.exportState()
-        let entries = state.cells.map { (key, t) in
+        let entries = state.cells.map { (key, v) in
             CellEntry(
                 day: civilDayString(key.day),
                 project: key.project,
@@ -162,19 +208,25 @@ extension CacheFile {
                 vendor: key.vendor,
                 model: key.model,
                 isSub: key.isSub,
-                input: t.input, output: t.output,
-                cacheCreate: t.cacheCreate, cacheRead: t.cacheRead
+                input: v.tokens.input, output: v.tokens.output,
+                cacheCreate: v.tokens.cacheCreate, cacheRead: v.tokens.cacheRead,
+                usd: v.costedUSD, costed: v.pricedTokens == .zero
             )
         }
         let hourEntries = await aggregator.exportHourBuckets().map {
             HourEntry(
                 day: civilDayString($0.day),
-                hour: $0.hour, model: $0.model,
-                input: $0.tokens.input,
-                output: $0.tokens.output,
-                cacheCreate: $0.tokens.cacheCreate,
-                cacheRead: $0.tokens.cacheRead
+                hour: $0.hour, vendor: $0.vendor, model: $0.model,
+                input: $0.value.tokens.input,
+                output: $0.value.tokens.output,
+                cacheCreate: $0.value.tokens.cacheCreate,
+                cacheRead: $0.value.tokens.cacheRead,
+                usd: $0.value.costedUSD, costed: $0.value.pricedTokens == .zero
             )
+        }
+        let coverageEntries = state.coverage.map {
+            CoverageEntry(day: civilDayString($0.day), vendor: $0.vendor,
+                          turns: $0.coverage.turns, withUsage: $0.coverage.withUsage)
         }
         return CacheFile(
             writtenAt: writtenAt,
@@ -184,40 +236,60 @@ extension CacheFile {
             parseErrors: parseErrors,
             dupes: state.dupes,
             unknownMsgs: Array(state.unknownMsgs),
-            hourBuckets: hourEntries
+            hourBuckets: hourEntries,
+            coverage: coverageEntries
         )
     }
 
     /// Apply this cache to an aggregator. Returns the per-file offsets
     /// the caller should seed back into the Reader.
     public func restore(into aggregator: Aggregator) async -> [String: Int64] {
-        var cells: [Aggregator.CellKey: TokenCounts] = [:]
+        var cells: [Aggregator.CellKey: CellValue] = [:]
         for e in self.cells {
             guard let cd = parseCivilDayString(e.day) else { continue }
             let key = Aggregator.CellKey(
                 day: cd, project: e.project, source: e.source, vendor: e.vendor,
                 model: e.model, isSub: e.isSub
             )
-            cells[key] = TokenCounts(
+            let tokens = TokenCounts(
                 input: e.input, output: e.output,
                 cacheCreate: e.cacheCreate, cacheRead: e.cacheRead
             )
+            // `pricedTokens` is recovered exactly (not merely
+            // approximated) because a cell only ever holds one kind of
+            // contribution: `CellKey` carries vendor, so a costed cell's
+            // tokens never mix with a priced cell's under the same key.
+            cells[key] = CellValue(
+                tokens: tokens, costedUSD: e.usd,
+                pricedTokens: e.costed ? .zero : tokens
+            )
         }
+        let coverage: [(day: CivilDay, vendor: String, coverage: Coverage)] =
+            (self.coverage ?? []).compactMap { e in
+                guard let cd = parseCivilDayString(e.day) else { return nil }
+                return (cd, e.vendor, Coverage(turns: e.turns, withUsage: e.withUsage))
+            }
         await aggregator.load(
             cells: cells,
             perMsg: Set(perMsg),
             unknownMsgs: Set(unknownMsgs),
-            dupes: dupes
+            dupes: dupes,
+            coverage: coverage
         )
 
         // Hour buckets — every entry carries its own day; the
         // aggregator drops anything older than the display window.
-        let entries: [(day: CivilDay, hour: Int, model: String, tokens: TokenCounts)] =
+        let entries: [(day: CivilDay, hour: Int, vendor: String, model: String, value: CellValue)] =
             (hourBuckets ?? []).compactMap { e in
                 guard let cd = parseCivilDayString(e.day) else { return nil }
-                return (cd, e.hour, e.model, TokenCounts(
+                let tokens = TokenCounts(
                     input: e.input, output: e.output,
-                    cacheCreate: e.cacheCreate, cacheRead: e.cacheRead))
+                    cacheCreate: e.cacheCreate, cacheRead: e.cacheRead)
+                let value = CellValue(
+                    tokens: tokens, costedUSD: e.usd,
+                    pricedTokens: e.costed ? .zero : tokens
+                )
+                return (cd, e.hour, e.vendor, e.model, value)
             }
         await aggregator.loadHourBuckets(entries: entries)
 

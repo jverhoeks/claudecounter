@@ -19,10 +19,27 @@ public struct UsageEvent: Equatable, Sendable {
     /// (multi-source wiring) is expected to pass the real value.
     public var source: String
     public var vendor: String
+    /// A dollar figure the vendor reported for this event. Grok emits
+    /// costUsdTicks (nano-dollars) per turn and per model; that is
+    /// authoritative in a way our pricing table can never be, so it is
+    /// used as given. Mirrors `reader.Event.CostUSD` in Go.
+    public var costUSD: Double
+    /// Marks `costUSD` as authoritative. A costed event's tokens are
+    /// still recorded but never priced, and its model never counts
+    /// toward the unknown tally.
+    public var costed: Bool
+    /// Bookkeeping only: a turn happened, and `hasUsage` says whether it
+    /// carried usable usage data. Never spend. Grok's usage object is
+    /// absent on most historical turns, so this is what lets a total
+    /// over an old month be presented as a floor.
+    public var coverageOnly: Bool
+    public var hasUsage: Bool
 
     public init(timestamp: Date, sessionID: String, cwd: String, project: String,
                 model: String, messageID: String, requestID: String, isSubagent: Bool, usage: Usage,
-                source: String = "claude/claude", vendor: String = "claude") {
+                source: String = "claude/claude", vendor: String = "claude",
+                costUSD: Double = 0, costed: Bool = false,
+                coverageOnly: Bool = false, hasUsage: Bool = false) {
         self.timestamp = timestamp
         self.sessionID = sessionID
         self.cwd = cwd
@@ -34,6 +51,10 @@ public struct UsageEvent: Equatable, Sendable {
         self.usage = usage
         self.source = source
         self.vendor = vendor
+        self.costUSD = costUSD
+        self.costed = costed
+        self.coverageOnly = coverageOnly
+        self.hasUsage = hasUsage
     }
 }
 

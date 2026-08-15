@@ -4,9 +4,10 @@ import XCTest
 final class CacheTests: XCTestCase {
 
     // Bumping the version invalidates old caches so a stale cell without a
-    // source cannot be resurrected under the wrong series.
-    func test_cacheVersion_wasBumpedForSeriesKeys() {
-        XCTAssertEqual(CacheFile.currentVersion, 4)
+    // vendor-reported cost cannot be resurrected and silently render as
+    // $0.00 for every past Grok day.
+    func test_cacheVersion_wasBumpedForCostedCells() {
+        XCTAssertEqual(CacheFile.currentVersion, 5)
     }
 
     func test_save_then_load_roundTrip() async throws {
@@ -239,6 +240,66 @@ final class CacheTests: XCTestCase {
         XCTAssertEqual(
             snap2.day[SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")]?.tokens.input,
             1_000_000)
+    }
+
+    // MARK: - costed cells / coverage round-trip (cache v5)
+
+    func test_cache_roundTripsVendorReportedCost() async throws {
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let source = Aggregator(pricing: PricingTable(models: [:]), now: { now })
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "grok-4.6-build", messageID: "prompt-1", requestID: "grok-4.6-build",
+            isSubagent: false,
+            usage: Usage(input: 100, output: 10, cacheCreate: 0, cacheRead: 50),
+            source: "grok/grok", vendor: "grok", costUSD: 0.37, costed: true))
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "", messageID: "", requestID: "", isSubagent: false,
+            usage: Usage(input: 0, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "grok/grok", vendor: "grok", coverageOnly: true, hasUsage: true))
+
+        let file = await CacheFile.snapshot(aggregator: source, offsets: [:], parseErrors: 0)
+        XCTAssertEqual(file.version, 5)
+
+        let restored = Aggregator(pricing: PricingTable(models: [:]), now: { now })
+        _ = await file.restore(into: restored)
+        let got = await restored.snapshot()
+
+        let key = SeriesKey(source: "grok/grok", vendor: "grok", model: "grok-4.6-build")
+        XCTAssertEqual(got.month[key]?.usd ?? 0, 0.37, accuracy: 1e-9,
+                       "a vendor-reported dollar must survive a restart")
+        XCTAssertEqual(got.daily.last?.usd ?? 0, 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.coverage["grok"]?.turns, 1)
+    }
+
+    func test_cache_v4IsInvalidatedOnLoad() throws {
+        // A v4 cell carries no cost field. Restoring it would render every
+        // past Grok day as $0.00, so the whole file must be dropped and
+        // rebuilt by a full rescan.
+        XCTAssertGreaterThan(CacheFile.currentVersion, 4)
+    }
+
+    func test_cache_roundTripsCostedHourlyBuckets() async throws {
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let source = Aggregator(pricing: PricingTable(models: [:]), now: { now })
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "grok-4.6-build", messageID: "prompt-1", requestID: "grok-4.6-build",
+            isSubagent: false,
+            usage: Usage(input: 100, output: 10, cacheCreate: 0, cacheRead: 50),
+            source: "grok/grok", vendor: "grok", costUSD: 0.37, costed: true))
+
+        let file = await CacheFile.snapshot(aggregator: source, offsets: [:], parseErrors: 0)
+        let restored = Aggregator(pricing: PricingTable(models: [:]), now: { now })
+        _ = await file.restore(into: restored)
+
+        let got = await restored.snapshot()
+        let hour = Calendar.current.component(.hour, from: now)
+        XCTAssertEqual(got.todayHourlyUSD[hour], 0.37, accuracy: 1e-9,
+                       "the hourly chart must survive a restart, not flatten to zero")
+        XCTAssertEqual(got.daily.last?.hourlyUSDByModel[hour]["grok-4.6-build"] ?? 0,
+                       0.37, accuracy: 1e-9)
     }
 
     // MARK: - helpers
