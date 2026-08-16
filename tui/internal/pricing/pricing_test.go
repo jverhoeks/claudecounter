@@ -44,6 +44,88 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+// TestLoadSchema_Missing covers a pre-widening cache: a pricing.toml with no
+// schema key at all must decode to Schema == 0, so loadPricing treats it as
+// a miss and refetches once.
+func TestLoadSchema_Missing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pricing.toml")
+	body := `
+[models."claude-opus-4-7"]
+input_per_mtok = 15.0
+output_per_mtok = 75.0
+`
+	if err := writeFile(path, body); err != nil {
+		t.Fatal(err)
+	}
+	table, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Schema != 0 {
+		t.Fatalf("Schema = %d, want 0 for a cache with no schema key", table.Schema)
+	}
+}
+
+// TestLoadSchema_Present covers a cache written by the current SaveTOML.
+func TestLoadSchema_Present(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pricing.toml")
+	body := `
+schema = 2
+
+[models."claude-opus-4-7"]
+input_per_mtok = 15.0
+output_per_mtok = 75.0
+`
+	if err := writeFile(path, body); err != nil {
+		t.Fatal(err)
+	}
+	table, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Schema != TableSchema {
+		t.Fatalf("Schema = %d, want %d", table.Schema, TableSchema)
+	}
+}
+
+// TestSaveTOML_RoundTrip guards against a real TOML pitfall: top-level keys
+// must appear before any [table] header, or a decoder silently reads
+// "schema = 2" as a nested key of the last [models."..."] block instead of
+// Table.Schema, and the schema marker would never fire. Verify at the
+// consumer (Load), not just that SaveTOML ran without error.
+func TestSaveTOML_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pricing.toml")
+	in := Table{Models: map[string]ModelPrice{
+		"claude-opus-4-8": {InputPerMTok: 5, OutputPerMTok: 25, CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.5},
+		"gpt-5.6-sol":     {InputPerMTok: 1.5, OutputPerMTok: 6},
+	}}
+	if err := SaveTOML(in, path); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Schema != TableSchema {
+		t.Fatalf("Schema = %d, want %d (schema key must decode as a top-level key, not nested under a model)", out.Schema, TableSchema)
+	}
+	if len(out.Models) != len(in.Models) {
+		t.Fatalf("models = %d, want %d", len(out.Models), len(in.Models))
+	}
+	for name, want := range in.Models {
+		got, ok := out.Models[name]
+		if !ok {
+			t.Fatalf("model %q missing after round-trip", name)
+		}
+		if got != want {
+			t.Fatalf("model %q round-tripped as %+v, want %+v", name, got, want)
+		}
+	}
+}
+
 func TestDefaultsCoversMajorModels(t *testing.T) {
 	d := Defaults()
 	for _, m := range []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"} {

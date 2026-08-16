@@ -870,9 +870,24 @@ func shortModelTag(id string) string {
 // loadPricing resolves the price table in order: refresh flag > load file > fetch > defaults.
 // Returns the table plus a user-facing warning (empty if all is well).
 func loadPricing(path string, refresh bool) (pricing.Table, string) {
+	// stale holds a cache that loaded fine but predates TableSchema, so it
+	// can be returned instead of Defaults if the refetch below fails. A
+	// cache missing a provider's worth of models is still far more
+	// complete than the handful Defaults covers — dropping straight to
+	// Defaults on a network hiccup would be a regression this schema bump
+	// introduces, not a pre-existing behavior.
+	var stale pricing.Table
+	haveStale := false
 	if !refresh {
-		if t, err := pricing.Load(path); err == nil && len(t.Models) > 0 {
+		if t, err := pricing.Load(path); err == nil && len(t.Models) > 0 && t.Schema >= pricing.TableSchema {
 			return t, ""
+		} else if err == nil && len(t.Models) > 0 {
+			// A cache written before the parser learned a provider is
+			// not wrong, just incomplete — it would price every model
+			// from the missing provider at zero, silently. Refetch once;
+			// SaveTOML stamps the new schema so this happens only once.
+			log.Printf("pricing: cache at %s predates schema %d; refetching", path, pricing.TableSchema)
+			stale, haveStale = t, true
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("pricing: %s unreadable (%v); falling back", path, err)
 		}
@@ -884,6 +899,9 @@ func loadPricing(path string, refresh bool) (pricing.Table, string) {
 		_ = os.MkdirAll(filepath.Dir(path), 0o755)
 		_ = pricing.SaveTOML(t, path)
 		return t, ""
+	}
+	if haveStale {
+		return stale, fmt.Sprintf("⚠ pricing: refetch failed; using pre-schema-%d cache at %s", pricing.TableSchema, path)
 	}
 	return pricing.Defaults(),
 		fmt.Sprintf("⚠ pricing: using built-in defaults from %s", pricing.DefaultsDate)

@@ -20,7 +20,19 @@ type ModelPrice struct {
 	CacheReadPerMTok     float64 `toml:"cache_read_per_mtok"`
 }
 
+// TableSchema is bumped whenever parseLiteLLM's provider filter widens (or
+// otherwise changes which models a fetch can produce). A cache saved under
+// an older schema is stale in a way len(Models) > 0 can't detect: it's a
+// complete, valid table — just missing an entire provider's worth of
+// models, which would silently price them at $0 forever. loadPricing
+// compares a loaded table's Schema against this constant and refetches once
+// when it's behind, rather than trusting any non-empty cache indefinitely.
+const TableSchema = 2
+
 type Table struct {
+	// Schema is 0 for any cache written before this field existed (no
+	// "schema" key in the file at all) or the schema stamped by SaveTOML.
+	Schema int                   `toml:"schema"`
 	Models map[string]ModelPrice `toml:"models"`
 }
 
