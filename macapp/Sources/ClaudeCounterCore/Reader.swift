@@ -210,22 +210,126 @@ public actor Reader {
     /// that have gone away. Mirrors Go's `Reader.codexParsers`.
     private var codexParsers: [String: CodexParser] = [:]
 
+    /// Codex paths whose pre-offset bytes could not be replayed by
+    /// `seedOffsets` (the file was unreadable, or a read came back
+    /// short, despite being long enough to contain them — NOT the
+    /// separate "file shrank" case, which `onChange`'s existing
+    /// `size < start` branch already resets and fully re-reads on its
+    /// own). Without a trustworthy previous cumulative reading, the only
+    /// SAFE delta for such a path is "none, forever this run" — a fresh,
+    /// unreplayed `CodexParser` resuming mid-file would instead take
+    /// `deltaEvent`'s `first` branch and fabricate the session's entire
+    /// cumulative-to-date as new spend, on top of whatever the cache
+    /// already restored: exactly the bug this quarantine exists to avoid
+    /// reintroducing through its own failure path. `onChange` checks
+    /// this set first and returns no events without reading the file, so
+    /// the path's offset never advances either — a relaunch or manual
+    /// Refresh gets another chance to replay it successfully. No Go
+    /// equivalent: only the macapp resumes a file from cache across a
+    /// process restart. Mirrors this project's rule (see
+    /// `CodexParser.deltaEvent`) that a failure must degrade to fewer
+    /// cells, never a wrong one.
+    private var unreplayableCodexPaths: Set<String> = []
+
     public init() {}
 
     /// Drop a file from the offset map (call on Remove/Rename watcher
-    /// events), and from `codexParsers` alongside it — a deleted file's
-    /// running totals are gone for good, and keeping the entry would
-    /// both leak memory and, if the path were ever reused, resurrect
-    /// stale state for an unrelated session. Mirrors Go's `Reader.Forget`.
+    /// events), and from `codexParsers`/`unreplayableCodexPaths`
+    /// alongside it — a deleted file's running totals are gone for good,
+    /// and keeping the entries would both leak memory and, if the path
+    /// were ever reused, resurrect stale state for an unrelated session.
+    /// Mirrors Go's `Reader.Forget`.
     public func forget(path: String) {
         offsets.removeValue(forKey: path)
         codexParsers.removeValue(forKey: path)
+        unreplayableCodexPaths.remove(path)
     }
 
     /// Replace per-file offsets — used after restoring from cache so the
-    /// next OnChange picks up where the old session left off.
-    public func seedOffsets(_ newOffsets: [String: Int64]) {
+    /// next OnChange picks up where the old session left off. `vendor` is
+    /// the SINGLE vendor this reader's source is configured for — see
+    /// `AppState.seedReaders`, which owns exactly one `SourceEntry` (and
+    /// therefore one vendor) per reader id. For `vendor == "codex"`,
+    /// every non-zero offset also gets its `CodexParser` reconstructed by
+    /// replaying bytes `[0, offset)` through a fresh instance and
+    /// discarding the resulting events (see `seedCodexParser`) — without
+    /// this, resuming a rollout file mid-stream after a relaunch would
+    /// hand the next `onChange` call a parser with no running total, no
+    /// declared model, and no cwd/hasParent, fabricating the whole
+    /// session-to-date total as a fresh delta on top of the cache's
+    /// already-restored figure. Claude and Grok are stateless and must
+    /// NOT go through this path — passing any other vendor (or "") is a
+    /// plain assignment, exactly as before.
+    public func seedOffsets(_ newOffsets: [String: Int64], vendor: String) {
         offsets = newOffsets
+        guard vendor == "codex" else { return }
+        for (path, offset) in newOffsets where offset > 0 {
+            seedCodexParser(path: path, offset: offset)
+        }
+    }
+
+    /// Reconstructs one codex path's `CodexParser` state to exactly what
+    /// `offset` implies, by replaying bytes `[0, offset)` through a fresh
+    /// instance and discarding every resulting event — the replayed
+    /// bytes were already counted (they're behind the cached cells this
+    /// same restore just applied to the aggregator), only the parser's
+    /// RUNNING STATE (running totals, declared model, cwd, hasParent) is
+    /// needed here.
+    ///
+    /// Three outcomes:
+    ///  - Success: `codexParsers[path]` is installed with the replayed
+    ///    parser, so the next `onChange` call resumes correctly.
+    ///  - The file has shrunk (current size < `offset`) or vanished:
+    ///    deliberately left alone — `onChange`'s existing `size < start`
+    ///    branch already resets and fully re-reads a shrunk path the
+    ///    moment it's next touched, and a vanished file is dropped by
+    ///    its existing `fileExists` check. That pre-existing behaviour
+    ///    CAN double-count against the cache's restored cells (there's
+    ///    no way to selectively un-restore just one file's contribution
+    ///    from already-merged cells), a known, out-of-scope-here window;
+    ///    a genuine shrink is not the NEW failure mode this method
+    ///    exists to guard.
+    ///  - Any other read failure (unreadable, or a short read despite
+    ///    adequate size): `path` is quarantined via
+    ///    `unreplayableCodexPaths` instead — see its doc comment.
+    private func seedCodexParser(path: String, offset: Int64) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? Int64) ?? Int64((attrs?[.size] as? Int) ?? 0)
+        guard size >= offset else { return }
+
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            unreplayableCodexPaths.insert(path)
+            return
+        }
+        defer { try? handle.close() }
+
+        let data: Data
+        do {
+            data = try handle.read(upToCount: Int(offset)) ?? Data()
+        } catch {
+            unreplayableCodexPaths.insert(path)
+            return
+        }
+        guard data.count == Int(offset) else {
+            unreplayableCodexPaths.insert(path)
+            return
+        }
+
+        let parser = CodexParser()
+        var consumed = 0
+        while consumed < data.count {
+            guard let nlOffset = nextNewline(in: data, from: consumed) else { break }
+            let line = data[consumed..<nlOffset]
+            consumed = nlOffset + 1
+            if isWhitespaceOnly(line) { continue }
+            // Discard both events and parse errors: these bytes were
+            // already parsed (and any parse errors already tallied) the
+            // run that produced the cached offset — re-tallying them
+            // here would double `CacheFile.parseErrors`.
+            _ = parser.parse(Data(line), path: path)
+        }
+        codexParsers[path] = parser
     }
 
     /// Snapshot of the per-file byte offset map.
@@ -235,15 +339,17 @@ public actor Reader {
 
     /// Drop all offset state and reset diagnostics. Used by manual
     /// Refresh, which re-scans every reachable source from scratch — so
-    /// `codexParsers` must be cleared too, or a stale running total would
-    /// survive into a fresh from-offset-zero read and delta the re-scan's
-    /// first reading against it (no Go equivalent exists for this method,
-    /// but the same invariant `codexParser.Reset`'s doc comment describes
+    /// `codexParsers` and `unreplayableCodexPaths` must be cleared too,
+    /// or a stale running total (or a stale quarantine) would survive
+    /// into a fresh from-offset-zero read and delta the re-scan's first
+    /// reading against it (no Go equivalent exists for this method, but
+    /// the same invariant `codexParser.Reset`'s doc comment describes
     /// applies here: a path read from offset zero for a reason other than
     /// "never seen before" must not keep its old state).
     public func resetAll() {
         offsets.removeAll(keepingCapacity: true)
         codexParsers.removeAll(keepingCapacity: true)
+        unreplayableCodexPaths.removeAll(keepingCapacity: true)
         parseErrors = 0
     }
 
@@ -275,6 +381,12 @@ public actor Reader {
     /// source. There is deliberately no defaulted overload — the
     /// caller must always know which source it's scanning.
     public func onChange(path: String, source: SourceEntry) async throws -> [UsageEvent] {
+        // See `unreplayableCodexPaths`'s doc comment: a path quarantined
+        // there stays untouched (offset included) for the rest of this
+        // run rather than risk a fresh, unreplayed `CodexParser`
+        // fabricating a double-counted delta.
+        if unreplayableCodexPaths.contains(path) { return [] }
+
         let stored = offsets[path] ?? 0
 
         let url = URL(fileURLWithPath: path)

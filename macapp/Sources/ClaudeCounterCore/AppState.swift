@@ -429,8 +429,16 @@ public final class AppState: ObservableObject {
             guard let source = Self.matchSource(for: path, in: sources) else { continue }
             bySource[source.id, default: [:]][path] = offset
         }
+        // Each reader id maps to exactly one `SourceEntry` (and so one
+        // vendor) — `readers`/`sources` are kept in lockstep by
+        // `syncReaders`. `seedOffsets` needs the vendor to know whether
+        // to replay codex paths' running state (see its doc comment); a
+        // reader whose id is somehow missing from `sources` (should be
+        // unreachable) gets "", which is a plain assignment, never a
+        // guessed-at replay.
+        let vendorByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.vendor) })
         for (id, r) in readers {
-            await r.seedOffsets(bySource[id] ?? [:])
+            await r.seedOffsets(bySource[id] ?? [:], vendor: vendorByID[id] ?? "")
         }
     }
 
