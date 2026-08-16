@@ -54,6 +54,14 @@ func projectUnderRoot(root, slashPath string) (segment string, ok bool) {
 	return rest, true
 }
 
+// parserFor is a pure vendor→parser lookup for the two STATELESS
+// parsers, where a fresh value returned per call is harmless because
+// every method call is independent of the last. codex is deliberately
+// absent: codexParser carries running totals and session_meta-derived
+// state across calls, so a fresh instance per call is exactly wrong for
+// it — see codexParser's doc comment and Reader.parserForChange, which
+// keeps one *codexParser per file path instead of asking here for a new
+// one.
 func parserFor(vendor string) vendorParser {
 	switch vendor {
 	case "grok":

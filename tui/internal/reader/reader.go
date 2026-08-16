@@ -116,6 +116,13 @@ type Reader struct {
 	parseErrors int
 	out         chan<- Event
 	src         sources.Source
+	// codexParsers holds one *codexParser per path currently tracked in
+	// offsets, keyed the same way. codexParser is stateful (see its doc
+	// comment), so unlike claudeParser/grokParser it cannot be recreated
+	// on every OnChange call — see parserForChange. Entries are dropped
+	// in Forget alongside the matching offsets entry, so a long-running
+	// watcher does not accumulate parsers for files that have gone away.
+	codexParsers map[string]*codexParser
 }
 
 func New(out chan<- Event) *Reader {
@@ -139,11 +146,51 @@ func (r *Reader) ParseErrors() int {
 	return r.parseErrors
 }
 
-// Forget drops a file from the offset map (used on Remove events).
+// Forget drops a file from the offset map (used on Remove events), and
+// from codexParsers alongside it — a deleted file's running totals are
+// gone for good, and keeping the entry would both leak memory and, if
+// the path were ever reused, resurrect stale state for an unrelated
+// session.
 func (r *Reader) Forget(path string) {
 	r.mu.Lock()
 	delete(r.offsets, path)
+	delete(r.codexParsers, path)
 	r.mu.Unlock()
+}
+
+// parserForChange resolves the vendorParser OnChange should use for one
+// path. For the two stateless vendors this is just parserFor(vendor): a
+// fresh value is fine since nothing carries over between calls. codex is
+// not — the Reader keeps one *codexParser per path, created on first
+// sight and reused on every later call, which is what makes running
+// totals and session_meta survive across a growing file's OnChange
+// calls. See codexParser's doc comment and Controller ruling R3.
+func (r *Reader) parserForChange(vendor, path string) vendorParser {
+	if vendor != "codex" {
+		return parserFor(vendor)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.codexParsers[path]; ok {
+		return p
+	}
+	if r.codexParsers == nil {
+		r.codexParsers = map[string]*codexParser{}
+	}
+	p := &codexParser{}
+	r.codexParsers[path] = p
+	return p
+}
+
+// walkableFor reports whether name can carry usage for vendor. Walkable
+// never reads a parser's state for any vendor — including codex — so a
+// throwaway instance is fine here even though real parsing must go
+// through parserForChange's Reader-owned map.
+func walkableFor(vendor, name string) bool {
+	if vendor == "codex" {
+		return (&codexParser{}).Walkable(name)
+	}
+	return parserFor(vendor).Walkable(name)
 }
 
 // OnChange reads any new complete lines in path starting from the
@@ -155,7 +202,7 @@ func (r *Reader) OnChange(path string) error {
 	src := r.src
 	r.mu.Unlock()
 	vendor, source := src.Vendor, src.ID()
-	p := parserFor(vendor)
+	p := r.parserForChange(vendor, path)
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -173,6 +220,14 @@ func (r *Reader) OnChange(path string) error {
 	}
 	if stat.Size() < start {
 		start = 0
+		// The file shrank or was replaced: a previously-seen codex path
+		// is about to be read from byte offset 0 again for a reason
+		// other than "never seen before", so its running totals and
+		// declared model must not survive into this read. See
+		// codexParser.Reset's doc comment.
+		if cp, ok := p.(*codexParser); ok {
+			cp.Reset()
+		}
 	}
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return err
@@ -253,7 +308,6 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 	r.mu.Lock()
 	vendor := r.src.Vendor
 	r.mu.Unlock()
-	p := parserFor(vendor)
 
 	paths := make(chan string, 256)
 
@@ -263,7 +317,7 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if !p.Walkable(d.Name()) {
+			if !walkableFor(vendor, d.Name()) {
 				return nil
 			}
 			info, err := d.Info()
