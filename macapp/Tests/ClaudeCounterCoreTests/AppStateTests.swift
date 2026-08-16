@@ -1387,6 +1387,182 @@ final class AppStateTests: XCTestCase {
         await app.refreshPricingIfStale(session: mock)
         XCTAssertEqual(app.pricing, stale, "a failed refetch must leave the stale table in place, not drop to defaults")
     }
+
+    // MARK: - New-vendor cache backfill (coveredSources)
+
+    /// Reproduces the shipped bug directly: a cache written before Codex
+    /// existed (or before `coveredSources` existed at all — modelled here
+    /// as `coveredSources == nil`, since an old cache has no way to say
+    /// what it covered) must not let the catch-up scan's incremental
+    /// cutoff swallow an entire vendor's history. The rollout file's
+    /// mtime is forced older than the cache's `writtenAt`, so the
+    /// pre-fix single, uniform `notBefore` (derived from
+    /// `cacheWrittenAt`) excludes it from the scan entirely — exactly
+    /// the measured production symptom (2 files / 1.0M tokens instead of
+    /// 49 files / 1.17B tokens). Must FAIL against the un-fixed code:
+    /// zero Codex events read.
+    func test_appState_uncoveredSource_getsFullBackfillWindow_evenWithOldFile() async throws {
+        let base = NSTemporaryDirectory() + "as-newvendor-\(UUID().uuidString)"
+        let codexRoot = base + "/codex/sessions/2026/08/14"
+        try FileManager.default.createDirectory(atPath: codexRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let rolloutPath = codexRoot + "/rollout-newvendor.jsonl"
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        let t0 = iso.string(from: now.addingTimeInterval(-2))
+        let t1 = iso.string(from: now.addingTimeInterval(-1))
+
+        // session_meta (parent_thread_id present -> subagent, fallback
+        // model "codex-auto-review") + a single token_count reading —
+        // the session's first-ever, so its delta is the reading's own
+        // value: input 1000 - cached 200 = 800, output 100, cacheRead 200.
+        let sessionMeta = #"{"timestamp":"\#(t0)","type":"session_meta","payload":{"session_id":"s1","cwd":"/Users/me/src/proj","parent_thread_id":"parent-1"}}"#
+        let reading = #"{"timestamp":"\#(t1)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"total_tokens":1100}}}}"#
+        try (sessionMeta + "\n" + reading + "\n").write(toFile: rolloutPath, atomically: true, encoding: .utf8)
+
+        // Old mtime: well before "cacheWrittenAt - 5m" (the incremental
+        // cutoff a covered/legacy-uniform scan would use) but still
+        // inside the full Go-style floor (min(firstOfMonth, now-35d)),
+        // so ONLY the partition — not the mtime itself — decides whether
+        // this file is read.
+        let oldMtime = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        try FileManager.default.setAttributes([.modificationDate: oldMtime], ofItemAtPath: rolloutPath)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "codex"
+        label = "codex"
+        root = "\(base)/codex/sessions"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-newvendor-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        // A recent cache with no Codex cells/offsets and coveredSources
+        // == nil — the exact shape an upgrade from a pre-Codex build
+        // produces, and the exact shape any cache predating this fix
+        // produces too (see CacheFile.coveredSources's doc comment).
+        let seededCache = CacheFile(
+            writtenAt: now,
+            cells: [],
+            perMsg: [],
+            offsets: [:],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: base + "/unused-claude-root",
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath,
+            home: base
+        )
+        await app.start()
+        await app.stop()
+
+        let seriesKey = SeriesKey(source: "codex/codex", vendor: "codex", model: "codex-auto-review")
+        let counted = app.totals.month[seriesKey]
+        XCTAssertNotNil(counted, "an uncovered vendor's pre-existing history must be read on the very next launch, not silently skipped forever")
+        XCTAssertEqual(counted?.tokens.input, 800, "the old rollout's only reading must be counted despite its mtime predating the cache's incremental cutoff")
+        XCTAssertEqual(counted?.tokens.output, 100)
+        XCTAssertEqual(counted?.tokens.cacheRead, 200)
+    }
+
+    /// The other half of the same fix: a source the cache DOES cover
+    /// must keep taking the cheap incremental path, not be swept into a
+    /// full rescan just because some OTHER (new) source in the same
+    /// launch is uncovered. Proven by making the incremental/full
+    /// distinction observable — the file on disk has bytes beyond the
+    /// cache's recorded offset (simulating pre-existing, not-yet-read
+    /// content), and its mtime is old enough to be excluded by the
+    /// incremental cutoff but still inside the full-window floor. If the
+    /// fix were "just always give every source the full window" this
+    /// would pick up those extra bytes and inflate the total past the
+    /// cached $5 — the exact "quietly destroys the cache's value / double
+    /// counts restored cells" failure mode this test exists to catch.
+    func test_appState_coveredSource_staysOnIncrementalPath_oldExtraBytesNotReread() async throws {
+        let base = NSTemporaryDirectory() + "as-covered-\(UUID().uuidString)"
+        let workRoot = base + "/work/projects/p1"
+        try FileManager.default.createDirectory(atPath: workRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let workPath = workRoot + "/sess.jsonl"
+        let ts = ISO8601DateFormatter().string(from: Date())
+        // Line 1 is what the cache already restored ($5, 1M input
+        // tokens). Line 2 is written to disk too, but the seeded offset
+        // stops right after line 1 — line 2 must stay unread as long as
+        // this source takes the incremental path.
+        let firstLine = #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s1","cwd":"/tmp/x","requestId":"r1"}\#n"#
+        let secondLine = #"{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-7","usage":{"input_tokens":2000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"\#(ts)","sessionId":"s2","cwd":"/tmp/y","requestId":"r2"}\#n"#
+        try (firstLine + secondLine).write(toFile: workPath, atomically: true, encoding: .utf8)
+        let offsetAfterFirstLine = Int64(Data(firstLine.utf8).count)
+
+        // Old mtime: predates the incremental cutoff derived from the
+        // cache's writtenAt, but is inside the full-window floor — same
+        // shape as the uncovered test above, so this is a true regression
+        // guard against the partition collapsing to "always full scan".
+        let oldMtime = Date().addingTimeInterval(-2 * 24 * 60 * 60)
+        try FileManager.default.setAttributes([.modificationDate: oldMtime], ofItemAtPath: workPath)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "claude"
+        label = "work"
+        root = "\(base)/work/projects"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-covered-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let key = SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")
+        let seededCache = CacheFile(
+            writtenAt: Date(),
+            cells: [
+                CacheFile.CellEntry(
+                    day: civilDayString(dayOf(Date())), project: "-tmp-x", source: "claude/work",
+                    vendor: "claude", model: "claude-opus-4-7", isSub: false,
+                    input: 1000000, output: 0, cacheCreate: 0, cacheRead: 0
+                )
+            ],
+            perMsg: ["r1"],
+            offsets: [workPath: offsetAfterFirstLine],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: [],
+            coveredSources: ["claude/work"]
+        )
+        try cacheStore.save(seededCache)
+
+        let app = AppState(
+            projectsRoot: base + "/work/projects",
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath,
+            home: base
+        )
+        await app.start()
+        await app.stop()
+
+        XCTAssertEqual(app.totals.day[key]?.usd ?? 0, 5.0, accuracy: 1e-6,
+                       "a covered source's old, already-offset file must not be swept into a full rescan just because another source in the same launch is uncovered")
+    }
 }
 
 private actor CountingMockSession: URLSessionProtocol {
