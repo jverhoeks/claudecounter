@@ -39,9 +39,10 @@ deduped dupes=1  parse_errors=1  unknown_model_events=0
 // buildRunOnceFixture writes two project transcripts under root/projects/:
 // one/one.jsonl carries an Opus event plus an exact duplicate (same
 // message+request id) and a malformed line; two/two.jsonl carries a
-// Sonnet event. The "/projects/" segment in the path is required —
-// reader.projectFromPath keys off that literal substring — so the two
-// events land in distinct project buckets ("one" and "two").
+// Sonnet event. The source root is rooted at <tmpdir>/projects, and the
+// project key is derived as the first path segment below that root (see
+// projectUnderRoot) — so "one" and "two" land in distinct project
+// buckets simply by being the two directories directly under root.
 func buildRunOnceFixture(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "projects")

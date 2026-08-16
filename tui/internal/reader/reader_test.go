@@ -251,9 +251,10 @@ func TestInitialScanSourceTagsEvents(t *testing.T) {
 // with the source identity.
 func TestInitialScanSource_GrokEndToEnd(t *testing.T) {
 	// The root must be the sessions directory itself, the way
-	// sources.Defaults builds it: grokProjectKey finds the encoded cwd by
-	// anchoring on the "/sessions/" segment, so a fixture rooted anywhere
-	// else files every event under the empty project.
+	// sources.Defaults builds it: grokProjectKey finds the encoded cwd as
+	// the first path segment under the configured root (grokSessionDir /
+	// projectUnderRoot), so a fixture rooted anywhere else files every
+	// event under the empty project.
 	root := filepath.Join(t.TempDir(), "sessions")
 	dir := filepath.Join(root, "%2FUsers%2Fme%2Fsrc%2Fproj", "01a0-sess")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

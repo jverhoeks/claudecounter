@@ -293,8 +293,8 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			for p := range paths {
-				_ = r.OnChange(p)
+			for path := range paths {
+				_ = r.OnChange(path)
 			}
 		}()
 	}

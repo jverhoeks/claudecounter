@@ -22,9 +22,11 @@ import (
 // turn and being billed twice.
 func TestScan_DuplicateTurnAcrossSessionDirsIsCountedOnce(t *testing.T) {
 	// The root must be the sessions directory itself, the way
-	// sources.Defaults builds it: grokProjectKey and IsSubagent both
-	// anchor on the "/sessions/" segment, so a fixture rooted anywhere
-	// else wouldn't exercise the subagent-worktree path this test names.
+	// sources.Defaults builds it: the project key and subagent-ness are
+	// both derived relative to the configured root (projectUnderRoot),
+	// so a fixture rooted anywhere else would derive a different — and
+	// wrong — project segment, and wouldn't exercise the
+	// subagent-worktree path this test names.
 	root := filepath.Join(t.TempDir(), "sessions")
 	line := `{"timestamp":1786807668,"method":"_x.ai/session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"turn_completed","prompt_id":"shared-1","usage":{"inputTokens":1000,"outputTokens":100,"cachedReadTokens":400,"costUsdTicks":1656000000,"modelUsage":{"grok-4.6-build":{"inputTokens":1000,"outputTokens":100,"cachedReadTokens":400,"costUsdTicks":1656000000}}}}}}` + "\n"
 

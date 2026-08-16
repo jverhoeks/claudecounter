@@ -144,11 +144,13 @@ func requireRoot(root string) {
 // a single implicit source, so a user who still passes --root sees
 // exactly what they always have — and, per requireRoot, a typo in that
 // path is still fatal, not a silent zero. Otherwise the configured list
-// is used (Defaults(home) when no sources.toml exists — byte-identical
-// to today's implicit single-source behaviour). A malformed
-// sources.toml is fatal here: these are one-shot commands, so exiting
-// non-zero with the parse error beats silently showing wrong or empty
-// totals. Contrast runTUI, which must never exit on the same error.
+// is used: Defaults(home) when no sources.toml exists, which is the
+// auto-discovering default list — a single Claude source, plus any
+// other vendor root (e.g. ~/.grok/sessions) this machine happens to
+// have. A malformed sources.toml is fatal here: these are one-shot
+// commands, so exiting non-zero with the parse error beats silently
+// showing wrong or empty totals. Contrast runTUI, which must never exit
+// on the same error.
 func resolveSources(sourcesPath, root string, rootSet bool, home string) []sources.Source {
 	if rootSet {
 		requireRoot(root)
