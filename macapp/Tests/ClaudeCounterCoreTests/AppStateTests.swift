@@ -1072,6 +1072,50 @@ final class AppStateTests: XCTestCase {
         await app.stop()
     }
 
+    /// Mandatory per Task 5: proves Codex discovery reaches `AppState`,
+    /// not just `Sources.defaults` in isolation. Phase B shipped Grok
+    /// dead in the macapp because `Sources.defaults` was unit-tested on
+    /// its own while nothing asserted `AppState.start()` actually reached
+    /// it — `eef9e14` fixed that path (see the Grok test above); this is
+    /// the same assertion for a third vendor, constructed the same way:
+    /// no `sources.toml` at all, and a temp `home` containing
+    /// `.codex/sessions`.
+    func test_appState_discoversCodexWithNoSourcesToml() async throws {
+        let root = NSTemporaryDirectory() + "as-codexdisc-\(UUID().uuidString)"
+        let projects = root + "/projects"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let home = NSTemporaryDirectory() + "as-home-codex-\(UUID().uuidString)"
+        let codexSessions = home + "/.codex/sessions"
+        try FileManager.default.createDirectory(atPath: codexSessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-codexdisc-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: projects,
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            // No sources.toml at this path — exercises the missing-file branch.
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-codex-\(UUID().uuidString).toml",
+            home: home
+        )
+        await app.start()
+
+        XCTAssertTrue(app.sources.contains { $0.vendor == "codex" && $0.root == codexSessions },
+                      "codex must be auto-discovered under the injected home when its sessions dir exists")
+
+        await app.stop()
+    }
+
     /// The malformed-config `catch` branch had the identical defect —
     /// it also returned the bare Claude-only fallback instead of
     /// `defaultsWithClaudeRoot`. Discovery must survive that path too,

@@ -38,9 +38,19 @@ public protocol VendorParser {
 /// Returns the parser for one configured source's vendor. Unknown vendors
 /// fall back to `ClaudeParser`, matching Go's `default:` case — there is
 /// no vendor whose events should be silently dropped.
+///
+/// The `codex` case returns a throwaway `CodexParser` — safe here only
+/// because every call site that reaches `codex` through this function
+/// uses it for something stateless (`walkable`, or an `is CodexParser`
+/// type check). `CodexParser` carries running totals and
+/// session_meta-derived state across `parse` calls, so a fresh instance
+/// per call would be exactly wrong for actual parsing — see its doc
+/// comment and `Reader.parserForChange`, which keeps one `CodexParser`
+/// per file path instead of asking here for a new one on every line.
 public func parserFor(vendor: String) -> VendorParser {
     switch vendor {
     case "grok": return GrokParser()
+    case "codex": return CodexParser()
     default: return ClaudeParser()
     }
 }

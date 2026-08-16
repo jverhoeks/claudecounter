@@ -179,8 +179,8 @@ private struct SourceRowView: View {
     /// Hardcoded rather than `Sources.knownVendors` — that set isn't
     /// `public` (it's internal to `ClaudeCounterCore`, deliberately not
     /// part of the cross-module API), and this editor only ever offers
-    /// the two vendors the Go/Swift loaders both already accept.
-    private let vendors = ["claude", "grok"]
+    /// the vendors the Go/Swift loaders both already accept.
+    private let vendors = ["claude", "grok", "codex"]
 
     var body: some View {
         HStack(spacing: 6) {

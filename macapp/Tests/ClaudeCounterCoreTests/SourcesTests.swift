@@ -51,6 +51,39 @@ final class SourcesTests: XCTestCase {
         XCTAssertEqual(got[0].vendor, "claude")
     }
 
+    /// Mirrors Go's `TestDefaults_DiscoversCodexWhenPresent`.
+    func test_defaults_discoversCodexWhenPresent() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(
+            atPath: (home as NSString).appendingPathComponent(".codex/sessions"),
+            withIntermediateDirectories: true)
+
+        let got = Sources.defaults(home: home)
+        XCTAssertEqual(got.count, 2, "expected the Claude default plus a discovered Codex source")
+        XCTAssertEqual(got[0].vendor, "claude", "Claude must stay first")
+        XCTAssertEqual(got[1].vendor, "codex")
+        XCTAssertEqual(got[1].label, "codex")
+        XCTAssertEqual(got[1].root, (home as NSString).appendingPathComponent(".codex/sessions"))
+    }
+
+    /// Both discoverable vendors present at once: order must follow
+    /// `discoverable`'s declaration order (grok, then codex), mirroring
+    /// `sources.go`.
+    func test_defaults_discoversBothGrokAndCodexInDeclaredOrder() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(
+            atPath: (home as NSString).appendingPathComponent(".grok/sessions"),
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            atPath: (home as NSString).appendingPathComponent(".codex/sessions"),
+            withIntermediateDirectories: true)
+
+        let got = Sources.defaults(home: home)
+        XCTAssertEqual(got.map { $0.vendor }, ["claude", "grok", "codex"])
+    }
+
     // A discovered root nested inside the Claude root is dropped rather
     // than returned, mirroring Go's checkOverlap-dropping in
     // DefaultsWithClaudeRoot: `load` rejects nested roots outright
@@ -92,6 +125,21 @@ final class SourcesTests: XCTestCase {
         let cfg = try Sources.load(path: p, home: "/home/u")
         XCTAssertEqual(cfg.sources.count, 1)
         XCTAssertEqual(cfg.sources[0].root, "/home/u/.claude/projects")
+    }
+
+    /// A sources.toml naming vendor = "codex" must load, exactly like grok
+    /// does. Mirrors Go's `TestLoad_AcceptsCodexVendor`.
+    func test_load_acceptsCodexVendor() throws {
+        let p = try write("""
+        [[source]]
+        vendor = "codex"
+        label  = "codex"
+        root   = "~/.codex/sessions"
+        """)
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        let cfg = try Sources.load(path: p, home: "/home/u")
+        XCTAssertEqual(cfg.sources.count, 1)
+        XCTAssertEqual(cfg.sources[0].vendor, "codex")
     }
 
     func test_load_allowsSameLabelAcrossVendors() throws {

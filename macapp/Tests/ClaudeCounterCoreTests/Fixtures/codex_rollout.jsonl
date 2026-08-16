@@ -1,0 +1,9 @@
+{"timestamp":"2026-08-09T08:34:15.910Z","type":"session_meta","payload":{"session_id":"s1","cwd":"/Users/me/src/proj","originator":"codex-tui"}}
+{"timestamp":"2026-08-09T08:34:16.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":40,"total_tokens":1100}}}}
+{"timestamp":"2026-08-09T08:35:00.000Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-5.6-sol","model_provider_id":"openai"}}}
+{"timestamp":"2026-08-09T08:36:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3000,"cached_input_tokens":1400,"output_tokens":300,"reasoning_output_tokens":90,"total_tokens":3300}}}}
+{"timestamp":"2026-08-09T08:36:30.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3000,"cached_input_tokens":1400,"output_tokens":300,"reasoning_output_tokens":90,"total_tokens":3300}}}}
+{"timestamp":"2026-08-09T08:37:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":5,"output_tokens":1,"total_tokens":11}}}}
+{"timestamp":"2026-08-09T08:37:30.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":110,"cached_input_tokens":55,"output_tokens":11,"total_tokens":121}}}}
+{"timestamp":"2026-08-09T08:38:00.000Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/Users/me/src/proj"}}
+{not json

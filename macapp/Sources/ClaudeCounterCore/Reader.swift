@@ -176,18 +176,22 @@ func normalizeSlashes(_ path: String) -> String {
 
 // MARK: - ISO8601 date parsing tolerant of fractional seconds
 
-private let iso8601Plain: ISO8601DateFormatter = {
+// Not `private`: CodexReader.swift's line timestamps need the same
+// tolerant parsing (rollout files use fractional-second UTC timestamps
+// like Claude's), so this is shared at module (internal) visibility
+// rather than duplicated.
+let iso8601Plain: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
     return f
 }()
-private let iso8601Frac: ISO8601DateFormatter = {
+let iso8601Frac: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return f
 }()
 
-private func isoDate(_ s: String) -> Date? {
+func isoDate(_ s: String) -> Date? {
     if let d = iso8601Frac.date(from: s) { return d }
     return iso8601Plain.date(from: s)
 }
@@ -197,12 +201,25 @@ private func isoDate(_ s: String) -> Date? {
 public actor Reader {
     private var offsets: [String: Int64] = [:]
     private(set) public var parseErrors: Int = 0
+    /// One `CodexParser` per path currently tracked in `offsets`, keyed
+    /// the same way. `CodexParser` is stateful (see its doc comment), so
+    /// unlike `ClaudeParser`/`GrokParser` it cannot be recreated on every
+    /// `onChange` call — see `parserForChange`. Entries are dropped in
+    /// `forget` (and `resetAll`) alongside the matching `offsets` entry,
+    /// so a long-running watcher does not accumulate parsers for files
+    /// that have gone away. Mirrors Go's `Reader.codexParsers`.
+    private var codexParsers: [String: CodexParser] = [:]
 
     public init() {}
 
-    /// Drop a file from the offset map (call on Remove/Rename watcher events).
+    /// Drop a file from the offset map (call on Remove/Rename watcher
+    /// events), and from `codexParsers` alongside it — a deleted file's
+    /// running totals are gone for good, and keeping the entry would
+    /// both leak memory and, if the path were ever reused, resurrect
+    /// stale state for an unrelated session. Mirrors Go's `Reader.Forget`.
     public func forget(path: String) {
         offsets.removeValue(forKey: path)
+        codexParsers.removeValue(forKey: path)
     }
 
     /// Replace per-file offsets — used after restoring from cache so the
@@ -216,10 +233,34 @@ public actor Reader {
         return offsets
     }
 
-    /// Drop all offset state and reset diagnostics. Used by manual Refresh.
+    /// Drop all offset state and reset diagnostics. Used by manual
+    /// Refresh, which re-scans every reachable source from scratch — so
+    /// `codexParsers` must be cleared too, or a stale running total would
+    /// survive into a fresh from-offset-zero read and delta the re-scan's
+    /// first reading against it (no Go equivalent exists for this method,
+    /// but the same invariant `codexParser.Reset`'s doc comment describes
+    /// applies here: a path read from offset zero for a reason other than
+    /// "never seen before" must not keep its old state).
     public func resetAll() {
         offsets.removeAll(keepingCapacity: true)
+        codexParsers.removeAll(keepingCapacity: true)
         parseErrors = 0
+    }
+
+    /// Resolves the `VendorParser` `onChange` should use for one path.
+    /// For the two stateless vendors this is just `parserFor(vendor:)`: a
+    /// fresh value is fine since nothing carries over between calls.
+    /// Codex is not — this actor keeps one `CodexParser` per path,
+    /// created on first sight and reused on every later call, which is
+    /// what makes running totals and session_meta survive across a
+    /// growing file's `onChange` calls. Mirrors Go's
+    /// `Reader.parserForChange`.
+    private func parserForChange(vendor: String, path: String) -> VendorParser {
+        guard vendor == "codex" else { return parserFor(vendor: vendor) }
+        if let p = codexParsers[path] { return p }
+        let p = CodexParser()
+        codexParsers[path] = p
+        return p
     }
 
     /// Read any new complete lines since the last offset, returning their
@@ -239,32 +280,35 @@ public actor Reader {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
             offsets.removeValue(forKey: path)
+            codexParsers.removeValue(forKey: path)
             return []
         }
+
+        // parserForChange resolves (and, for codex, creates-or-reuses)
+        // the parser instance for this path BEFORE the truncation check
+        // below, mirroring Go's Reader.OnChange — Reset must run on the
+        // SAME instance whose running totals are stale, not a fresh one.
+        let parser = parserForChange(vendor: source.vendor, path: path)
 
         let attrs = try FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs[.size] as? Int64) ?? Int64((attrs[.size] as? Int) ?? 0)
         var start = stored
         if size < start {
-            // File was truncated/rotated under us — restart from zero.
+            // The file shrank or was replaced: a previously-seen codex
+            // path is about to be read from byte offset 0 again for a
+            // reason other than "never seen before", so its running
+            // totals and declared model must not survive into this
+            // read. See CodexParser.reset's doc comment.
             start = 0
+            if let cp = parser as? CodexParser {
+                cp.reset()
+            }
         }
 
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(start))
         let data = try handle.readToEnd() ?? Data()
-
-        // The parser is picked from the source's vendor rather than
-        // hardcoded to Claude's — same change as Go's Task 4. Project and
-        // subagent status depend only on `path`/`source.root`, which are
-        // both constant across every line of this file, so they're
-        // computed once here rather than per line (Go recomputes them
-        // per line inside OnChange's loop; observationally identical
-        // since neither input varies within one call).
-        let parser = parserFor(vendor: source.vendor)
-        let project = parser.project(path, root: source.root)
-        let isSub = parser.isSubagent(path, root: source.root)
 
         // Walk newline-terminated lines. Bytes after the last \n are not consumed.
         var consumed = 0
@@ -278,7 +322,17 @@ public actor Reader {
             if isWhitespaceOnly(line) { continue }
 
             switch parser.parse(Data(line), path: path) {
-            case .events(let evs):
+            case .events(let evs) where !evs.isEmpty:
+                // Project/subagent are computed AFTER this line's parse,
+                // not once before the loop: for Claude/Grok they're a
+                // pure function of path/root so it wouldn't matter, but
+                // CodexParser's project()/isSubagent() read state that
+                // parse() itself may have just set (session_meta on line
+                // 1, read by line 2's event) — computing them earlier
+                // would see stale (empty) state on a file's first call.
+                // Mirrors Go's OnChange, which recomputes both per line.
+                let project = parser.project(path, root: source.root)
+                let isSub = parser.isSubagent(path, root: source.root)
                 for var ev in evs {
                     ev.project = project
                     ev.isSubagent = isSub
@@ -286,6 +340,8 @@ public actor Reader {
                     ev.vendor = source.vendor
                     events.append(ev)
                 }
+            case .events:
+                break
             case .parseError:
                 parseErrors += 1
                 continue
@@ -308,7 +364,13 @@ public actor Reader {
         // Which base names are walkable comes from the source's vendor —
         // same change as Go's Task 4 — so Grok's sessions/ directory
         // doesn't have its non-usage sibling files (e.g. messages.jsonl)
-        // scanned as if they were updates.jsonl.
+        // scanned as if they were updates.jsonl, and Codex's doesn't
+        // treat every *.jsonl under ~/.codex/sessions as a rollout file.
+        // `walkable` never reads a parser's state for any vendor —
+        // including codex — so the throwaway instance `parserFor`
+        // returns is fine here even though real parsing must go through
+        // `parserForChange`'s per-path-owned map. Mirrors Go's
+        // `walkableFor`.
         let walkable = parserFor(vendor: source.vendor).walkable
         let candidates = Self.candidateFiles(under: root, notBefore: notBefore, walkable: walkable)
 
