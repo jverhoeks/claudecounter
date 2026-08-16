@@ -18,10 +18,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// knownVendors are the vendors a reader exists for. Phase A ships
-// claude; grok is accepted so a user can configure it ahead of Phase B
-// without the file failing to load.
-var knownVendors = map[string]bool{"claude": true, "grok": true}
+// knownVendors are the vendors a reader exists for.
+var knownVendors = map[string]bool{"claude": true, "grok": true, "codex": true}
 
 // Source is one configured root.
 type Source struct {
@@ -122,6 +120,7 @@ var discoverable = []struct {
 	segments []string
 }{
 	{vendor: "grok", segments: []string{".grok", "sessions"}},
+	{vendor: "codex", segments: []string{".codex", "sessions"}},
 }
 
 // Load reads sources.toml. A missing file yields Defaults(home) and no

@@ -6,9 +6,10 @@ Both apps tail `~/.claude/projects/**/*.jsonl` (recursively, including
 subagent transcripts) via OS-native file events, dedupe by
 `messageId:requestId`, and apply the same LiteLLM pricing table that
 [ccusage](https://github.com/ryoppippi/ccusage) uses. Same JSONL in →
-same dollars out, to the cent. Grok spend is counted too, if
-`~/.grok/sessions` exists — but its dollars come straight from the
-figure xAI reports per turn, not from a pricing table (see
+same dollars out, to the cent. Codex spend is counted the same way — priced
+from that same LiteLLM table — if `~/.codex/sessions` exists. Grok spend is
+counted too, if `~/.grok/sessions` exists — but its dollars come straight
+from the figure xAI reports per turn, not from a pricing table (see
 [Multiple sources & grouping](#-multiple-sources--grouping-tui-key-v--popover-segmented-control)).
 
 | | [Go TUI](./tui) | [Mac menu bar](./macapp) |
@@ -20,7 +21,7 @@ figure xAI reports per turn, not from a pricing table (see
 | **One-shot mode** | `claudecounter --once` · `--phases` · `--report` | (use the TUI) |
 | **Persists between runs?** | No | Yes (`~/Library/Application Support/...`) |
 | **Live updates** | fsnotify-driven | FSEventStream-driven |
-| **Vendors counted** | Claude (priced from LiteLLM) + Grok (vendor-reported \$) | Claude (priced from LiteLLM) + Grok (vendor-reported \$) |
+| **Vendors counted** | Claude + Codex (both priced from LiteLLM) + Grok (vendor-reported \$) | Claude + Codex (both priced from LiteLLM) + Grok (vendor-reported \$) |
 
 Pick the one that fits your workflow — they're independent, run side
 by side without conflict, and produce identical numbers.
@@ -128,15 +129,22 @@ root   = "~/work-claude/projects"
   other, would double-count every event under both, so loading fails with
   an error naming the two sources and the shared root instead of quietly
   producing a wrong total.
-- `~` expands to `$HOME`. `vendor` must be `claude` or `grok` — both have a
-  reader now. Claude's dollars are priced from the LiteLLM table; Grok's
-  are vendor-reported — the number xAI computed for that turn, used as
-  given rather than derived from any pricing table.
-- **Grok is auto-discovered with zero configuration.** If
-  `~/.grok/sessions` exists, it becomes a `grok/grok` source automatically,
-  the same way the implicit Claude root works, even with no `sources.toml`
-  at all. It never appears if that directory doesn't exist, so a machine
-  that has never run the Grok CLI sees no change.
+- `~` expands to `$HOME`. `vendor` must be `claude`, `codex`, or `grok` — all
+  three have a reader now. Claude's and Codex's dollars are both priced from
+  the LiteLLM table; Grok's are vendor-reported — the number xAI computed
+  for that turn, used as given rather than derived from any pricing table.
+- **Codex and Grok are both auto-discovered with zero configuration.** If
+  `~/.codex/sessions` or `~/.grok/sessions` exists, it becomes a
+  `codex/codex` or `grok/grok` source automatically, the same way the
+  implicit Claude root works, even with no `sources.toml` at all. Either
+  never appears if its directory doesn't exist, so a machine that has never
+  run that CLI sees no change.
+- **`codex-auto-review` bills at GPT-5.6 Luna rates.** Codex's transcripts
+  name this model `codex-auto-review`, which has no LiteLLM pricing row of
+  its own; this tool prices it at `gpt-5.6-luna`'s LiteLLM rates instead
+  (Codex auto-review runs on GPT-5.6 Luna under the hood) while still
+  displaying it under its own name, `codex-auto-review`, everywhere in the
+  UI.
 
 **A missing root is not the same as a broken one.** A root named in
 `sources.toml` that simply doesn't exist on this machine (e.g. a
@@ -159,7 +167,7 @@ so all four modes always sum to the same grand total:
 | Mode | Collapses to |
 |---|---|
 | `model` (default) | one row per model, merged across every source — today's behaviour |
-| `vendor` | one row per vendor (`claude`, `grok`) |
+| `vendor` | one row per vendor (`claude`, `codex`, `grok`) |
 | `source` | one row per configured subscription, e.g. `claude/work` vs `claude/personal` |
 | `total` | a single row |
 
@@ -675,10 +683,20 @@ keep everything). Notes:
 
 ## 🛠️ Pricing
 
-Both apps ship with a baked-in pricing table for the Claude 4.5 / 4.6
-/ 4.7 family (Opus, Sonnet, Haiku) sourced from
-[LiteLLM](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json),
-the same source ccusage uses.
+Both apps fetch their pricing table from
+[LiteLLM](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+(the same source ccusage uses) and cache it to disk; the Claude 4.5 / 4.6 /
+4.7 family (Opus, Sonnet, Haiku) is also baked in as an offline fallback if a
+fetch has never succeeded. Codex's OpenAI models (`gpt-5.6-sol`,
+`gpt-5.6-luna`) are not baked in — they arrive only via a LiteLLM fetch, same
+as any other model update.
+
+**Upgrading from a pre-Codex build:** a pricing cache written before this
+release predates the OpenAI rows entirely. Both apps detect that on load —
+by a schema marker stamped into the cache file — and refetch the table once
+automatically, so an existing cache never silently prices Codex models at
+\$0 forever. No action needed on your part, beyond having network access the
+first time you run the upgraded app.
 
 To override pricing, drop a TOML file at:
 

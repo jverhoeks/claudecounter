@@ -69,6 +69,31 @@ func TestDefaults_DiscoversGrokWhenPresent(t *testing.T) {
 	}
 }
 
+// A Codex install is picked up the same way Grok is, and alongside it:
+// the Claude entry stays first, but nothing here asserts Codex is
+// second-and-only-second, since a real machine could have both Grok and
+// Codex installed.
+func TestDefaults_DiscoversCodexWhenPresent(t *testing.T) {
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".claude", "projects"))
+	mustMkdirAll(t, filepath.Join(home, ".codex", "sessions"))
+
+	got := Defaults(home)
+	if len(got) != 2 {
+		t.Fatalf("got %d sources, want 2: %+v", len(got), got)
+	}
+	if got[0].Vendor != "claude" {
+		t.Fatalf("got[0].Vendor = %q, want claude first", got[0].Vendor)
+	}
+	want := Source{
+		Vendor: "codex", Label: "codex",
+		Root: filepath.Join(home, ".codex", "sessions"),
+	}
+	if got[1] != want {
+		t.Fatalf("got[1] = %+v, want %+v", got[1], want)
+	}
+}
+
 // No ~/.grok means no Grok source and, critically, no change whatsoever
 // for the existing Claude-only user.
 func TestDefaults_OmitsGrokWhenAbsent(t *testing.T) {
@@ -150,6 +175,24 @@ root   = "~/.claude-personal/projects"
 	}
 	if got.Sources[1].ID() != "claude/personal" {
 		t.Fatalf("ID = %q", got.Sources[1].ID())
+	}
+}
+
+// A sources.toml naming vendor = "codex" must load, exactly like grok
+// did in Phase B before a Codex reader existed.
+func TestLoad_AcceptsCodexVendor(t *testing.T) {
+	p := write(t, `
+[[source]]
+vendor = "codex"
+label  = "codex"
+root   = "~/.codex/sessions"
+`)
+	got, err := Load(p, "/home/u")
+	if err != nil {
+		t.Fatalf("codex vendor must be accepted: %v", err)
+	}
+	if len(got.Sources) != 1 || got.Sources[0].Vendor != "codex" {
+		t.Fatalf("got %+v", got.Sources)
 	}
 }
 

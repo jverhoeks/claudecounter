@@ -116,6 +116,47 @@ type Reader struct {
 	parseErrors int
 	out         chan<- Event
 	src         sources.Source
+	// codexParsers holds one *codexParser per path currently tracked in
+	// offsets, keyed the same way. codexParser is stateful (see its doc
+	// comment), so unlike claudeParser/grokParser it cannot be recreated
+	// on every OnChange call — see parserForChange. Entries are dropped
+	// in Forget alongside the matching offsets entry, so a long-running
+	// watcher does not accumulate parsers for files that have gone away.
+	codexParsers map[string]*codexParser
+	// pathLocks holds one *sync.Mutex per path ever passed to OnChange,
+	// guarding one path's ENTIRE OnChange call (offset read, parser
+	// fetch, file read/parse, offset commit) against a second concurrent
+	// call for the SAME path. main.go registers fsnotify watchers
+	// concurrently with InitialScanSource, and the pipeline consumes
+	// watcher events during backfill, so two goroutines can legitimately
+	// reach OnChange for one path at once. Without this, they'd share
+	// the same *codexParser (parserForChange's map) and mutate its
+	// fields with no synchronization at all — a genuine data race — and
+	// could both read the same pre-call offset before either commits it,
+	// duplicating whatever bytes both of them read. mu alone doesn't
+	// cover this: it's only ever held for individual map/counter
+	// accesses, by design, so that InitialScan's parallel workers (each
+	// on a DISTINCT path) aren't serialized against each other — a
+	// single Reader-wide lock here would defeat that parallelism.
+	// Deliberately never cleaned up (not even in Forget): removing an
+	// entry while another goroutine already holds a reference to that
+	// *sync.Mutex would let a later caller for the same path fetch a
+	// NEW mutex via LoadOrStore and proceed uncontended while the first
+	// caller is still inside its critical section — reintroducing
+	// exactly the race this field exists to close. The cost is one
+	// *sync.Mutex per distinct path ever seen, released when the
+	// process exits.
+	pathLocks sync.Map
+}
+
+// lockPath serializes OnChange calls for one path (see pathLocks' doc
+// comment) without affecting any other path. Call the returned func to
+// unlock.
+func (r *Reader) lockPath(path string) func() {
+	v, _ := r.pathLocks.LoadOrStore(path, &sync.Mutex{})
+	m := v.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
 }
 
 func New(out chan<- Event) *Reader {
@@ -139,23 +180,69 @@ func (r *Reader) ParseErrors() int {
 	return r.parseErrors
 }
 
-// Forget drops a file from the offset map (used on Remove events).
+// Forget drops a file from the offset map (used on Remove events), and
+// from codexParsers alongside it — a deleted file's running totals are
+// gone for good, and keeping the entry would both leak memory and, if
+// the path were ever reused, resurrect stale state for an unrelated
+// session.
 func (r *Reader) Forget(path string) {
 	r.mu.Lock()
 	delete(r.offsets, path)
+	delete(r.codexParsers, path)
 	r.mu.Unlock()
+}
+
+// parserForChange resolves the vendorParser OnChange should use for one
+// path. For the two stateless vendors this is just parserFor(vendor): a
+// fresh value is fine since nothing carries over between calls. codex is
+// not — the Reader keeps one *codexParser per path, created on first
+// sight and reused on every later call, which is what makes running
+// totals and session_meta survive across a growing file's OnChange
+// calls. See codexParser's doc comment and Controller ruling R3.
+func (r *Reader) parserForChange(vendor, path string) vendorParser {
+	if vendor != "codex" {
+		return parserFor(vendor)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.codexParsers[path]; ok {
+		return p
+	}
+	if r.codexParsers == nil {
+		r.codexParsers = map[string]*codexParser{}
+	}
+	p := &codexParser{}
+	r.codexParsers[path] = p
+	return p
+}
+
+// walkableFor reports whether name can carry usage for vendor. Walkable
+// never reads a parser's state for any vendor — including codex — so a
+// throwaway instance is fine here even though real parsing must go
+// through parserForChange's Reader-owned map.
+func walkableFor(vendor, name string) bool {
+	if vendor == "codex" {
+		return (&codexParser{}).Walkable(name)
+	}
+	return parserFor(vendor).Walkable(name)
 }
 
 // OnChange reads any new complete lines in path starting from the
 // previously-recorded offset, emits Events, and updates the offset.
 // It never advances past an incomplete (non-\n-terminated) tail.
 func (r *Reader) OnChange(path string) error {
+	// Serialize the whole call per path — see pathLocks' doc comment.
+	// Watchers and InitialScanSource run concurrently, and both can
+	// reach OnChange for the same path.
+	unlock := r.lockPath(path)
+	defer unlock()
+
 	r.mu.Lock()
 	start := r.offsets[path]
 	src := r.src
 	r.mu.Unlock()
 	vendor, source := src.Vendor, src.ID()
-	p := parserFor(vendor)
+	p := r.parserForChange(vendor, path)
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -173,6 +260,14 @@ func (r *Reader) OnChange(path string) error {
 	}
 	if stat.Size() < start {
 		start = 0
+		// The file shrank or was replaced: a previously-seen codex path
+		// is about to be read from byte offset 0 again for a reason
+		// other than "never seen before", so its running totals and
+		// declared model must not survive into this read. See
+		// codexParser.Reset's doc comment.
+		if cp, ok := p.(*codexParser); ok {
+			cp.Reset()
+		}
 	}
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return err
@@ -253,7 +348,6 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 	r.mu.Lock()
 	vendor := r.src.Vendor
 	r.mu.Unlock()
-	p := parserFor(vendor)
 
 	paths := make(chan string, 256)
 
@@ -263,7 +357,7 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if !p.Walkable(d.Name()) {
+			if !walkableFor(vendor, d.Name()) {
 				return nil
 			}
 			info, err := d.Info()

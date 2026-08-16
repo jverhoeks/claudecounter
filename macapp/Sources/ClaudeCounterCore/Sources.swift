@@ -72,10 +72,10 @@ public enum SourcesError: Error, LocalizedError, Equatable {
 
 public enum Sources {
 
-    /// The vendors a reader exists for. `grok` is accepted so a user can
-    /// configure it ahead of its reader shipping without the file
-    /// failing to load.
-    static let knownVendors: Set<String> = ["claude", "grok"]
+    /// The vendors a reader exists for. `grok` and `codex` are accepted so
+    /// a user can configure either ahead of its reader shipping without
+    /// the file failing to load.
+    static let knownVendors: Set<String> = ["claude", "grok", "codex"]
 
     /// Sits beside limits.toml so both surfaces read one directory.
     public static func defaultConfigPath() -> String {
@@ -130,6 +130,7 @@ public enum Sources {
     /// `discoverable`.
     private static let discoverable: [(vendor: String, segment: String)] = [
         ("grok", ".grok/sessions"),
+        ("codex", ".codex/sessions"),
     ]
 
     /// Reads sources.toml. A missing file yields `defaults(home:)` and no

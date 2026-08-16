@@ -1022,6 +1022,148 @@ final class AppStateTests: XCTestCase {
                        "the sole reader must hold only its own path — the orphan must not be seeded into it just because it's the only reader available")
     }
 
+    // MARK: - Codex replay across a restart (Finding 1: double-count on relaunch)
+
+    /// Reproduces the critical bug: a codex rollout file that keeps
+    /// growing across an app relaunch. Session 1 (before "restart")
+    /// writes session_meta + one token_count reading; that reading's
+    /// delta (its own value, since it's the session's first) is what a
+    /// prior run would have counted and cached, alongside the file's
+    /// byte offset at that point.
+    ///
+    /// The cache is seeded directly (not produced by a real prior
+    /// `start()`) so this test controls the exact offset/cell pairing
+    /// that must reconcile — the whole point of the fix under test.
+    /// Session "2" (after "restart") appends a SECOND token_count
+    /// reading before the fresh `AppState` calls `start()`, which must
+    /// seed readers, replay the already-counted bytes into a
+    /// reconstructed `CodexParser`, and then read only the appended
+    /// bytes during backfill.
+    ///
+    /// Without the fix, `seedReaders` hands the codex reader a bare
+    /// offset with no parser: the fresh `CodexParser` created on first
+    /// use treats the second reading as the session's "first" (no
+    /// `havePrev`), so its delta is the ENTIRE cumulative total-so-far
+    /// (1500/200/150 minus nothing) stacked on top of the cache's
+    /// already-restored 1000/200/100 — a double count. It would also
+    /// lose session_meta's `parent_thread_id` and `cwd` (both live only
+    /// on line 1, behind the offset), so the doubled contribution lands
+    /// under project `""` with the fallback model `gpt-5.6-sol` instead
+    /// of the correct `-Users-me-src-proj` / `codex-auto-review` — this
+    /// test's project/model/isSubagent assertions catch that even if a
+    /// naive fix got the token math right by accident.
+    func test_appState_codexReplay_acrossRestart_countsOnlyTheNewDelta() async throws {
+        let dirName = "as-codex-replay-\(UUID().uuidString)"
+        let rawBase = NSTemporaryDirectory() + dirName
+        let rawCodexRoot = rawBase + "/codex/sessions/2026/08/16"
+        try FileManager.default.createDirectory(atPath: rawCodexRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: rawBase) }
+        // NSTemporaryDirectory() is under /var, an APFS firmlink to
+        // /private/var — NOT a plain symlink, so `resolvingSymlinksInPath`
+        // (used by `AppState.matchSource`) is a no-op on it, but
+        // `FileManager.contentsOfDirectory(at:)` (used by
+        // `Reader.candidateFiles`'s real directory walk) canonicalizes
+        // every entry it returns to /private/var/... regardless. Seeding
+        // the cache's offset with the RAW /var/... form this test would
+        // naturally build would make `matchSource`'s prefix check fail
+        // against the canonical path the real scan reports for the same
+        // file — an environment artifact, not the bug under test — and
+        // masks Finding 1 behind an unrelated routing miss. Recovering
+        // the canonical form via one real directory listing, up front,
+        // keeps every path this test constructs consistent with what
+        // `candidateFiles` will actually see.
+        let base = try FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            includingPropertiesForKeys: nil, options: []
+        ).first { $0.lastPathComponent == dirName }!.path
+        let codexRoot = base + "/codex/sessions/2026/08/16"
+
+        let rolloutPath = codexRoot + "/rollout-replay.jsonl"
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        let t0 = iso.string(from: now.addingTimeInterval(-120))
+        let t1 = iso.string(from: now.addingTimeInterval(-60))
+        let t2 = iso.string(from: now)
+
+        // Session 1: session_meta (parent_thread_id present -> subagent,
+        // no thread_settings_applied ever declared -> fallback model
+        // "codex-auto-review") + one token_count reading. This is what a
+        // prior run would have read and counted.
+        let sessionMeta = #"{"timestamp":"\#(t0)","type":"session_meta","payload":{"session_id":"s1","cwd":"/Users/me/src/proj","parent_thread_id":"parent-1"}}"#
+        let reading1 = #"{"timestamp":"\#(t1)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"total_tokens":1100}}}}"#
+        let partA = sessionMeta + "\n" + reading1 + "\n"
+        try partA.write(toFile: rolloutPath, atomically: true, encoding: .utf8)
+        let offsetAfterPartA = Int64(Data(partA.utf8).count)
+
+        let sourcesPath = base + "/sources.toml"
+        try """
+        [[source]]
+        vendor = "codex"
+        label = "codex"
+        root = "\(base)/codex/sessions"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let today = civilDayString(dayOf(now))
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-codex-replay-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cacheStore = CacheStore(url: cacheURL)
+        let seededCache = CacheFile(
+            writtenAt: now,
+            cells: [
+                CacheFile.CellEntry(
+                    day: today, project: "-Users-me-src-proj", source: "codex/codex",
+                    vendor: "codex", model: "codex-auto-review", isSub: true,
+                    input: 800, output: 100, cacheCreate: 0, cacheRead: 200
+                )
+            ],
+            perMsg: [],
+            offsets: [rolloutPath: offsetAfterPartA],
+            parseErrors: 0,
+            dupes: 0,
+            unknownMsgs: []
+        )
+        try cacheStore.save(seededCache)
+
+        // "Restart": the session continues and appends a second reading
+        // BEFORE the new AppState instance ever calls start().
+        let reading2 = #"{"timestamp":"\#(t2)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":200,"output_tokens":150,"total_tokens":1650}}}}"#
+        let handle = FileHandle(forWritingAtPath: rolloutPath)!
+        handle.seekToEndOfFile()
+        handle.write((reading2 + "\n").data(using: .utf8)!)
+        try handle.close()
+
+        let app = AppState(
+            projectsRoot: base + "/unused-claude-root",
+            aggregator: Aggregator(pricing: .defaults),
+            reader: Reader(),
+            cacheStore: cacheStore,
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath,
+            home: base
+        )
+        await app.start()
+        await app.stop()
+
+        // Correct: the cache's 1000/200/100 baseline plus reading 2's OWN
+        // delta (500/0/50, i.e. (1500-1000)/(200-200)/(150-100)) — never
+        // the cache's baseline plus reading 2's entire cumulative total.
+        let pd = app.totals.monthProj["-Users-me-src-proj"]
+        XCTAssertNotNil(pd, "project attribution lost — session_meta's cwd must survive the restart via replay")
+        XCTAssertEqual(pd?.sub.input, 1300, "expected 800 (cached) + 500 (reading 2's own delta), not a doubled cumulative")
+        XCTAssertEqual(pd?.sub.output, 150, "expected 100 (cached) + 50 (reading 2's own delta)")
+        XCTAssertEqual(pd?.sub.cacheRead, 200, "expected 200 (cached) + 0 (reading 2's own delta)")
+        XCTAssertEqual(pd?.main.input, 0, "parent_thread_id must still mark this a subagent turn after replay — a lost hasParent would misfile the new delta under main")
+
+        let seriesKey = SeriesKey(source: "codex/codex", vendor: "codex", model: "codex-auto-review")
+        XCTAssertEqual(app.totals.month[seriesKey]?.tokens.input, 1300,
+                       "model must still resolve to codex-auto-review (parent_thread_id fallback) after replay, not the no-parent fallback gpt-5.6-sol")
+    }
+
     // MARK: - Home-based vendor discovery (resolveSources)
 
     /// The shipped bug this branch fixes: `resolveSources`'s missing-file
@@ -1068,6 +1210,50 @@ final class AppStateTests: XCTestCase {
                        "the Claude entry must stay at the injected projectsRoot, not home/.claude/projects")
         XCTAssertTrue(app.sources.contains { $0.vendor == "grok" && $0.root == grokSessions },
                       "grok must be auto-discovered under the injected home when its sessions dir exists")
+
+        await app.stop()
+    }
+
+    /// Mandatory per Task 5: proves Codex discovery reaches `AppState`,
+    /// not just `Sources.defaults` in isolation. Phase B shipped Grok
+    /// dead in the macapp because `Sources.defaults` was unit-tested on
+    /// its own while nothing asserted `AppState.start()` actually reached
+    /// it — `eef9e14` fixed that path (see the Grok test above); this is
+    /// the same assertion for a third vendor, constructed the same way:
+    /// no `sources.toml` at all, and a temp `home` containing
+    /// `.codex/sessions`.
+    func test_appState_discoversCodexWithNoSourcesToml() async throws {
+        let root = NSTemporaryDirectory() + "as-codexdisc-\(UUID().uuidString)"
+        let projects = root + "/projects"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let home = NSTemporaryDirectory() + "as-home-codex-\(UUID().uuidString)"
+        let codexSessions = home + "/.codex/sessions"
+        try FileManager.default.createDirectory(atPath: codexSessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-codexdisc-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: projects,
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            // No sources.toml at this path — exercises the missing-file branch.
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-codex-\(UUID().uuidString).toml",
+            home: home
+        )
+        await app.start()
+
+        XCTAssertTrue(app.sources.contains { $0.vendor == "codex" && $0.root == codexSessions },
+                      "codex must be auto-discovered under the injected home when its sessions dir exists")
 
         await app.stop()
     }
@@ -1121,6 +1307,99 @@ final class AppStateTests: XCTestCase {
         XCTAssertNotNil(app.lastError, "a malformed sources.toml must still surface via lastError")
 
         await app.stop()
+    }
+
+    // MARK: - refreshPricingIfStale (Swift mirror of Go's loadPricing
+    // stale-cache branch)
+
+    private func makeMinimalAppState(pricing: PricingTable) -> AppState {
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-stale-\(UUID().uuidString).json")
+        return AppState(
+            projectsRoot: NSTemporaryDirectory() + "as-stale-\(UUID().uuidString)",
+            aggregator: Aggregator(pricing: pricing),
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: pricing,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+        )
+    }
+
+    // A table already at the current schema must not trigger a network
+    // fetch — this is the "cache hit" path, exercised on every ordinary
+    // launch.
+    func test_refreshPricingIfStale_currentSchema_doesNotFetch() async {
+        let current = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: PricingTable.currentSchema)
+        let app = makeMinimalAppState(pricing: current)
+        let mock = CountingMockSession(data: Data(), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 200,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        let calls = await mock.callCount
+        XCTAssertEqual(calls, 0, "an up-to-date schema must never trigger a refetch")
+        XCTAssertEqual(app.pricing, current)
+    }
+
+    // A table below the current schema (including PricingTable.defaults,
+    // schema 0) is a complete, valid table just missing an entire
+    // provider's worth of models — refetch once and adopt the fresh
+    // result on success.
+    func test_refreshPricingIfStale_staleSchema_fetchesAndAdoptsFreshTable() async {
+        let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: 0)
+        let app = makeMinimalAppState(pricing: stale)
+        let freshJSON = """
+        {
+          "gpt-5.6-luna": {
+            "litellm_provider": "openai",
+            "input_cost_per_token": 0.0000002,
+            "output_cost_per_token": 0.0000012
+          }
+        }
+        """
+        let mock = CountingMockSession(data: Data(freshJSON.utf8), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 200,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        let calls = await mock.callCount
+        XCTAssertEqual(calls, 1, "a stale schema must trigger exactly one refetch")
+        XCTAssertTrue(app.pricing.has(model: "gpt-5.6-luna"), "the fresh table must be adopted")
+        XCTAssertFalse(app.pricing.has(model: "claude-opus-4-7"), "the stale table must not survive a successful refetch")
+    }
+
+    // On refetch failure (offline), the stale table already loaded must be
+    // kept rather than dropping to baked-in defaults — a network hiccup
+    // must never change Claude dollars as a side effect of a Codex/OpenAI
+    // pricing change.
+    func test_refreshPricingIfStale_refetchFails_keepsStaleTable() async {
+        let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: 0)
+        let app = makeMinimalAppState(pricing: stale)
+        let mock = CountingMockSession(data: Data(), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 503,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        XCTAssertEqual(app.pricing, stale, "a failed refetch must leave the stale table in place, not drop to defaults")
+    }
+}
+
+private actor CountingMockSession: URLSessionProtocol {
+    private(set) var callCount = 0
+    let data: Data
+    let response: URLResponse
+    init(data: Data, response: URLResponse) {
+        self.data = data
+        self.response = response
+    }
+    func dataReturning(from url: URL) async throws -> (Data, URLResponse) {
+        callCount += 1
+        return (data, response)
     }
 }
 

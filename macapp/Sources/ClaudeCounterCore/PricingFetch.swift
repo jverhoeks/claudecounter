@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fetch the latest Anthropic pricing from LiteLLM's
+/// Fetch the latest Anthropic and OpenAI pricing from LiteLLM's
 /// model_prices_and_context_window.json — the same source ccusage and
 /// our bake-in defaults reference. Same network source as `--refresh-pricing`
 /// in the Go binary, but JSON-based instead of HTML-scraped (more stable).
@@ -13,13 +13,13 @@ public enum PricingFetcher {
     public enum FetchError: Error, LocalizedError {
         case http(Int)
         case parseFailed(String)
-        case noAnthropicModels
+        case noPricedModels
 
         public var errorDescription: String? {
             switch self {
             case .http(let code):       return "Pricing fetch HTTP \(code)"
             case .parseFailed(let msg): return "Pricing parse failed: \(msg)"
-            case .noAnthropicModels:    return "No Anthropic models found in upstream pricing"
+            case .noPricedModels:       return "No priced models found in upstream pricing"
             }
         }
     }
@@ -38,9 +38,9 @@ public enum PricingFetcher {
     }
 
     /// Parse LiteLLM's JSON shape into a PricingTable. Filters to entries
-    /// whose `litellm_provider == "anthropic"`, normalises any
+    /// whose `litellm_provider` is `anthropic` or `openai`, normalises any
     /// `anthropic/` model-name prefix, and converts per-token prices to
-    /// per-mtok by multiplying by 1_000_000.
+    /// per-mtok by multiplying by 1_000_000. Mirrors `parseLiteLLM` in Go.
     public static func parse(_ data: Data) throws -> PricingTable {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw FetchError.parseFailed("root is not an object")
@@ -48,9 +48,20 @@ public enum PricingFetcher {
         var models: [String: ModelPrice] = [:]
         for (rawName, rawValue) in root {
             guard let entry = rawValue as? [String: Any] else { continue }
-            // Skip non-Anthropic entries; LiteLLM ships models from many providers.
+            // Anthropic and OpenAI both. Verified against the live LiteLLM
+            // table: 26 anthropic and 145 openai entries survive the
+            // non-zero-cost filter below, with no name collisions between
+            // the two sets and no "/"-containing OpenAI names — so the
+            // prefix-strip below needs no OpenAI equivalent.
+            //
+            // Caveat worth knowing: 52 of those OpenAI entries omit
+            // cache_read_input_token_cost, which defaults to 0 here and
+            // would price cached reads free. Neither model Codex currently
+            // uses (gpt-5.6-sol, gpt-5.6-luna) is among them, but cached
+            // reads dominate Codex volume, so a future model landing in
+            // that set would under-report rather than fail loudly.
             let provider = (entry["litellm_provider"] as? String)?.lowercased() ?? ""
-            guard provider == "anthropic" else { continue }
+            guard provider == "anthropic" || provider == "openai" else { continue }
 
             let modelName = normaliseModelName(rawName)
             let input = perMTok(entry["input_cost_per_token"])
@@ -69,7 +80,7 @@ public enum PricingFetcher {
                 cacheReadPerMTok: cacheRead
             )
         }
-        guard !models.isEmpty else { throw FetchError.noAnthropicModels }
+        guard !models.isEmpty else { throw FetchError.noPricedModels }
         return PricingTable(models: models)
     }
 
