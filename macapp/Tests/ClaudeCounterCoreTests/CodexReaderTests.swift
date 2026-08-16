@@ -310,6 +310,57 @@ final class CodexReaderTests: XCTestCase {
         XCTAssertEqual(after[0].project, "-Users-me-src-other")
     }
 
+    /// Review-requested regression test: `Reader.resetAll()` (used by
+    /// `AppState.refresh`'s manual Refresh) clears `offsets` and MUST
+    /// clear `codexParsers` alongside it. `AppState.syncReaders` reuses
+    /// the SAME `Reader` actor across an ordinary refresh (a fresh
+    /// `Reader` is only built for a brand-new source id), so if
+    /// `codexParsers` survived a `resetAll()`, the full from-offset-zero
+    /// re-scan that follows would delta every re-read reading against the
+    /// STALE pre-reset running total — collapsing every post-refresh
+    /// figure toward zero (or, as here, to exactly zero: re-reading the
+    /// unchanged file after the reset produces a reading byte-identical
+    /// to what the stale parser already recorded, which without the fix
+    /// hits the "duplicate reading" branch and is dropped as a
+    /// non-event). Large totals (90000/40000/9000) are used so a
+    /// stale-total delta would be an unmistakable, not marginal, failure.
+    func test_codexParserState_resetAllClearsRetainedParsers() async throws {
+        let path = NSTemporaryDirectory() + "codex-resetall-\(UUID().uuidString).jsonl"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let session = #"{"timestamp":"2026-08-09T08:34:15.910Z","type":"session_meta","payload":{"session_id":"s1","cwd":"/Users/me/src/proj"}}"#
+        let bigToken = #"{"timestamp":"2026-08-09T08:34:16.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":90000,"cached_input_tokens":40000,"output_tokens":9000,"total_tokens":99000}}}}"#
+        try (session + "\n" + bigToken + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let source = SourceEntry(vendor: "codex", label: "codex", root: NSTemporaryDirectory())
+        let reader = Reader()
+        let first = try await reader.onChange(path: path, source: source)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0].usage.input, 50000, "90000-40000")
+        XCTAssertEqual(first[0].usage.output, 9000)
+        XCTAssertEqual(first[0].usage.cacheRead, 40000)
+
+        // Manual Refresh: clears offsets AND, if the fix holds,
+        // codexParsers — on the SAME Reader instance, exactly as
+        // AppState.refresh()/syncReaders() do for an ordinary refresh.
+        await reader.resetAll()
+
+        // Re-scan the SAME file, unchanged, from byte 0 — exactly what
+        // Refresh's full re-scan does. This must be treated as a first
+        // reading again (its own value), not as a delta/duplicate
+        // against the pre-reset running total that a leaked parser would
+        // still be holding.
+        let after = try await reader.onChange(path: path, source: source)
+        guard after.count == 1 else {
+            XCTFail("post-resetAll re-read produced \(after.count) events, want 1 — a leaked codex parser sees an identical reading to its retained state and silently drops it as a duplicate")
+            return
+        }
+        XCTAssertEqual(after[0].usage.input, 50000,
+                       "post-resetAll delta must be the file's own first-reading value, not saturated toward zero against the pre-reset total")
+        XCTAssertEqual(after[0].usage.output, 9000)
+        XCTAssertEqual(after[0].usage.cacheRead, 40000)
+    }
+
     private func appendLine(path: String, line: String) throws {
         let url = URL(fileURLWithPath: path)
         if let handle = try? FileHandle(forWritingTo: url) {
