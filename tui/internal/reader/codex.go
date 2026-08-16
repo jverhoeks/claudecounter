@@ -8,28 +8,6 @@ import (
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 )
 
-// codexAliases maps a Codex-internal model name to the LiteLLM model
-// whose rates it actually bills at. Codex's auto-review runs on GPT-5.6
-// Luna ($0.20/Mtok in, $1.20/Mtok out) — owner-confirmed and matching
-// LiteLLM's gpt-5.6-luna entry exactly. The alias affects pricing only;
-// the model name the user sees stays codex-auto-review.
-//
-// This is data rather than logic because the model behind auto-review is
-// a moving target: a future Codex release changes this map, not the
-// reader.
-var codexAliases = map[string]string{"codex-auto-review": "gpt-5.6-luna"}
-
-// aliasedPricingModel returns the LiteLLM model name a caller should
-// price model against. Every model outside codexAliases maps to itself,
-// so a caller can apply this unconditionally rather than special-casing
-// Codex.
-func aliasedPricingModel(model string) string {
-	if alias, ok := codexAliases[model]; ok {
-		return alias
-	}
-	return model
-}
-
 // codexFallbackModel resolves the model for a session that never emits
 // thread_settings_applied — 25 of 74 files in the corpus probed on
 // 2026-08-16, from an older CLI. parent_thread_id discriminates them
@@ -37,7 +15,9 @@ func aliasedPricingModel(model string) string {
 // meant gpt-5.6-sol (25 files) and has-parent always meant
 // codex-auto-review (24 files), with zero exceptions.
 //
-// Data, not logic, for the same reason as codexAliases.
+// Data, not logic, because these mappings are as much a moving target as
+// pricing.modelAliases, which resolves codex-auto-review's pricing the
+// same way, for the same reason.
 var codexFallbackModel = map[bool]string{false: "gpt-5.6-sol", true: "codex-auto-review"}
 
 // codexModelForSession resolves the model in effect for one token_count

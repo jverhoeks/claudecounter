@@ -161,3 +161,87 @@ func TestDefaults_CoversCurrentModels(t *testing.T) {
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
+
+// TestAlias_HasResolvesCodexAutoReview covers the defect this alias exists
+// to fix: codex-auto-review has no LiteLLM entry of its own, so it must be
+// found only by resolving through the alias to gpt-5.6-luna, the model it
+// actually bills at.
+func TestAlias_HasResolvesCodexAutoReview(t *testing.T) {
+	t.Run("present when the aliased model has an entry", func(t *testing.T) {
+		table := Table{Models: map[string]ModelPrice{
+			"gpt-5.6-luna": {InputPerMTok: 0.20, OutputPerMTok: 1.20},
+		}}
+		if !table.Has("codex-auto-review") {
+			t.Fatal("Has(codex-auto-review) = false, want true via alias to gpt-5.6-luna")
+		}
+	})
+
+	t.Run("absent when the aliased model has no entry", func(t *testing.T) {
+		table := Table{Models: map[string]ModelPrice{
+			"claude-opus-4-8": {InputPerMTok: 5, OutputPerMTok: 25},
+		}}
+		if table.Has("codex-auto-review") {
+			t.Fatal("Has(codex-auto-review) = true, want false: gpt-5.6-luna is not in the table")
+		}
+	})
+}
+
+// TestAlias_CostMatchesAliasedModel asserts Cost("codex-auto-review", u)
+// equals Cost("gpt-5.6-luna", u) exactly, for a usage with non-zero input,
+// output, and cache-read tokens.
+func TestAlias_CostMatchesAliasedModel(t *testing.T) {
+	table := Table{Models: map[string]ModelPrice{
+		"gpt-5.6-luna": {InputPerMTok: 0.20, OutputPerMTok: 1.20, CacheReadPerMTok: 0.02},
+	}}
+	u := Usage{InputTokens: 5_900_000, OutputTokens: 120_000, CacheReadInputTokens: 30_600_000}
+
+	got := table.Cost("codex-auto-review", u)
+	want := table.Cost("gpt-5.6-luna", u)
+	if got != want {
+		t.Fatalf("Cost(codex-auto-review) = %v, want %v (Cost(gpt-5.6-luna))", got, want)
+	}
+	if got == 0 {
+		t.Fatal("Cost(codex-auto-review) = 0, want non-zero")
+	}
+}
+
+// TestAlias_DirectEntryWinsOverAlias guards against an alias applied too
+// eagerly: if a table happens to carry its own entry for an alias's key
+// (e.g. a future LiteLLM release adds a real codex-auto-review row), that
+// direct entry must win rather than being shadowed by the redirect to
+// gpt-5.6-luna.
+func TestAlias_DirectEntryWinsOverAlias(t *testing.T) {
+	table := Table{Models: map[string]ModelPrice{
+		"codex-auto-review": {InputPerMTok: 99, OutputPerMTok: 99},
+		"gpt-5.6-luna":      {InputPerMTok: 0.20, OutputPerMTok: 1.20},
+	}}
+	if !table.Has("codex-auto-review") {
+		t.Fatal("Has(codex-auto-review) = false, want true (direct entry)")
+	}
+	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+	got := table.Cost("codex-auto-review", u)
+	want := 99.0 + 99.0
+	if got != want {
+		t.Fatalf("Cost(codex-auto-review) = %v, want %v (direct entry must win over the alias)", got, want)
+	}
+}
+
+// TestAlias_ClaudeModelsUnaffected guards against the alias resolution path
+// interfering with ordinary, non-aliased lookups.
+func TestAlias_ClaudeModelsUnaffected(t *testing.T) {
+	table := Table{Models: map[string]ModelPrice{
+		"claude-opus-4-8": {InputPerMTok: 5, OutputPerMTok: 25},
+	}}
+	if !table.Has("claude-opus-4-8") {
+		t.Fatal("Has(claude-opus-4-8) = false, want true")
+	}
+	if table.Has("claude-sonnet-4-6") {
+		t.Fatal("Has(claude-sonnet-4-6) = true, want false: not in this table and not an alias key")
+	}
+	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+	got := table.Cost("claude-opus-4-8", u)
+	want := 5.0 + 25.0
+	if got != want {
+		t.Fatalf("Cost(claude-opus-4-8) = %v, want %v", got, want)
+	}
+}

@@ -244,14 +244,3 @@ func TestCodexParser_WalkableMatchesRolloutPrefix(t *testing.T) {
 		}
 	}
 }
-
-func TestAliasedPricingModel(t *testing.T) {
-	if got := aliasedPricingModel("codex-auto-review"); got != "gpt-5.6-luna" {
-		t.Fatalf("aliasedPricingModel(codex-auto-review) = %q, want gpt-5.6-luna", got)
-	}
-	for _, model := range []string{"gpt-5.6-sol", "claude-sonnet-5", ""} {
-		if got := aliasedPricingModel(model); got != model {
-			t.Fatalf("aliasedPricingModel(%q) = %q, want unchanged", model, got)
-		}
-	}
-}

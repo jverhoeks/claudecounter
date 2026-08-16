@@ -47,8 +47,41 @@ func Load(path string) (Table, error) {
 	return t, nil
 }
 
+// modelAliases maps a display model name with no LiteLLM entry of its own
+// to the model it actually bills at. Codex's auto-review runs on GPT-5.6
+// Luna ($0.20/Mtok in, $1.20/Mtok out) but the reader emits the display
+// name codex-auto-review, which has no pricing row — see aliasedModel.
+//
+// This is a map rather than branching logic because the model behind a
+// display name like this is a moving target: a future Codex release edits
+// a map entry here, not the code that resolves it.
+var modelAliases = map[string]string{"codex-auto-review": "gpt-5.6-luna"}
+
+// aliasedModel resolves model through modelAliases, unconditionally. Every
+// model outside the map maps to itself, so Has and Cost can call this
+// without special-casing which names are aliased.
+func aliasedModel(model string) string {
+	if alias, ok := modelAliases[model]; ok {
+		return alias
+	}
+	return model
+}
+
+// resolve returns the ModelPrice a model should be priced against: model's
+// own entry if the table has one, otherwise its alias's entry (which may
+// itself be absent). A direct entry always wins over the alias — see
+// TestAlias_DirectEntryWinsOverAlias — so a future LiteLLM release adding a
+// real row for an aliased name is never shadowed by the redirect.
+func (t Table) resolve(model string) (ModelPrice, bool) {
+	if p, ok := t.Models[model]; ok {
+		return p, true
+	}
+	p, ok := t.Models[aliasedModel(model)]
+	return p, ok
+}
+
 func (t Table) Cost(model string, u Usage) float64 {
-	p, ok := t.Models[model]
+	p, ok := t.resolve(model)
 	if !ok {
 		return 0
 	}
@@ -59,7 +92,12 @@ func (t Table) Cost(model string, u Usage) float64 {
 		float64(u.CacheReadInputTokens)/m*p.CacheReadPerMTok
 }
 
+// Has reports whether model can be priced — directly or via alias. A model
+// found only through the alias (e.g. codex-auto-review, resolving to
+// gpt-5.6-luna) now counts as known here, which is the deliberate,
+// desired effect on agg's Unknown tally: it is genuinely priced, so it
+// should not be counted as unpriced.
 func (t Table) Has(model string) bool {
-	_, ok := t.Models[model]
+	_, ok := t.resolve(model)
 	return ok
 }
