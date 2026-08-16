@@ -169,6 +169,42 @@ func TestCodexParser_ParentThreadIdImpliesAutoReview(t *testing.T) {
 	}
 }
 
+// TestCodexParser_DeclaredModelWinsOverFallback exercises the case
+// where the declared model and the parent_thread_id-keyed fallback
+// DISAGREE, which nothing else in this suite does: the main fixture
+// declares gpt-5.6-sol, whose no-parent fallback is also gpt-5.6-sol,
+// and TestCodexParser_ParentThreadIdImpliesAutoReview never declares a
+// model at all. Without this test, an implementation that ignored
+// `declared` entirely and always returned codexFallbackModel[hasParent]
+// would still pass every other test in this file.
+//
+// This session has parent_thread_id set (so the fallback alone would
+// say codex-auto-review) but also declares a third model, distinct from
+// both fallback values, via thread_settings_applied — so only a
+// declared-wins implementation can produce the expected result.
+func TestCodexParser_DeclaredModelWinsOverFallback(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-08-09T09:10:00.000Z","type":"session_meta","payload":{"session_id":"s3","cwd":"/Users/me/src/proj","parent_thread_id":"parent-2"}}`,
+		`{"timestamp":"2026-08-09T09:10:05.000Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-6-nightly","model_provider_id":"openai"}}}`,
+		`{"timestamp":"2026-08-09T09:10:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":50,"total_tokens":550}}}}`,
+	}
+	p := &codexParser{}
+	var events []Event
+	for _, line := range lines {
+		evs, err := p.Parse([]byte(line), "irrelevant")
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		events = append(events, evs...)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Model != "gpt-6-nightly" {
+		t.Fatalf("model = %q, want gpt-6-nightly (declared model must win over the parent_thread_id fallback of codex-auto-review)", events[0].Model)
+	}
+}
+
 // TestCodexParser_ProjectFromSessionMetaCwd asserts the project key
 // comes from session_meta's cwd, encoded the way Claude encodes project
 // directories — every '/' and '.' becomes '-' — and NOT from the

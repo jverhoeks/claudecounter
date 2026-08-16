@@ -211,6 +211,20 @@ func (p *codexParser) Parse(line []byte, _ string) ([]Event, error) {
 	}
 }
 
+// saturatingSub returns a-b, clamped to 0 rather than wrapping, mirroring
+// grokUsage.toUsage's defensive subtraction. Every caller here is
+// subtracting two values this parser has already reasoned should not
+// invert; the clamp exists for the case where that reasoning is wrong,
+// because these are uint64s and a wrong number here is not a slightly
+// wrong number — it is a wraparound to near 2^64 flowing straight into
+// a dollar figure.
+func saturatingSub(a, b uint64) uint64 {
+	if a < b {
+		return 0
+	}
+	return a - b
+}
+
 // deltaEvent is the central rule this parser exists to implement:
 // total_token_usage is cumulative per session and was verified
 // monotonic in 69 of 69 corpus files, so consecutive differences
@@ -241,9 +255,18 @@ func (p *codexParser) deltaEvent(cur codexTokenUsage, ts time.Time) []Event {
 		// Restart: adopt the new reading as the running total but
 		// contribute nothing. Handled below after the totals are saved.
 	default:
-		deltaInput = cur.InputTokens - p.prevInput
-		deltaCached = cur.CachedInputTokens - p.prevCached
-		deltaOutput = cur.OutputTokens - p.prevOutput
+		// Saturating, not plain subtraction, even though the total_tokens
+		// check above already ruled out a whole-session decrease: these
+		// are uint64s, and the guard here is against a subfield
+		// decreasing while the total does not (never observed in the
+		// corpus, but not provably impossible for a future CLI version).
+		// A wrong number that degrades to zero is recoverable; a wrong
+		// number that wraps to near 2^64 and flows straight into a
+		// dollar figure is not, and this project's rule is that a
+		// failure must degrade to fewer cells, never to a wrong one.
+		deltaInput = saturatingSub(cur.InputTokens, p.prevInput)
+		deltaCached = saturatingSub(cur.CachedInputTokens, p.prevCached)
+		deltaOutput = saturatingSub(cur.OutputTokens, p.prevOutput)
 	}
 
 	p.prevInput, p.prevCached, p.prevOutput, p.prevTotal = cur.InputTokens, cur.CachedInputTokens, cur.OutputTokens, cur.TotalTokens
@@ -258,14 +281,7 @@ func (p *codexParser) deltaEvent(cur codexTokenUsage, ts time.Time) []Event {
 		return nil
 	}
 
-	in := deltaInput
-	if deltaCached > in {
-		// Defensive: a vendor that changes the semantics under us must
-		// not underflow a uint64 into a nonsense figure.
-		in = 0
-	} else {
-		in -= deltaCached
-	}
+	in := saturatingSub(deltaInput, deltaCached)
 
 	return []Event{{
 		Timestamp:  ts,
