@@ -123,6 +123,40 @@ type Reader struct {
 	// in Forget alongside the matching offsets entry, so a long-running
 	// watcher does not accumulate parsers for files that have gone away.
 	codexParsers map[string]*codexParser
+	// pathLocks holds one *sync.Mutex per path ever passed to OnChange,
+	// guarding one path's ENTIRE OnChange call (offset read, parser
+	// fetch, file read/parse, offset commit) against a second concurrent
+	// call for the SAME path. main.go registers fsnotify watchers
+	// concurrently with InitialScanSource, and the pipeline consumes
+	// watcher events during backfill, so two goroutines can legitimately
+	// reach OnChange for one path at once. Without this, they'd share
+	// the same *codexParser (parserForChange's map) and mutate its
+	// fields with no synchronization at all — a genuine data race — and
+	// could both read the same pre-call offset before either commits it,
+	// duplicating whatever bytes both of them read. mu alone doesn't
+	// cover this: it's only ever held for individual map/counter
+	// accesses, by design, so that InitialScan's parallel workers (each
+	// on a DISTINCT path) aren't serialized against each other — a
+	// single Reader-wide lock here would defeat that parallelism.
+	// Deliberately never cleaned up (not even in Forget): removing an
+	// entry while another goroutine already holds a reference to that
+	// *sync.Mutex would let a later caller for the same path fetch a
+	// NEW mutex via LoadOrStore and proceed uncontended while the first
+	// caller is still inside its critical section — reintroducing
+	// exactly the race this field exists to close. The cost is one
+	// *sync.Mutex per distinct path ever seen, released when the
+	// process exits.
+	pathLocks sync.Map
+}
+
+// lockPath serializes OnChange calls for one path (see pathLocks' doc
+// comment) without affecting any other path. Call the returned func to
+// unlock.
+func (r *Reader) lockPath(path string) func() {
+	v, _ := r.pathLocks.LoadOrStore(path, &sync.Mutex{})
+	m := v.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
 }
 
 func New(out chan<- Event) *Reader {
@@ -197,6 +231,12 @@ func walkableFor(vendor, name string) bool {
 // previously-recorded offset, emits Events, and updates the offset.
 // It never advances past an incomplete (non-\n-terminated) tail.
 func (r *Reader) OnChange(path string) error {
+	// Serialize the whole call per path — see pathLocks' doc comment.
+	// Watchers and InitialScanSource run concurrently, and both can
+	// reach OnChange for the same path.
+	unlock := r.lockPath(path)
+	defer unlock()
+
 	r.mu.Lock()
 	start := r.offsets[path]
 	src := r.src

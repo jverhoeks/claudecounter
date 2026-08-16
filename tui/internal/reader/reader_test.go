@@ -1,8 +1,11 @@
 package reader
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -629,5 +632,73 @@ func TestInitialScanDefaultsToClaudeSource(t *testing.T) {
 		if e.Vendor != "claude" || e.Source != "claude/claude" {
 			t.Fatalf("default tagging wrong: vendor=%q source=%q", e.Vendor, e.Source)
 		}
+	}
+}
+
+// TestReader_OnChange_ConcurrentSamePath_NoRaceNoDuplication is Finding
+// 2 of the final review: watchers are registered CONCURRENTLY with
+// InitialScanSource in main.go, and the pipeline consumes watcher events
+// during backfill — so two goroutines can enter OnChange for the SAME
+// path at once. Before the per-path lock, they'd fetch the SAME
+// *codexParser from parserForChange's map and both call Parse on it
+// without synchronization (a genuine data race on its unlocked fields),
+// and could both observe the pre-call offset before either commits it,
+// duplicating whatever bytes both of them read.
+//
+// A long fixture (many token_count readings, not just two) is used
+// deliberately: OnChange's per-line parse loop needs to run long enough
+// for two concurrently-launched goroutines to actually overlap inside
+// it under `go test -race`, not just take turns entirely before/after
+// each other by scheduling luck.
+func TestReader_OnChange_ConcurrentSamePath_NoRaceNoDuplication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-race.jsonl")
+
+	base := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)
+	var sb strings.Builder
+	sb.WriteString(`{"timestamp":"` + base.Format(time.RFC3339Nano) +
+		`","type":"session_meta","payload":{"session_id":"race1","cwd":"/Users/me/src/race"}}` + "\n")
+
+	const readings = 300
+	var wantTotal int64
+	for i := 1; i <= readings; i++ {
+		wantTotal += 10
+		ts := base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		sb.WriteString(fmt.Sprintf(
+			`{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":0,"output_tokens":0,"total_tokens":%d}}}}`+"\n",
+			ts, wantTotal, wantTotal))
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan Event, readings*2+8)
+	r := New(ch)
+	r.src = sources.Source{Vendor: "codex", Label: "codex", Root: dir}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = r.OnChange(path)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(ch)
+
+	var gotTotal int64
+	for e := range ch {
+		gotTotal += int64(e.Usage.InputTokens)
+	}
+	// Deltas telescope to the file's single-pass total regardless of how
+	// the two calls split the reads between them — UNLESS the race lets
+	// them both read from offset 0 (or both see the same stale
+	// codexParser state), which duplicates a portion of the file.
+	if gotTotal != wantTotal {
+		t.Fatalf("summed input tokens across both concurrent OnChange calls = %d, want %d (single-pass total, not duplicated)", gotTotal, wantTotal)
 	}
 }
