@@ -483,6 +483,29 @@ public final class AppState: ObservableObject {
         await publishSnapshot()
     }
 
+    /// One-shot pricing refresh when the on-disk cache `resolveFromDisk`
+    /// loaded at launch predates `PricingTable.currentSchema`. Mirrors the
+    /// Go binary's `loadPricing` stale-cache branch: a table saved under an
+    /// older schema is a complete, valid table — just missing an entire
+    /// provider's worth of models, which would silently price them at $0
+    /// forever. `writeToAppOverride` (and the Go side's `SaveTOML`) always
+    /// stamp the current schema, so this refetches at most once per stale
+    /// cache.
+    ///
+    /// Unlike the Go CLI (a single run that can afford to block on this
+    /// fetch), `resolveFromDisk` stays synchronous and the menu-bar app's
+    /// launch is never blocked on network for it — call this separately,
+    /// concurrently with `start()`. On failure (e.g. offline), the stale
+    /// table already loaded into `pricing` is left in place rather than
+    /// dropping to baked-in defaults: a network hiccup must never change
+    /// Claude dollars as a side effect of a Codex/OpenAI pricing change.
+    public func refreshPricingIfStale(session: URLSessionProtocol = URLSession.shared) async {
+        guard pricing.schema < PricingTable.currentSchema else { return }
+        guard let fresh = try? await PricingFetcher.fetch(session: session) else { return }
+        try? fresh.writeToAppOverride()
+        await updatePricing(fresh)
+    }
+
     /// How often `rescanPlanGauges` walks the filesystem: a recursive
     /// walk of `~/.codex/sessions` (up to 50 whole-file reads) plus the
     /// Grok log. 10 minutes of vendor-plan staleness is an acceptable

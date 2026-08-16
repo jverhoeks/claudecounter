@@ -18,6 +18,7 @@ enum TOMLPricing {
         var models: [String: ModelPrice] = [:]
         var current: String? = nil
         var pending: [String: Double] = [:]
+        var schema = 0
 
         func flush() {
             guard let name = current else { return }
@@ -49,7 +50,25 @@ enum TOMLPricing {
                 }
                 continue
             }
-            if current == nil { continue }
+            if current == nil {
+                // Bare top-level key seen before any [models."..."] header —
+                // currently only "schema" is recognized. This must appear
+                // before the first header: once `current` is non-nil, a
+                // "schema = N" line would fall into the model-scoped
+                // key/value parsing below and be silently absorbed into
+                // that model's `pending` (then dropped, since ModelPrice
+                // has no "schema" field) instead of being read here. This
+                // mirrors the same ordering requirement `SaveTOML` documents
+                // on the Go side.
+                if let eq = line.firstIndex(of: "=") {
+                    let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+                    let valueStr = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+                    if key == "schema", let v = Int(valueStr) {
+                        schema = v
+                    }
+                }
+                continue
+            }
 
             // key = number
             if let eq = line.firstIndex(of: "=") {
@@ -61,13 +80,25 @@ enum TOMLPricing {
             }
         }
         flush()
-        return PricingTable(models: models)
+        return PricingTable(models: models, schema: schema)
     }
 
     /// Encode a `PricingTable` to canonical pricing.toml format.
     static func encode(_ table: PricingTable) -> String {
         var lines: [String] = []
         lines.append("# claudecounter pricing.toml — USD per 1M tokens")
+        lines.append("")
+        // schema must appear before any [models."..."] header — see
+        // decode's top-level-key handling above; a schema line following a
+        // header would be silently absorbed into that model's fields
+        // instead. Always writes PricingTable.currentSchema, not
+        // table.schema: table.schema reflects whatever this table was
+        // loaded with (0 for a freshly-fetched table — see
+        // PricingFetcher.parse), but what we're persisting here is
+        // current-as-of-now data, so the file must be stamped current or
+        // every future launch would see it as stale and refetch forever.
+        // Mirrors Go's SaveTOML writing TableSchema, not t.Schema.
+        lines.append("schema = \(PricingTable.currentSchema)")
         lines.append("")
         for name in table.models.keys.sorted() {
             guard let p = table.models[name] else { continue }

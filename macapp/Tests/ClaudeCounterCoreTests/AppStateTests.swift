@@ -1122,6 +1122,99 @@ final class AppStateTests: XCTestCase {
 
         await app.stop()
     }
+
+    // MARK: - refreshPricingIfStale (Swift mirror of Go's loadPricing
+    // stale-cache branch)
+
+    private func makeMinimalAppState(pricing: PricingTable) -> AppState {
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-stale-\(UUID().uuidString).json")
+        return AppState(
+            projectsRoot: NSTemporaryDirectory() + "as-stale-\(UUID().uuidString)",
+            aggregator: Aggregator(pricing: pricing),
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: pricing,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+        )
+    }
+
+    // A table already at the current schema must not trigger a network
+    // fetch — this is the "cache hit" path, exercised on every ordinary
+    // launch.
+    func test_refreshPricingIfStale_currentSchema_doesNotFetch() async {
+        let current = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: PricingTable.currentSchema)
+        let app = makeMinimalAppState(pricing: current)
+        let mock = CountingMockSession(data: Data(), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 200,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        let calls = await mock.callCount
+        XCTAssertEqual(calls, 0, "an up-to-date schema must never trigger a refetch")
+        XCTAssertEqual(app.pricing, current)
+    }
+
+    // A table below the current schema (including PricingTable.defaults,
+    // schema 0) is a complete, valid table just missing an entire
+    // provider's worth of models — refetch once and adopt the fresh
+    // result on success.
+    func test_refreshPricingIfStale_staleSchema_fetchesAndAdoptsFreshTable() async {
+        let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: 0)
+        let app = makeMinimalAppState(pricing: stale)
+        let freshJSON = """
+        {
+          "gpt-5.6-luna": {
+            "litellm_provider": "openai",
+            "input_cost_per_token": 0.0000002,
+            "output_cost_per_token": 0.0000012
+          }
+        }
+        """
+        let mock = CountingMockSession(data: Data(freshJSON.utf8), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 200,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        let calls = await mock.callCount
+        XCTAssertEqual(calls, 1, "a stale schema must trigger exactly one refetch")
+        XCTAssertTrue(app.pricing.has(model: "gpt-5.6-luna"), "the fresh table must be adopted")
+        XCTAssertFalse(app.pricing.has(model: "claude-opus-4-7"), "the stale table must not survive a successful refetch")
+    }
+
+    // On refetch failure (offline), the stale table already loaded must be
+    // kept rather than dropping to baked-in defaults — a network hiccup
+    // must never change Claude dollars as a side effect of a Codex/OpenAI
+    // pricing change.
+    func test_refreshPricingIfStale_refetchFails_keepsStaleTable() async {
+        let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
+            schema: 0)
+        let app = makeMinimalAppState(pricing: stale)
+        let mock = CountingMockSession(data: Data(), response:
+            HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 503,
+                            httpVersion: "HTTP/1.1", headerFields: nil)!)
+        await app.refreshPricingIfStale(session: mock)
+        XCTAssertEqual(app.pricing, stale, "a failed refetch must leave the stale table in place, not drop to defaults")
+    }
+}
+
+private actor CountingMockSession: URLSessionProtocol {
+    private(set) var callCount = 0
+    let data: Data
+    let response: URLResponse
+    init(data: Data, response: URLResponse) {
+        self.data = data
+        self.response = response
+    }
+    func dataReturning(from url: URL) async throws -> (Data, URLResponse) {
+        callCount += 1
+        return (data, response)
+    }
 }
 
 private extension String {

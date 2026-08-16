@@ -77,6 +77,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // red menu-bar capsule still work.
         notifier.requestAuthorization()
         Task { await appState.start() }
+        // Separate, concurrent Task: a stale-schema pricing.toml (e.g. one
+        // written before OpenAI models were admitted) must not block the
+        // data pipeline above on a network fetch — see
+        // AppState.refreshPricingIfStale.
+        Task { await appState.refreshPricingIfStale() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

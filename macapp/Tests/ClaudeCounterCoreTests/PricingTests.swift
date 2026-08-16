@@ -73,4 +73,73 @@ final class PricingTests: XCTestCase {
     func test_defaultsDate_isPresent() {
         XCTAssertFalse(PricingTable.defaultsDate.isEmpty)
     }
+
+    // MARK: - model aliases (mirrors pricing.modelAliases / resolve in Go)
+
+    // Covers the defect this alias exists to fix: codex-auto-review has no
+    // LiteLLM entry of its own, so it must be found only by resolving
+    // through the alias to gpt-5.6-luna, the model it actually bills at.
+    func test_alias_hasResolvesCodexAutoReview_whenAliasedModelPresent() {
+        let table = PricingTable(models: [
+            "gpt-5.6-luna": ModelPrice(inputPerMTok: 0.20, outputPerMTok: 1.20,
+                                        cacheCreationPerMTok: 0, cacheReadPerMTok: 0)
+        ])
+        XCTAssertTrue(table.has(model: "codex-auto-review"),
+                      "has(codex-auto-review) should resolve via alias to gpt-5.6-luna")
+    }
+
+    func test_alias_hasIsFalse_whenAliasedModelAbsent() {
+        let table = PricingTable(models: [
+            "claude-opus-4-8": ModelPrice(inputPerMTok: 5, outputPerMTok: 25,
+                                           cacheCreationPerMTok: 0, cacheReadPerMTok: 0)
+        ])
+        XCTAssertFalse(table.has(model: "codex-auto-review"),
+                       "gpt-5.6-luna is not in the table, so the alias must not resolve")
+    }
+
+    // Cost("codex-auto-review", u) must equal Cost("gpt-5.6-luna", u)
+    // exactly, for a usage with non-zero input, output, and cache-read
+    // tokens.
+    func test_alias_costMatchesAliasedModel() {
+        let table = PricingTable(models: [
+            "gpt-5.6-luna": ModelPrice(inputPerMTok: 0.20, outputPerMTok: 1.20,
+                                        cacheCreationPerMTok: 0, cacheReadPerMTok: 0.02)
+        ])
+        let usage = Usage(input: 5_900_000, output: 120_000, cacheCreate: 0, cacheRead: 30_600_000)
+        let got = table.cost(model: "codex-auto-review", usage: usage)
+        let want = table.cost(model: "gpt-5.6-luna", usage: usage)
+        XCTAssertEqual(got, want)
+        XCTAssertNotEqual(got, 0)
+    }
+
+    // Guards against an alias applied too eagerly: if a table happens to
+    // carry its own entry for an alias's key (e.g. a future LiteLLM
+    // release adds a real codex-auto-review row), that direct entry must
+    // win rather than being shadowed by the redirect to gpt-5.6-luna.
+    func test_alias_directEntryWinsOverAlias() {
+        let table = PricingTable(models: [
+            "codex-auto-review": ModelPrice(inputPerMTok: 99, outputPerMTok: 99,
+                                             cacheCreationPerMTok: 0, cacheReadPerMTok: 0),
+            "gpt-5.6-luna": ModelPrice(inputPerMTok: 0.20, outputPerMTok: 1.20,
+                                       cacheCreationPerMTok: 0, cacheReadPerMTok: 0)
+        ])
+        XCTAssertTrue(table.has(model: "codex-auto-review"))
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
+        XCTAssertEqual(table.cost(model: "codex-auto-review", usage: usage), 99.0 + 99.0,
+                      accuracy: 1e-9, "direct entry must win over the alias")
+    }
+
+    // Guards against the alias resolution path interfering with ordinary,
+    // non-aliased lookups.
+    func test_alias_claudeModelsUnaffected() {
+        let table = PricingTable(models: [
+            "claude-opus-4-8": ModelPrice(inputPerMTok: 5, outputPerMTok: 25,
+                                           cacheCreationPerMTok: 0, cacheReadPerMTok: 0)
+        ])
+        XCTAssertTrue(table.has(model: "claude-opus-4-8"))
+        XCTAssertFalse(table.has(model: "claude-sonnet-4-6"),
+                       "not in this table and not an alias key")
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
+        XCTAssertEqual(table.cost(model: "claude-opus-4-8", usage: usage), 5.0 + 25.0, accuracy: 1e-9)
+    }
 }
