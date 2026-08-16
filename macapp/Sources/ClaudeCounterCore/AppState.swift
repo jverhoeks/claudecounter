@@ -61,6 +61,14 @@ public final class AppState: ObservableObject {
     private let aggregator: Aggregator
     private let tracker: SessionTracker
     private let sourcesConfigPath: String
+    /// Home directory `resolveSources` discovers non-Claude vendors
+    /// under (via `Sources.defaultsWithClaudeRoot`) when `sources.toml`
+    /// is absent or malformed. Defaults to the real home so a caller
+    /// that doesn't opt in still gets correct discovery — the opposite
+    /// default (silently NOT discovering) is the class of bug this
+    /// parameter exists to fix. Tests inject an isolated temp dir here
+    /// so they never touch a developer machine's real `~/.grok`.
+    private let home: String
     /// One `Reader` per configured source, keyed by `SourceEntry.id`.
     /// Mirrors the Go TUI's `readers[s.ID()] = reader.New(evCh)` — see
     /// `resolveSources`/`syncReaders` for why this project keeps that
@@ -114,13 +122,15 @@ public final class AppState: ObservableObject {
                 notifier: SessionNotifier? = nil,
                 sourcesConfigPath: String = Sources.defaultConfigPath(),
                 now: @escaping () -> Date = Date.init,
-                calendar: Calendar = .current) {
+                calendar: Calendar = .current,
+                home: String = NSHomeDirectory()) {
         self.projectsRoot = projectsRoot
         self.aggregator = aggregator
         // Tracker shares the same pricing; production omits it and we build
         // one here. Tests can inject a pre-seeded tracker.
         self.tracker = tracker ?? SessionTracker(pricing: pricing)
         self.sourcesConfigPath = sourcesConfigPath
+        self.home = home
         let defaultSource = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)
         self.readers = [defaultSource.id: reader]
         self.sources = [defaultSource]
@@ -321,18 +331,25 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Loads the configured source list. A missing `sources.toml`
-    /// yields exactly today's single implicit source rooted at
-    /// `projectsRoot` — deliberately NOT `Sources.defaults(home:)`,
-    /// which would resolve the real `~/.claude/projects` rather than
-    /// whatever root this `AppState` was constructed with. Production
-    /// and test roots happen to coincide there, but a test that injects
-    /// an isolated temp root must keep scanning exactly that root, not
-    /// the machine's real home directory. A malformed config degrades
-    /// to that same single-source fallback with `lastError` set —
-    /// counting never stops over a config typo.
+    /// Loads the configured source list. A missing `sources.toml` (the
+    /// default state for every install) yields
+    /// `Sources.defaultsWithClaudeRoot(home:claudeRoot:)`, NOT a bare
+    /// Claude-only list: the Claude entry is pinned at exactly
+    /// `projectsRoot` — this `AppState`'s injected root, honoured even
+    /// when it's an isolated test temp dir rather than the real
+    /// `~/.claude/projects` — while every OTHER vendor (currently just
+    /// Grok) is discovered under `home`, also as injected, so a test's
+    /// temp `home` (containing no `.grok/sessions`) discovers nothing
+    /// and a production `home` of the real `NSHomeDirectory()` discovers
+    /// whatever vendor directories actually exist on that machine. Both
+    /// halves matter: pinning the Claude root keeps every existing
+    /// caller's counting scope unchanged, and discovering under the
+    /// injected `home` (rather than always the real one) is what keeps
+    /// this deterministic under test. A malformed config degrades to
+    /// that same discovering default with `lastError` set — counting
+    /// never stops over a config typo.
     private func resolveSources() -> [SourceEntry] {
-        let fallback = [SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)]
+        let fallback = Sources.defaultsWithClaudeRoot(home: home, claudeRoot: projectsRoot)
         guard FileManager.default.fileExists(atPath: sourcesConfigPath) else {
             if lastError != nil && lastError == lastSourcesError { self.lastError = nil }
             lastSourcesError = nil

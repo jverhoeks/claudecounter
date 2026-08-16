@@ -108,7 +108,8 @@ final class AppStateTests: XCTestCase {
             // ~/.config/claudecounter/sources.toml a developer machine
             // happens to have configured.
             sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
-            now: now
+            now: now,
+            home: root
         )
         await app.start()
 
@@ -162,7 +163,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         let opusKey = SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-4-7")
@@ -206,7 +208,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         // Whatever start()'s own full rescan found (real machine state,
@@ -252,7 +255,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         await app.refreshBudgets(configPath: configPath)
@@ -294,7 +298,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
 
@@ -351,7 +356,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: dock,
             settingsStore: store,
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         await app.stop()
@@ -384,7 +390,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: dock,
             settingsStore: store,
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         await app.stop()
@@ -418,7 +425,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: dock,
             settingsStore: store,
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: root
         )
         await app.start()
         XCTAssertFalse(dock.isVisible)
@@ -490,7 +498,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: base
         )
         await app.start()
 
@@ -539,7 +548,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: root
         )
         await app.start()
 
@@ -592,7 +602,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: base
         )
         await app.start()
 
@@ -649,7 +660,8 @@ final class AppStateTests: XCTestCase {
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
             sourcesConfigPath: sourcesPath,
-            now: now
+            now: now,
+            home: base
         )
         await app.start()
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -719,7 +731,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: base
         )
         await app.start()
         let key = SeriesKey(source: "claude/work", vendor: "claude", model: "claude-opus-4-7")
@@ -805,7 +818,8 @@ final class AppStateTests: XCTestCase {
                 pricing: .defaults,
                 dockIcon: InMemoryDockIconController(),
                 settingsStore: InMemorySettingsStore(),
-                sourcesConfigPath: sourcesPath
+                sourcesConfigPath: sourcesPath,
+                home: base
             )
         }
 
@@ -916,7 +930,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: base
         )
         await app.start()
         await app.stop()
@@ -995,7 +1010,8 @@ final class AppStateTests: XCTestCase {
             pricing: .defaults,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: sourcesPath
+            sourcesConfigPath: sourcesPath,
+            home: base
         )
         await app.start()
         await app.stop()
@@ -1004,6 +1020,107 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(bySource["claude/work"], [workPath: 111],
                        "the sole reader must hold only its own path — the orphan must not be seeded into it just because it's the only reader available")
+    }
+
+    // MARK: - Home-based vendor discovery (resolveSources)
+
+    /// The shipped bug this branch fixes: `resolveSources`'s missing-file
+    /// branch returned a hardcoded Claude-only fallback instead of
+    /// `Sources.defaultsWithClaudeRoot`, so a user with no
+    /// `sources.toml` (the default state for every install) never got
+    /// Grok auto-discovered in the menu-bar app, even though the Go TUI
+    /// discovers it via `sources.Defaults` on the same corpus. `home` is
+    /// a temp dir distinct from `projectsRoot`, so this proves BOTH
+    /// halves at once: the Claude entry stays at the INJECTED
+    /// `projectsRoot` (not `home/.claude/projects`), and `grok` is
+    /// discovered under the INJECTED `home` (not the real machine's).
+    func test_appState_noSourcesToml_discoversGrokUnderHome_claudeStaysAtInjectedRoot() async throws {
+        let root = NSTemporaryDirectory() + "as-homedisc-\(UUID().uuidString)"
+        let projects = root + "/projects"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let home = NSTemporaryDirectory() + "as-home-\(UUID().uuidString)"
+        let grokSessions = home + "/.grok/sessions"
+        try FileManager.default.createDirectory(atPath: grokSessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-homedisc-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: projects,
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            // No sources.toml at this path — exercises the missing-file branch.
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            home: home
+        )
+        await app.start()
+
+        XCTAssertEqual(app.sources.first, SourceEntry(vendor: "claude", label: "claude", root: projects),
+                       "the Claude entry must stay at the injected projectsRoot, not home/.claude/projects")
+        XCTAssertTrue(app.sources.contains { $0.vendor == "grok" && $0.root == grokSessions },
+                      "grok must be auto-discovered under the injected home when its sessions dir exists")
+
+        await app.stop()
+    }
+
+    /// The malformed-config `catch` branch had the identical defect —
+    /// it also returned the bare Claude-only fallback instead of
+    /// `defaultsWithClaudeRoot`. Discovery must survive that path too,
+    /// alongside the (unrelated, already-correct) `lastError` surfacing.
+    func test_appState_malformedSourcesToml_stillDiscoversGrokUnderHome_setsLastError() async throws {
+        let root = NSTemporaryDirectory() + "as-homedisc-bad-\(UUID().uuidString)"
+        let projects = root + "/projects"
+        try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let home = NSTemporaryDirectory() + "as-home-bad-\(UUID().uuidString)"
+        let grokSessions = home + "/.grok/sessions"
+        try FileManager.default.createDirectory(atPath: grokSessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let sourcesPath = root + "/sources.toml"
+        // Unknown vendor -> Sources.load throws (the malformed-config branch).
+        try """
+        [[source]]
+        vendor = "openai"
+        label = "x"
+        root = "/tmp/x"
+        """.write(toFile: sourcesPath, atomically: true, encoding: .utf8)
+
+        let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ascache-homedisc-bad-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let agg = Aggregator(pricing: .defaults)
+        let app = AppState(
+            projectsRoot: projects,
+            aggregator: agg,
+            reader: Reader(),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(),
+            sourcesConfigPath: sourcesPath,
+            home: home
+        )
+        await app.start()
+
+        XCTAssertEqual(app.sources.first, SourceEntry(vendor: "claude", label: "claude", root: projects),
+                       "the Claude entry must stay at the injected projectsRoot even on the malformed-config path")
+        XCTAssertTrue(app.sources.contains { $0.vendor == "grok" && $0.root == grokSessions },
+                      "grok must still be discovered under home when sources.toml is malformed")
+        XCTAssertNotNil(app.lastError, "a malformed sources.toml must still surface via lastError")
+
+        await app.stop()
     }
 }
 
