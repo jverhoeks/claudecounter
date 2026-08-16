@@ -1,9 +1,10 @@
 # Multi-vendor per-model usage — design
 
 **Date:** 2026-08-10
-**Status:** Phase A (sources, grouping) and Phase B (Grok) shipped 2026-08-15,
-cross-language parity included. Phase C (Codex) is next — see *Deferred to the
-Codex spec* below; it needs its own plan before implementation starts.
+**Status:** Phase A (sources, grouping), Phase B (Grok), and Phase C (Codex)
+all shipped, cross-language parity included — see
+`docs/superpowers/specs/2026-08-16-codex-usage-design.md` for Phase C's own
+design and status.
 **Scope:** configurable sources, Grok ingestion, and the grouping control. Codex
 ingestion is deferred to a follow-up spec.
 **Supersedes a claim in:** `docs/superpowers/specs/2026-08-07-usage-limits-design.md`

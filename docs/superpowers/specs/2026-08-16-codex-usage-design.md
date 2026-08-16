@@ -1,7 +1,9 @@
 # Codex usage — design (Phase C)
 
 **Date:** 2026-08-16
-**Status:** approved, ready for planning
+**Status:** shipped — Codex ingestion, pricing-table costing, the
+`codex-auto-review` → `gpt-5.6-luna` alias, and cross-language parity are all
+in place in both apps.
 **Scope:** Codex ingestion. Completes the multi-vendor work begun in
 `docs/superpowers/specs/2026-08-10-multi-vendor-usage-design.md`, whose Phase A
 (sources and grouping) and Phase B (Grok) have shipped.
