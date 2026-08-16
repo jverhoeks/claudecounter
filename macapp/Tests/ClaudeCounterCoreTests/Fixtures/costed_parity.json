@@ -1,0 +1,27 @@
+{
+  "series": [
+    {"source": "claude/work",   "vendor": "claude", "model": "claude-opus-4-7",   "usd": 12.0, "tokens": 1200000, "dayUsd": 0.0},
+    {"source": "claude/work",   "vendor": "claude", "model": "claude-sonnet-4-6", "usd": 6.0,  "tokens": 600000,  "dayUsd": 0.0},
+    {"source": "grok/personal", "vendor": "grok",   "model": "grok-4.5-build",    "usd": 3.0,  "tokens": 300000,  "dayUsd": 2.0},
+    {"source": "grok/personal", "vendor": "grok",   "model": "grok-4-fast",       "usd": 1.5,  "tokens": 150000,  "dayUsd": 0.8}
+  ],
+  "expect": {
+    "model":  {"claude-opus-4-7": 12.0, "claude-sonnet-4-6": 6.0, "grok-4.5-build": 3.0, "grok-4-fast": 1.5},
+    "vendor": {"claude": 18.0, "grok": 4.5},
+    "source": {"claude/work": 18.0, "grok/personal": 4.5},
+    "total":  {"total": 22.5}
+  },
+  "expectTokens": {
+    "model":  {"claude-opus-4-7": 1200000, "claude-sonnet-4-6": 600000, "grok-4.5-build": 300000, "grok-4-fast": 150000},
+    "vendor": {"claude": 1800000, "grok": 450000},
+    "source": {"claude/work": 1800000, "grok/personal": 450000},
+    "total":  {"total": 2250000}
+  },
+  "dayTotalUSD": 2.8,
+  "coverage": {
+    "grok": {"turns": 100, "withUsage": 20}
+  },
+  "expectCoverageFraction": {
+    "grok": 0.2
+  }
+}

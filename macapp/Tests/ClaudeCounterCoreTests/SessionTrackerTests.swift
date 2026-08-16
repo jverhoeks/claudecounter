@@ -15,13 +15,17 @@ final class SessionTrackerTests: XCTestCase {
                     input: UInt64 = 0, output: UInt64 = 0,
                     cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0,
                     project: String = "-Users-me-src-proj",
-                    ts: Date, sub: Bool = false) -> UsageEvent {
+                    ts: Date, sub: Bool = false,
+                    costUSD: Double = 0, costed: Bool = false,
+                    coverageOnly: Bool = false, hasUsage: Bool = false) -> UsageEvent {
         UsageEvent(
             timestamp: ts, sessionID: session, cwd: "/tmp/x",
             project: project, model: model,
             messageID: "", requestID: "", isSubagent: sub,
             usage: Usage(input: input, output: output,
-                         cacheCreate: cacheCreate, cacheRead: cacheRead)
+                         cacheCreate: cacheCreate, cacheRead: cacheRead),
+            costUSD: costUSD, costed: costed,
+            coverageOnly: coverageOnly, hasUsage: hasUsage
         )
     }
 
@@ -183,6 +187,58 @@ final class SessionTrackerTests: XCTestCase {
         XCTAssertGreaterThan(s.cacheCreateCostUSD, 2.0, "cumulative total is still high")
         XCTAssertEqual(s.cacheCreate5mUSD, 0.0, accuracy: 1e-9)
         XCTAssertFalse(s.warnings.contains(.cache), "rate-based warning stays clear once thrash stops")
+    }
+
+    // MARK: - costed events (Grok) — use costUSD as given, never re-priced
+
+    func test_costedEvent_usesCostUSDNotPricingTable() async {
+        let t = SessionTracker(pricing: .defaults)
+        // "grok-4.6-build" has no entry in the pricing table; a non-costed
+        // event with this model would price to $0.
+        await t.apply(ev(model: "grok-4.6-build", input: 52_295, output: 5_833,
+                         ts: Self.now.addingTimeInterval(-10),
+                         costUSD: 0.3721028, costed: true))
+        let s = onlySession(await t.snapshot(now: Self.now, thresholds: .defaults))
+        XCTAssertEqual(s.costUSD, 0.3721028, accuracy: 1e-9)
+    }
+
+    func test_costedEvent_cacheCreateCostIsZero_notTablePriced() async {
+        let t = SessionTracker(pricing: .defaults)
+        // Deliberately a model that IS in the pricing table (opus): if
+        // the costed guard were missing, `cacheCreate` would silently get
+        // priced through it (opus cacheCreate = $6.25/Mtok → $12.50 here)
+        // even though the event's own dollar figure is authoritative and
+        // has no such breakdown to draw on. Grok never collides with a
+        // real Claude model name, but the guard must not depend on that.
+        await t.apply(ev(model: "claude-opus-4-8", cacheCreate: 2_000_000,
+                         ts: Self.now.addingTimeInterval(-10),
+                         costUSD: 1.0, costed: true))
+        let s = onlySession(await t.snapshot(now: Self.now, thresholds: .defaults))
+        XCTAssertEqual(s.cacheCreateCostUSD, 0, "a costed event has no cache-creation breakdown")
+    }
+
+    // MARK: - coverageOnly events are bookkeeping, not a turn
+
+    func test_coverageOnlyEvent_doesNotCreateASession() async {
+        let t = SessionTracker(pricing: .defaults)
+        await t.apply(ev(model: "", ts: Self.now.addingTimeInterval(-10), coverageOnly: true))
+        let stats = await t.snapshot(now: Self.now, thresholds: .defaults)
+        XCTAssertTrue(stats.isEmpty, "a bookkeeping-only event must not surface as a live session")
+    }
+
+    func test_coverageOnlyEvent_doesNotInflateTurnsOrClobberLatestMain() async {
+        let t = SessionTracker(pricing: .defaults)
+        let ts = Self.now.addingTimeInterval(-10)
+        // Same timestamp as the real turn — exercises `apply`'s `>=`
+        // tie-break. A coverage event sharing that timestamp must not
+        // count as a second turn or overwrite the model/context the real
+        // usage event set.
+        await t.apply(ev(input: 50_000, ts: ts))
+        await t.apply(ev(model: "", ts: ts, coverageOnly: true, hasUsage: true))
+        let s = onlySession(await t.snapshot(now: Self.now, thresholds: .defaults))
+        XCTAssertEqual(s.turns, 1, "the coverage event must not count as a second turn")
+        XCTAssertEqual(s.model, "claude-opus-4-8")
+        XCTAssertEqual(s.contextTokens, 50_000)
     }
 
     // MARK: - reset

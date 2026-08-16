@@ -82,12 +82,55 @@ public enum Sources {
         (NSHomeDirectory() as NSString).appendingPathComponent(".config/claudecounter/sources.toml")
     }
 
-    /// The implicit source list used when no config file exists: exactly
-    /// today's hardcoded behaviour, so an existing user sees no change.
+    /// The implicit source list used when no config file exists.
+    ///
+    /// The Claude entry is unconditional and always first — it is the
+    /// original hardcoded behaviour. Other vendors are auto-discovered:
+    /// added only when their root exists on this machine, mirroring how
+    /// `PlanLimits` already finds ~/.grok with zero configuration. A user
+    /// with no ~/.grok sees no change whatsoever.
+    ///
+    /// Mirrors `sources.Defaults` in `tui/internal/sources/sources.go`;
+    /// the two lists must stay in step or the surfaces disagree about
+    /// what an unconfigured install counts.
     public static func defaults(home: String) -> [SourceEntry] {
-        [SourceEntry(vendor: "claude", label: "claude",
-                     root: (home as NSString).appendingPathComponent(".claude/projects"))]
+        defaultsWithClaudeRoot(home: home,
+                               claudeRoot: (home as NSString).appendingPathComponent(".claude/projects"))
     }
+
+    /// `defaults(home:)` with the Claude root injected. Exists so the
+    /// overlap-dropping branch below is reachable from a test: the two
+    /// real default roots (~/.claude/projects and ~/.grok/sessions) are
+    /// siblings under `home`, so nothing else can exercise it. Mirrors
+    /// Go's `DefaultsWithClaudeRoot`.
+    static func defaultsWithClaudeRoot(home: String, claudeRoot: String) -> [SourceEntry] {
+        var out = [SourceEntry(vendor: "claude", label: "claude", root: claudeRoot)]
+        for (vendor, segment) in discoverable {
+            let root = (home as NSString).appendingPathComponent(segment)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root, isDirectory: &isDir), isDir.boolValue else {
+                continue
+            }
+            let candidate = SourceEntry(vendor: vendor, label: vendor, root: root)
+            // A discovered root that overlaps one already in the list is
+            // dropped rather than returned. `load` rejects nested roots
+            // outright because a user wrote them; this list is assembled
+            // by us, so the same hazard — every event in the overlap
+            // counted twice — is silently avoided instead of turned into
+            // an error the user cannot act on.
+            guard (try? checkOverlap(out + [candidate])) != nil else { continue }
+            out.append(candidate)
+        }
+        return out
+    }
+
+    /// Non-Claude vendors `defaults(home:)` probes for, in append order.
+    /// Adding a vendor here is all it takes for a zero-config install to
+    /// be counted, provided a reader exists for it. Mirrors Go's
+    /// `discoverable`.
+    private static let discoverable: [(vendor: String, segment: String)] = [
+        ("grok", ".grok/sessions"),
+    ]
 
     /// Reads sources.toml. A missing file yields `defaults(home:)` and no
     /// error — that is the normal unconfigured state. A malformed or

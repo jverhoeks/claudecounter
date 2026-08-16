@@ -246,6 +246,64 @@ func TestInitialScanSourceTagsEvents(t *testing.T) {
 	}
 }
 
+// A Grok source scans end-to-end: the reader picks the Grok parser from
+// the source's vendor, walks only updates.jsonl, and tags every event
+// with the source identity.
+func TestInitialScanSource_GrokEndToEnd(t *testing.T) {
+	// The root must be the sessions directory itself, the way
+	// sources.Defaults builds it: grokProjectKey finds the encoded cwd as
+	// the first path segment under the configured root (grokSessionDir /
+	// projectUnderRoot), so a fixture rooted anywhere else files every
+	// event under the empty project.
+	root := filepath.Join(t.TempDir(), "sessions")
+	dir := filepath.Join(root, "%2FUsers%2Fme%2Fsrc%2Fproj", "01a0-sess")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile("testdata/grok_updates.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling file that must be ignored: its token fields are
+	// cumulative context, not usage.
+	if err := os.WriteFile(filepath.Join(dir, "messages.jsonl"), fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan Event, 64)
+	r := New(ch)
+	src := sources.Source{Vendor: "grok", Label: "grok", Root: root}
+	if err := r.InitialScanSource(src, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	close(ch)
+
+	var usage int
+	for e := range ch {
+		if e.Vendor != "grok" || e.Source != "grok/grok" {
+			t.Fatalf("event tagged %s/%s, want grok/grok", e.Vendor, e.Source)
+		}
+		if e.CoverageOnly {
+			continue
+		}
+		usage++
+		if e.Project != "-Users-me-src-proj" {
+			t.Fatalf("project = %q, want -Users-me-src-proj", e.Project)
+		}
+		if !e.Costed {
+			t.Fatal("a Grok usage event must be costed")
+		}
+	}
+	// Exactly the 5 usage events from updates.jsonl. If messages.jsonl
+	// were also walked this would be 10.
+	if usage != 5 {
+		t.Fatalf("usage events = %d, want 5 (messages.jsonl must be skipped)", usage)
+	}
+}
+
 // The old single-root entry point must keep working unchanged, tagged
 // with the default source, so existing callers see no behaviour change.
 func TestInitialScanDefaultsToClaudeSource(t *testing.T) {

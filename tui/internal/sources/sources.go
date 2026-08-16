@@ -65,15 +65,63 @@ func DefaultConfigPath() string {
 	return filepath.Join(home, ".config", "claudecounter", "sources.toml")
 }
 
-// Defaults is the implicit source list used when no config file exists:
-// exactly today's hardcoded behaviour, so an existing user sees no
-// change.
+// Defaults is the implicit source list used when no config file exists.
+//
+// The Claude entry is unconditional and always first: it is the original
+// hardcoded behaviour, and callers (requireDefaultRoots) still treat a
+// missing Claude root as fatal so a first-run user never gets a
+// confident silent $0.00.
+//
+// Other vendors are auto-discovered — added only when their root
+// actually exists on this machine. That mirrors how planlimits already
+// finds ~/.grok with zero configuration, and it keeps the promise that a
+// user who never opts in sees no change: no ~/.grok, no Grok source, no
+// difference. Because such an entry is only ever added when the
+// directory is there, it is never subject to the must-exist rule.
+//
+// A discovered root that overlaps one already in the list is dropped
+// rather than returned. Load() rejects nested roots outright because a
+// user wrote them; this list is assembled by us, so the same hazard —
+// every event in the overlap counted twice — is silently avoided instead
+// of turned into an error the user cannot act on. It is reachable: a
+// CLAUDE_CONFIG_DIR pointing under ~/.grok, or the reverse, nests the
+// two.
 func Defaults(home string) []Source {
-	return []Source{{
+	return DefaultsWithClaudeRoot(home, filepath.Join(home, ".claude", "projects"))
+}
+
+// DefaultsWithClaudeRoot is Defaults with the Claude root injected. It
+// exists so the overlap branch below is reachable from a test: the two
+// real default paths are siblings, so nothing else can exercise it.
+func DefaultsWithClaudeRoot(home, claudeRoot string) []Source {
+	out := []Source{{
 		Vendor: "claude",
 		Label:  "claude",
-		Root:   filepath.Join(home, ".claude", "projects"),
+		Root:   claudeRoot,
 	}}
+	for _, d := range discoverable {
+		root := filepath.Join(home, filepath.Join(d.segments...))
+		fi, err := os.Stat(root)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		cand := Source{Vendor: d.vendor, Label: d.vendor, Root: root}
+		if checkOverlap(append(append([]Source{}, out...), cand)) != nil {
+			continue
+		}
+		out = append(out, cand)
+	}
+	return out
+}
+
+// discoverable lists the non-Claude vendors Defaults probes for, in the
+// order they are appended. Adding a vendor here is all it takes for a
+// zero-config install to be counted, provided a reader exists for it.
+var discoverable = []struct {
+	vendor   string
+	segments []string
+}{
+	{vendor: "grok", segments: []string{".grok", "sessions"}},
 }
 
 // Load reads sources.toml. A missing file yields Defaults(home) and no

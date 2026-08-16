@@ -144,11 +144,13 @@ func requireRoot(root string) {
 // a single implicit source, so a user who still passes --root sees
 // exactly what they always have — and, per requireRoot, a typo in that
 // path is still fatal, not a silent zero. Otherwise the configured list
-// is used (Defaults(home) when no sources.toml exists — byte-identical
-// to today's implicit single-source behaviour). A malformed
-// sources.toml is fatal here: these are one-shot commands, so exiting
-// non-zero with the parse error beats silently showing wrong or empty
-// totals. Contrast runTUI, which must never exit on the same error.
+// is used: Defaults(home) when no sources.toml exists, which is the
+// auto-discovering default list — a single Claude source, plus any
+// other vendor root (e.g. ~/.grok/sessions) this machine happens to
+// have. A malformed sources.toml is fatal here: these are one-shot
+// commands, so exiting non-zero with the parse error beats silently
+// showing wrong or empty totals. Contrast runTUI, which must never exit
+// on the same error.
 func resolveSources(sourcesPath, root string, rootSet bool, home string) []sources.Source {
 	if rootSet {
 		requireRoot(root)
@@ -178,9 +180,20 @@ func loadSourcesOrExit(cfgPath, home string) []sources.Source {
 // this machine" — not for the fallback nobody configured. Without this,
 // a first-run user (or a cron/CI wrapper with a wrong $HOME) gets a
 // confident, silent $0.00 with nothing distinguishing "you spent
-// nothing" from "I couldn't find your transcripts".
+// nothing" from "I couldn't find your transcripts". This applies to the
+// Claude default only: every other entry in the implicit list is
+// auto-discovered by Defaults, which adds one only when its root
+// already exists on this machine, so it is never subject to this rule.
 func requireDefaultRoots(srcs []sources.Source) {
 	for _, s := range srcs {
+		// Only the Claude default is unconditional. Every other entry in
+		// the implicit list was auto-discovered — Defaults added it only
+		// because its directory existed — so a stat failure here means a
+		// race or an unmount, not a misconfiguration, and must not take
+		// the process down.
+		if s.Vendor != "claude" {
+			continue
+		}
 		requireRoot(s.Root)
 	}
 }

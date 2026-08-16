@@ -1,6 +1,7 @@
 package agg
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -365,5 +366,201 @@ func TestProjectDaily_FirstSeenCwdWins(t *testing.T) {
 	}
 	if cwd != "/Users/me/alpha" {
 		t.Errorf("cwd = %q, want first-seen /Users/me/alpha", cwd)
+	}
+}
+
+// A costed event's dollars are used as given and never touched by the
+// pricing table — a Grok model has no LiteLLM entry, so a pricing path
+// would silently zero it.
+func TestApply_CostedEventIgnoresPricingTable(t *testing.T) {
+	table := pricing.Table{Models: map[string]pricing.ModelPrice{
+		// Deliberately price the same model name absurdly: if Snapshot
+		// ever consults the table for a costed cell, the assertion below
+		// fails loudly instead of drifting by cents.
+		"grok-4.6-build": {InputPerMTok: 1000, OutputPerMTok: 1000},
+	}}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(table, func() time.Time { return now })
+
+	a.Apply(reader.Event{
+		Timestamp: now,
+		Project:   "-Users-me-proj",
+		Vendor:    "grok",
+		Source:    "grok/grok",
+		Model:     "grok-4.6-build",
+		MessageID: "prompt-1",
+		RequestID: "grok-4.6-build",
+		Usage:     pricing.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+		CostUSD:   0.37,
+		Costed:    true,
+	})
+
+	got := a.Snapshot()
+	key := SeriesKey{Source: "grok/grok", Vendor: "grok", Model: "grok-4.6-build"}
+	if math.Abs(got.Month[key].USD-0.37) > 1e-9 {
+		t.Fatalf("month USD = %v, want 0.37 (vendor-reported, not priced)", got.Month[key].USD)
+	}
+	if math.Abs(got.Day[key].USD-0.37) > 1e-9 {
+		t.Fatalf("day USD = %v, want 0.37", got.Day[key].USD)
+	}
+	if math.Abs(got.Daily[len(got.Daily)-1].USD-0.37) > 1e-9 {
+		t.Fatalf("today's daily USD = %v, want 0.37", got.Daily[len(got.Daily)-1].USD)
+	}
+	if got.MonthProj["-Users-me-proj"].USD() != 0.37 {
+		t.Fatalf("project USD = %v, want 0.37", got.MonthProj["-Users-me-proj"].USD())
+	}
+	// A costed model is never "unknown" — there is nothing to look up.
+	if got.Unknown != 0 {
+		t.Fatalf("Unknown = %d, want 0 for a costed cell", got.Unknown)
+	}
+}
+
+func TestCoverage_ReportsTheUsageBearingFraction(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(pricing.Table{}, func() time.Time { return now })
+
+	// 3 of 4 turns carried usage.
+	for _, hasUsage := range []bool{true, true, true, false} {
+		a.Apply(reader.Event{
+			Timestamp:    now,
+			Vendor:       "grok",
+			Source:       "grok/grok",
+			CoverageOnly: true,
+			HasUsage:     hasUsage,
+		})
+	}
+
+	got := a.Snapshot()
+	cov := got.Coverage["grok"]
+	if cov.Turns != 4 || cov.WithUsage != 3 {
+		t.Fatalf("coverage = %+v, want {Turns:4 WithUsage:3}", cov)
+	}
+	if math.Abs(cov.Fraction()-0.75) > 1e-9 {
+		t.Fatalf("fraction = %v, want 0.75", cov.Fraction())
+	}
+	if !cov.Partial() {
+		t.Fatal("0.75 is below the threshold and must read as partial")
+	}
+}
+
+// Coverage events go through the same dedupe as usage events. Without
+// that, any path that re-reads a file (AppState.refresh, a source
+// removed and re-added, a cache restore that misses an offset) inflates
+// the tally — and a *partial* re-read skews the fraction optimistic,
+// hiding the very undercount the marker exists to surface.
+func TestCoverage_IsDedupedLikeUsage(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(pricing.Table{}, func() time.Time { return now })
+	ev := reader.Event{
+		Timestamp: now, Vendor: "grok", Source: "grok/grok",
+		MessageID: "p1", RequestID: "coverage",
+		CoverageOnly: true, HasUsage: true,
+	}
+	a.Apply(ev)
+	a.Apply(ev)
+
+	if got := a.Snapshot().Coverage["grok"].Turns; got != 1 {
+		t.Fatalf("Turns = %d, want 1 — the second event is a duplicate", got)
+	}
+}
+
+// The coverage event and the usage events from the same turn share a
+// prompt_id and must not evict one another.
+func TestCoverage_SentinelDoesNotCollideWithTheTurnsUsageEvents(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(pricing.Table{}, func() time.Time { return now })
+	a.Apply(reader.Event{
+		Timestamp: now, Vendor: "grok", Source: "grok/grok",
+		MessageID: "p1", RequestID: "coverage", CoverageOnly: true, HasUsage: true,
+	})
+	a.Apply(reader.Event{
+		Timestamp: now, Vendor: "grok", Source: "grok/grok",
+		Model: "grok-4.6-build", MessageID: "p1", RequestID: "grok-4.6-build",
+		CostUSD: 1.5, Costed: true,
+	})
+
+	got := a.Snapshot()
+	if got.Coverage["grok"].Turns != 1 {
+		t.Fatalf("Turns = %d, want 1", got.Coverage["grok"].Turns)
+	}
+	key := SeriesKey{Source: "grok/grok", Vendor: "grok", Model: "grok-4.6-build"}
+	if math.Abs(got.Month[key].USD-1.5) > 1e-9 {
+		t.Fatalf("month USD = %v, want 1.5 — the usage event must survive", got.Month[key].USD)
+	}
+}
+
+// A coverage event carries no spend and must never move a dollar or a
+// token. It is bookkeeping only.
+func TestCoverage_EventContributesNoSpend(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(pricing.Table{}, func() time.Time { return now })
+	a.Apply(reader.Event{
+		Timestamp: now, Vendor: "grok", Source: "grok/grok",
+		CoverageOnly: true, HasUsage: true,
+		// Deliberately non-zero: if Apply ever falls through to the cell
+		// write, these show up as spend.
+		Usage:   pricing.Usage{InputTokens: 999},
+		CostUSD: 99, Costed: true,
+	})
+	got := a.Snapshot()
+	if len(got.Month) != 0 {
+		t.Fatalf("month series = %+v, want none", got.Month)
+	}
+	if got.Daily[len(got.Daily)-1].USD != 0 {
+		t.Fatalf("daily USD = %v, want 0", got.Daily[len(got.Daily)-1].USD)
+	}
+}
+
+// A vendor that reports usage on everything is complete, and a vendor
+// that emits no coverage events at all (Claude) reads as complete rather
+// than as zero.
+func TestCoverage_FullAndAbsentBothReadAsComplete(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(pricing.Table{}, func() time.Time { return now })
+	a.Apply(reader.Event{Timestamp: now, Vendor: "grok", Source: "grok/grok",
+		CoverageOnly: true, HasUsage: true})
+
+	got := a.Snapshot()
+	if got.Coverage["grok"].Partial() {
+		t.Fatal("1.00 coverage must not read as partial")
+	}
+	if got.Coverage["claude"].Partial() {
+		t.Fatal("a vendor with no coverage events must read as complete, not 0%")
+	}
+}
+
+// Priced and costed cells sum together in one snapshot without either
+// path swallowing the other.
+func TestSnapshot_PricedAndCostedCellsSum(t *testing.T) {
+	table := pricing.Table{Models: map[string]pricing.ModelPrice{
+		"claude-opus-4-7": {InputPerMTok: 15, OutputPerMTok: 75},
+	}}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.Local)
+	a := NewWithClock(table, func() time.Time { return now })
+
+	a.Apply(reader.Event{
+		Timestamp: now, Project: "p", Vendor: "claude", Source: "claude/claude",
+		Model: "claude-opus-4-7", MessageID: "m1", RequestID: "r1",
+		Usage: pricing.Usage{InputTokens: 1_000_000}, // $15.00
+	})
+	a.Apply(reader.Event{
+		Timestamp: now, Project: "p", Vendor: "grok", Source: "grok/grok",
+		Model: "grok-4.6-build", MessageID: "prompt-1", RequestID: "grok-4.6-build",
+		Usage: pricing.Usage{InputTokens: 500}, CostUSD: 2.5, Costed: true,
+	})
+
+	got := a.Snapshot()
+	total := 0.0
+	for _, md := range got.Month {
+		total += md.USD
+	}
+	if math.Abs(total-17.5) > 1e-9 {
+		t.Fatalf("month total = %v, want 17.5 (15.00 priced + 2.50 costed)", total)
+	}
+	if math.Abs(got.MonthProj["p"].USD()-17.5) > 1e-9 {
+		t.Fatalf("project total = %v, want 17.5", got.MonthProj["p"].USD())
+	}
+	if math.Abs(got.Daily[len(got.Daily)-1].USD-17.5) > 1e-9 {
+		t.Fatalf("daily total = %v, want 17.5", got.Daily[len(got.Daily)-1].USD)
 	}
 }

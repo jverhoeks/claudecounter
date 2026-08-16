@@ -19,7 +19,7 @@ func series() map[string]agg.ModelDay {
 }
 
 func TestRenderSeriesSortsByUSDDescending(t *testing.T) {
-	out := renderSeries(series(), agg.GroupModel, 0)
+	out := renderSeries(series(), map[string]agg.Coverage{}, agg.GroupModel, 0)
 	iOpus := strings.Index(out, "claude-opus-4-7")
 	iSonnet := strings.Index(out, "claude-sonnet-4-6")
 	iGrok := strings.Index(out, "grok-4.5-build")
@@ -29,7 +29,7 @@ func TestRenderSeriesSortsByUSDDescending(t *testing.T) {
 }
 
 func TestRenderSeriesShowsShareOfTotal(t *testing.T) {
-	out := renderSeries(series(), agg.GroupModel, 0)
+	out := renderSeries(series(), map[string]agg.Coverage{}, agg.GroupModel, 0)
 	// 12 of 20 is 60%.
 	if !strings.Contains(out, "60%") {
 		t.Fatalf("expected a 60%% share for opus:\n%s", out)
@@ -42,7 +42,7 @@ func TestRenderSeriesKeepsFullSourceLabel(t *testing.T) {
 	out := renderSeries(map[string]agg.ModelDay{
 		"claude/work":     {USD: 10},
 		"claude/personal": {USD: 4},
-	}, agg.GroupSource, 0)
+	}, map[string]agg.Coverage{}, agg.GroupSource, 0)
 	for _, want := range []string{"claude/work", "claude/personal"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
@@ -51,7 +51,7 @@ func TestRenderSeriesKeepsFullSourceLabel(t *testing.T) {
 }
 
 func TestRenderSeriesEmptyIsEmpty(t *testing.T) {
-	if got := renderSeries(map[string]agg.ModelDay{}, agg.GroupModel, 0); got != "" {
+	if got := renderSeries(map[string]agg.ModelDay{}, map[string]agg.Coverage{}, agg.GroupModel, 0); got != "" {
 		t.Fatalf("no series must render nothing, got %q", got)
 	}
 }
@@ -59,7 +59,7 @@ func TestRenderSeriesEmptyIsEmpty(t *testing.T) {
 // TestRenderSeriesZeroBarWidthOmitsBar locks in that viewMinimal's call
 // (barWidth 0) renders a plain table with no bar glyphs.
 func TestRenderSeriesZeroBarWidthOmitsBar(t *testing.T) {
-	out := renderSeries(series(), agg.GroupModel, 0)
+	out := renderSeries(series(), map[string]agg.Coverage{}, agg.GroupModel, 0)
 	if strings.ContainsAny(out, "█░") {
 		t.Fatalf("barWidth=0 must render no bar glyphs:\n%s", out)
 	}
@@ -70,7 +70,7 @@ func TestRenderSeriesZeroBarWidthOmitsBar(t *testing.T) {
 // view_split.go originally rendered per-model, now reused for whichever
 // grouping is active.
 func TestRenderSeriesPositiveBarWidthDrawsBar(t *testing.T) {
-	out := renderSeries(series(), agg.GroupModel, 24)
+	out := renderSeries(series(), map[string]agg.Coverage{}, agg.GroupModel, 24)
 	if !strings.ContainsAny(out, "█░") {
 		t.Fatalf("barWidth=24 must render bar glyphs:\n%s", out)
 	}
@@ -112,6 +112,36 @@ func TestModelBarStyleColorsVendorLabels(t *testing.T) {
 	}
 	if modelStyle == vendorStyle {
 		t.Errorf("a specific model match must win over the vendor-level fallback, got the same style for both")
+	}
+}
+
+// A vendor below the coverage threshold is marked so a user reading an
+// old month sees a floor rather than a confident total.
+func TestRenderSeries_MarksPartialCoverage(t *testing.T) {
+	series := map[string]agg.ModelDay{"grok": {USD: 12.34}}
+	rowCov := map[string]agg.Coverage{"grok": {Turns: 100, WithUsage: 20}}
+
+	out := renderSeries(series, rowCov, agg.GroupVendor, 0)
+	if !strings.Contains(out, "~20%") {
+		t.Fatalf("expected a coverage marker in:\n%s", out)
+	}
+}
+
+// A complete vendor renders exactly as it does today — no marker, no
+// stray spacing. The coverage marker is distinguished from the
+// pre-existing share-of-total percentage (which every row prints, even
+// a single-row one at 100%) by its "~" prefix.
+func TestRenderSeries_CompleteCoverageIsUnmarked(t *testing.T) {
+	series := map[string]agg.ModelDay{"claude": {USD: 12.34}}
+	out := renderSeries(series, map[string]agg.Coverage{}, agg.GroupVendor, 0)
+	if strings.Contains(out, "~") {
+		t.Fatalf("unexpected coverage marker in:\n%s", out)
+	}
+	// "no stray spacing": a coverageSuffix that returned a bare space for
+	// a complete vendor would pass the check above while still leaving
+	// trailing whitespace on every row.
+	if !strings.HasSuffix(out, "100%\n") {
+		t.Fatalf("a complete row must end exactly as before, no trailing suffix:\n%q", out)
 	}
 }
 

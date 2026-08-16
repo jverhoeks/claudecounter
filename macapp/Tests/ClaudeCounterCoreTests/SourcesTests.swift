@@ -27,6 +27,60 @@ final class SourcesTests: XCTestCase {
         XCTAssertEqual(SourceEntry(vendor: "claude", label: "work", root: "/x").id, "claude/work")
     }
 
+    func test_defaults_discoversGrokWhenPresent() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(
+            atPath: (home as NSString).appendingPathComponent(".grok/sessions"),
+            withIntermediateDirectories: true)
+
+        let got = Sources.defaults(home: home)
+        XCTAssertEqual(got.count, 2, "expected the Claude default plus a discovered Grok source")
+        XCTAssertEqual(got[0].vendor, "claude", "Claude must stay first")
+        XCTAssertEqual(got[1].vendor, "grok")
+        XCTAssertEqual(got[1].label, "grok")
+        XCTAssertEqual(got[1].root, (home as NSString).appendingPathComponent(".grok/sessions"))
+    }
+
+    func test_defaults_omitsGrokWhenAbsent() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let got = Sources.defaults(home: home)
+        XCTAssertEqual(got.count, 1, "a user with no ~/.grok must see no change at all")
+        XCTAssertEqual(got[0].vendor, "claude")
+    }
+
+    // A discovered root nested inside the Claude root is dropped rather
+    // than returned, mirroring Go's checkOverlap-dropping in
+    // DefaultsWithClaudeRoot: `load` rejects nested roots outright
+    // because a user wrote them, but this list is assembled by us, so
+    // the same hazard — every event in the overlap counted twice — is
+    // silently avoided instead of turned into an error the user cannot
+    // act on. The two real default roots (~/.claude/projects and
+    // ~/.grok/sessions) are siblings and can never nest each other, so
+    // this branch is only reachable through the `claudeRoot:` seam, just
+    // as in Go. See tui/internal/sources's TestDefaults_DropsAnOverlappingDiscoveredRoot.
+    func test_defaults_dropsOverlappingDiscoveredRoot() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(
+            atPath: (home as NSString).appendingPathComponent(".grok/sessions"),
+            withIntermediateDirectories: true)
+
+        // Make the Claude root an ancestor of where Grok would be found.
+        let got = Sources.defaultsWithClaudeRoot(home: home, claudeRoot: home)
+        XCTAssertEqual(got.count, 1, "want only the Claude entry when the discovered root nests inside it")
+        XCTAssertEqual(got[0].vendor, "claude")
+    }
+
+    /// Creates an empty temporary directory to stand in for $HOME.
+    private func makeTempHome() throws -> String {
+        let dir = NSTemporaryDirectory() + "sources-defaults-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     func test_load_parsesAndExpandsTilde() throws {
         let p = try write("""
         [[source]]

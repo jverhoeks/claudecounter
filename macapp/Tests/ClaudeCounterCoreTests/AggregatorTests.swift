@@ -364,6 +364,91 @@ final class AggregatorTests: XCTestCase {
         Calendar.current.component(.hour, from: Self.fixedNow)
     }
 
+    // MARK: - costed cells (vendor-reported dollars, e.g. Grok)
+
+    func test_costedEvent_ignoresPricingTable() async {
+        // Price the model absurdly: if snapshot ever consults the table for
+        // a costed cell the assertion fails loudly rather than drifting.
+        let table = PricingTable(models: ["grok-4.6-build":
+            ModelPrice(inputPerMTok: 1000, outputPerMTok: 1000,
+                       cacheCreationPerMTok: 0, cacheReadPerMTok: 0)])
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let agg = Aggregator(pricing: table, now: { now })
+
+        await agg.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "grok-4.6-build", messageID: "prompt-1", requestID: "grok-4.6-build",
+            isSubagent: false,
+            usage: Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0),
+            source: "grok/grok", vendor: "grok",
+            costUSD: 0.37, costed: true))
+
+        let got = await agg.snapshot()
+        let key = SeriesKey(source: "grok/grok", vendor: "grok", model: "grok-4.6-build")
+        XCTAssertEqual(got.month[key]?.usd ?? 0, 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.day[key]?.usd ?? 0, 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.daily.last?.usd ?? 0, 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.monthProj["p"]?.totalUSD ?? 0, 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.unknown, 0, "a costed model has no pricing entry to be missing")
+        // The hourly chart must show it too — that is the view the user asked for.
+        let hour = Calendar.current.component(.hour, from: now)
+        XCTAssertEqual(got.todayHourlyUSD[hour], 0.37, accuracy: 1e-9)
+        XCTAssertEqual(got.daily.last?.hourlyUSDByModel[hour]["grok-4.6-build"] ?? 0,
+                       0.37, accuracy: 1e-9)
+    }
+
+    func test_pricedAndCostedCells_sumTogether() async {
+        let table = PricingTable(models: ["claude-opus-4-7":
+            ModelPrice(inputPerMTok: 15, outputPerMTok: 75,
+                       cacheCreationPerMTok: 0, cacheReadPerMTok: 0)])
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let agg = Aggregator(pricing: table, now: { now })
+
+        await agg.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "claude-opus-4-7", messageID: "m1", requestID: "r1", isSubagent: false,
+            usage: Usage(input: 1_000_000, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "claude/claude", vendor: "claude"))
+        await agg.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "grok-4.6-build", messageID: "prompt-1", requestID: "grok-4.6-build",
+            isSubagent: false,
+            usage: Usage(input: 500, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "grok/grok", vendor: "grok", costUSD: 2.5, costed: true))
+
+        let got = await agg.snapshot()
+        XCTAssertEqual(got.month.values.reduce(0) { $0 + $1.usd }, 17.5, accuracy: 1e-9)
+        XCTAssertEqual(got.monthProj["p"]?.totalUSD ?? 0, 17.5, accuracy: 1e-9)
+        XCTAssertEqual(got.daily.last?.usd ?? 0, 17.5, accuracy: 1e-9)
+    }
+
+    func test_coverageEvent_contributesNoSpendAndReportsTheFraction() async {
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        let agg = Aggregator(pricing: PricingTable(models: [:]), now: { now })
+        for hasUsage in [true, true, true, false] {
+            await agg.apply(UsageEvent(
+                timestamp: now, sessionID: "s", cwd: "", project: "p",
+                model: "", messageID: "", requestID: "", isSubagent: false,
+                usage: Usage(input: 999, output: 0, cacheCreate: 0, cacheRead: 0),
+                source: "grok/grok", vendor: "grok",
+                costUSD: 99, costed: true, coverageOnly: true, hasUsage: hasUsage))
+        }
+        let got = await agg.snapshot()
+        XCTAssertTrue(got.month.isEmpty, "coverage events are bookkeeping, never spend")
+        XCTAssertEqual(got.daily.last?.usd ?? 0, 0, accuracy: 1e-9)
+        XCTAssertEqual(got.coverage["grok"]?.turns, 4)
+        XCTAssertEqual(got.coverage["grok"]?.withUsage, 3)
+        XCTAssertEqual(got.coverage["grok"]?.fraction ?? 0, 0.75, accuracy: 1e-9)
+        XCTAssertTrue(got.coverage["grok"]?.partial ?? false)
+        // A vendor that emits no coverage events reads as complete, not 0%.
+        // `got.coverage["claude"]` is nil (claude never appears in the map),
+        // so this must construct the zero-turns `Coverage` itself and check
+        // its `.partial` — `?? false` would make this pass unconditionally,
+        // never exercising `Coverage.fraction`'s `turns == 0 → 1` branch.
+        XCTAssertFalse((got.coverage["claude"] ?? Coverage()).partial,
+                       "a vendor with zero turns must read as complete, not partial")
+    }
+
     // MARK: - Fixtures / helpers
 
     /// 2026-04-26 14:00:00 in the user's local TZ. Late enough into the

@@ -70,6 +70,54 @@ public struct SeriesKey: Hashable, Sendable, Codable {
     }
 }
 
+/// One cell's accumulated contribution. `tokens` is everything the cell
+/// saw and drives the token charts. The dollar side is split because a
+/// cell may hold both kinds: `costedUSD` is summed as-is from
+/// vendor-reported figures, `pricedTokens` is the subset that goes
+/// through the pricing table at snapshot time.
+///
+/// Keeping them separate rather than branching on "is this series
+/// costed" matters for the per-project, per-day and per-hour
+/// aggregations, which key on model alone — there a costed and a priced
+/// contribution can land in one bucket. Mirrors `agg.cellVal` in Go.
+public struct CellValue: Equatable, Sendable {
+    public var tokens: TokenCounts
+    public var costedUSD: Double
+    public var pricedTokens: TokenCounts
+
+    public init(tokens: TokenCounts = .zero, costedUSD: Double = 0,
+                pricedTokens: TokenCounts = .zero) {
+        self.tokens = tokens
+        self.costedUSD = costedUSD
+        self.pricedTokens = pricedTokens
+    }
+
+    public static let zero = CellValue()
+
+    public func adding(_ other: CellValue) -> CellValue {
+        CellValue(tokens: tokens.adding(other.tokens),
+                  costedUSD: costedUSD + other.costedUSD,
+                  pricedTokens: pricedTokens.adding(other.pricedTokens))
+    }
+}
+
+/// How much of a vendor's activity carried usable usage data. Mirrors
+/// `agg.Coverage` in Go, threshold included.
+public struct Coverage: Equatable, Sendable, Codable {
+    public var turns: Int
+    public var withUsage: Int
+
+    public init(turns: Int = 0, withUsage: Int = 0) {
+        self.turns = turns; self.withUsage = withUsage
+    }
+
+    /// A vendor that reported no turns is complete by definition, not
+    /// 0% — Claude emits no coverage events and must never render as a
+    /// partial figure.
+    public var fraction: Double { turns == 0 ? 1 : Double(withUsage) / Double(turns) }
+    public var partial: Bool { fraction < Aggregator.partialCoverageThreshold }
+}
+
 public struct ProjectDay: Equatable, Sendable {
     public var main: TokenCounts
     public var sub: TokenCounts
@@ -129,6 +177,9 @@ public struct Totals: Equatable, Sendable {
     public var todayHourlyUSD: [Double] = Array(repeating: 0, count: 24)
     public var unknown: Int = 0
     public var dupes: Int = 0
+    /// How much of each vendor's activity carried usable usage data,
+    /// scoped to the displayed month (same scope as `month`).
+    public var coverage: [String: Coverage] = [:]
     public var asOf: Date = .distantPast
 
     public init() {}
@@ -179,22 +230,40 @@ public actor Aggregator {
     /// How many trailing days `Snapshot` fills into `daily`.
     public static let dailyWindow = 30
 
+    /// The usage-bearing fraction below which a vendor's figures are
+    /// presented as a floor rather than a total.
+    public static let partialCoverageThreshold = 0.95
+
     private var pricing: PricingTable
-    private var cells: [CellKey: TokenCounts] = [:]
+    private var cells: [CellKey: CellValue] = [:]
     private var perMsg: Set<String> = []
     private var unknownMsgs: Set<String> = []
     private(set) public var dupes: Int = 0
+    private var coverage: [CoverageKey: Coverage] = [:]
 
-    /// Per-(day, hour, model) tokens for every day in the trailing
-    /// `dailyWindow`. Stored separately from `cells` because cells are
-    /// keyed by day, not hour. Days that fall out of the window are
-    /// pruned lazily at snapshot time.
+    /// Scopes a coverage tally to a (day, vendor) so `snapshot` can
+    /// restrict it to the displayed month.
+    private struct CoverageKey: Hashable { let day: CivilDay; let vendor: String }
+
+    /// Per-(day, hour, vendor, model) contribution for every day in the
+    /// trailing `dailyWindow`. Stored separately from `cells` because
+    /// cells are keyed by day, not hour. Days that fall out of the window
+    /// are pruned lazily at snapshot time.
+    ///
+    /// Vendor is part of the key even though the hourly chart stacks by
+    /// model alone. Without it a costed and a priced contribution could
+    /// share a bucket whenever two vendors use the same model name, and
+    /// the bucket would no longer be one kind or the other — which is
+    /// what `CacheFile.HourEntry` relies on to round-trip in one Bool
+    /// instead of a second token quartet. `CellKey` already carries
+    /// vendor for the same reason.
     private struct HourBucketKey: Hashable {
         let day: CivilDay
         let hour: Int
+        let vendor: String
         let model: String
     }
-    private var hourBuckets: [HourBucketKey: TokenCounts] = [:]
+    private var hourBuckets: [HourBucketKey: CellValue] = [:]
 
     private let now: () -> Date
     private let calendar: Calendar
@@ -213,30 +282,36 @@ public actor Aggregator {
     /// Replace internal state from a previously-persisted cache.
     /// Hour buckets are loaded separately via `loadHourBuckets` — see
     /// `CacheFile.restore` for the canonical sequencing.
-    public func load(cells: [CellKey: TokenCounts], perMsg: Set<String>,
-                     unknownMsgs: Set<String>, dupes: Int) {
+    public func load(cells: [CellKey: CellValue], perMsg: Set<String>,
+                     unknownMsgs: Set<String>, dupes: Int,
+                     coverage: [(day: CivilDay, vendor: String, coverage: Coverage)] = []) {
         self.cells = cells
         self.perMsg = perMsg
         self.unknownMsgs = unknownMsgs
         self.dupes = dupes
+        self.coverage = Dictionary(uniqueKeysWithValues: coverage.map {
+            (CoverageKey(day: $0.day, vendor: $0.vendor), $0.coverage)
+        })
         // Default to empty until loadHourBuckets is called explicitly.
         self.hourBuckets.removeAll(keepingCapacity: false)
     }
 
-    public func exportState() -> (cells: [CellKey: TokenCounts],
+    public func exportState() -> (cells: [CellKey: CellValue],
                                   perMsg: Set<String>,
                                   unknownMsgs: Set<String>,
-                                  dupes: Int) {
-        (cells, perMsg, unknownMsgs, dupes)
+                                  dupes: Int,
+                                  coverage: [(day: CivilDay, vendor: String, coverage: Coverage)]) {
+        (cells, perMsg, unknownMsgs, dupes,
+         coverage.map { (day: $0.key.day, vendor: $0.key.vendor, coverage: $0.value) })
     }
 
-    /// Snapshot of the per-(day, hour, model) token state for the
+    /// Snapshot of the per-(day, hour, vendor, model) state for the
     /// trailing window. Empty if no events have been recorded yet.
     public func exportHourBuckets()
-        -> [(day: CivilDay, hour: Int, model: String, tokens: TokenCounts)]
+        -> [(day: CivilDay, hour: Int, vendor: String, model: String, value: CellValue)]
     {
-        hourBuckets.map { (k, t) in
-            (day: k.day, hour: k.hour, model: k.model, tokens: t)
+        hourBuckets.map { (k, v) in
+            (day: k.day, hour: k.hour, vendor: k.vendor, model: k.model, value: v)
         }
     }
 
@@ -244,13 +319,13 @@ public actor Aggregator {
     /// trailing `dailyWindow` (per the injected clock) are dropped —
     /// they can never be displayed and would only grow the cache.
     public func loadHourBuckets(
-        entries: [(day: CivilDay, hour: Int, model: String, tokens: TokenCounts)]
+        entries: [(day: CivilDay, hour: Int, vendor: String, model: String, value: CellValue)]
     ) {
         let cutoff = windowCutoffString()
-        var rebuilt: [HourBucketKey: TokenCounts] = [:]
+        var rebuilt: [HourBucketKey: CellValue] = [:]
         for e in entries where civilDayString(e.day) >= cutoff {
-            let key = HourBucketKey(day: e.day, hour: e.hour, model: e.model)
-            rebuilt[key] = e.tokens
+            let key = HourBucketKey(day: e.day, hour: e.hour, vendor: e.vendor, model: e.model)
+            rebuilt[key] = e.value
         }
         hourBuckets = rebuilt
     }
@@ -269,6 +344,7 @@ public actor Aggregator {
         perMsg.removeAll(keepingCapacity: true)
         unknownMsgs.removeAll(keepingCapacity: true)
         hourBuckets.removeAll(keepingCapacity: true)
+        coverage.removeAll(keepingCapacity: true)
         dupes = 0
     }
 
@@ -292,13 +368,33 @@ public actor Aggregator {
             perMsg.insert(key)
         }
 
-        // 2) Track unknowns for diagnostics (still bucket the tokens).
-        if !pricing.has(model: e.model) {
+        // 2) Coverage bookkeeping. Must sit after dedupe (above) and
+        //    before the cell write (below) — same ordering and reason as
+        //    Go's Task 5: a coverage event shares fields (usage, costUSD)
+        //    with a real event, but they are not spend, and skipping
+        //    dedupe would let a re-scan (AppState's start/refresh/
+        //    reloadSources all re-scan) inflate the tally.
+        if e.coverageOnly {
+            let k = CoverageKey(day: dayOf(e.timestamp, calendar: calendar), vendor: e.vendor)
+            var c = coverage[k] ?? Coverage()
+            c.turns += 1
+            if e.hasUsage { c.withUsage += 1 }
+            coverage[k] = c
+            return true
+        }
+
+        // 3) Track unknowns for diagnostics (still bucket the tokens). A
+        //    costed event has no pricing lookup to miss, so it can never
+        //    be "unknown".
+        if !e.costed && !pricing.has(model: e.model) {
             let uid = !e.messageID.isEmpty ? e.messageID : "\(e.model):\(e.timestamp)"
             unknownMsgs.insert(uid)
         }
 
-        // 3) Bucket tokens into the day/project/source/vendor/model/isSub cell.
+        // 4) Bucket into the day/project/source/vendor/model/isSub cell.
+        //    A costed contribution carries its dollar figure as-is;
+        //    a priced one carries tokens for the pricing table to cost
+        //    at snapshot time.
         let cellKey = CellKey(
             day: dayOf(e.timestamp, calendar: calendar),
             project: e.project,
@@ -307,15 +403,18 @@ public actor Aggregator {
             model: e.model,
             isSub: e.isSubagent
         )
-        let current = cells[cellKey] ?? .zero
-        cells[cellKey] = current.adding(e.usage)
+        let contribution = e.costed
+            ? CellValue(tokens: TokenCounts.zero.adding(e.usage), costedUSD: e.costUSD)
+            : CellValue(tokens: TokenCounts.zero.adding(e.usage),
+                        pricedTokens: TokenCounts.zero.adding(e.usage))
+        cells[cellKey] = (cells[cellKey] ?? .zero).adding(contribution)
 
-        // 4) Accumulate into the per-(day, hour, model) buckets so the
-        //    hourly chart can drill into any day of the window. Days
+        // 5) Accumulate into the per-(day, hour, vendor, model) buckets so
+        //    the hourly chart can drill into any day of the window. Days
         //    that age out of the window are pruned at snapshot time.
         let hour = hourOf(e.timestamp, calendar: calendar)
-        let hk = HourBucketKey(day: cellKey.day, hour: hour, model: e.model)
-        hourBuckets[hk, default: .zero] = (hourBuckets[hk] ?? .zero).adding(e.usage)
+        let hk = HourBucketKey(day: cellKey.day, hour: hour, vendor: e.vendor, model: e.model)
+        hourBuckets[hk] = (hourBuckets[hk] ?? .zero).adding(contribution)
 
         return true
     }
@@ -335,50 +434,53 @@ public actor Aggregator {
         out.dupes = dupes
         out.unknown = unknownMsgs.count
 
-        // Aggregate per-(scope, series) tokens.
+        // Aggregate per-(scope, series).
         struct ModelScope: Hashable { let scope: String; let key: SeriesKey }
-        var modelTok: [ModelScope: TokenCounts] = [:]
+        var modelTok: [ModelScope: CellValue] = [:]
 
-        // Aggregate per-(scope, project, isSub, model) tokens. Model must
-        // be preserved for per-project costing because a project may use
+        // Aggregate per-(scope, project, isSub, model). Model must be
+        // preserved for per-project costing because a project may use
         // multiple models with different prices.
         struct ProjScopeModel: Hashable {
             let scope: String; let project: String; let isSub: Bool; let model: String
         }
-        var projModelTok: [ProjScopeModel: TokenCounts] = [:]
+        var projModelTok: [ProjScopeModel: CellValue] = [:]
 
         // Per-day-per-model for the daily window.
         struct DayModel: Hashable { let day: CivilDay; let model: String }
-        var byDM: [DayModel: TokenCounts] = [:]
+        var byDM: [DayModel: CellValue] = [:]
 
-        for (k, t) in cells {
+        for (k, v) in cells {
             let sk = SeriesKey(source: k.source, vendor: k.vendor, model: k.model)
             // Day scope.
             if k.day == today {
                 modelTok[ModelScope(scope: "day", key: sk), default: .zero] =
-                    (modelTok[ModelScope(scope: "day", key: sk)] ?? .zero).adding(t)
+                    (modelTok[ModelScope(scope: "day", key: sk)] ?? .zero).adding(v)
                 let pk = ProjScopeModel(scope: "day", project: k.project, isSub: k.isSub, model: k.model)
-                projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(t)
+                projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(v)
             }
             // Month scope.
             if k.day.year == nowYear && k.day.month == nowMonth {
                 modelTok[ModelScope(scope: "month", key: sk), default: .zero] =
-                    (modelTok[ModelScope(scope: "month", key: sk)] ?? .zero).adding(t)
+                    (modelTok[ModelScope(scope: "month", key: sk)] ?? .zero).adding(v)
                 let pk = ProjScopeModel(scope: "month", project: k.project, isSub: k.isSub, model: k.model)
-                projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(t)
+                projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(v)
             }
             // Daily window (all days, only those in the last 30-day window
             // are shown — the slice below filters).
             byDM[DayModel(day: k.day, model: k.model), default: .zero] =
-                (byDM[DayModel(day: k.day, model: k.model)] ?? .zero).adding(t)
+                (byDM[DayModel(day: k.day, model: k.model)] ?? .zero).adding(v)
         }
 
-        // Apply pricing per (scope, series).
-        for (mk, tok) in modelTok {
-            let usd = pricing.has(model: mk.key.model)
-                ? pricing.cost(model: mk.key.model, usage: tok.toUsage())
-                : 0
-            let md = ModelDay(usd: usd, tokens: tok)
+        // Apply pricing per (scope, series). `costedUSD` is summed as
+        // given; `pricedTokens` (the non-costed subset) goes through the
+        // table. A costed cell has no pricing entry to consult.
+        for (mk, v) in modelTok {
+            var usd = v.costedUSD
+            if pricing.has(model: mk.key.model) {
+                usd += pricing.cost(model: mk.key.model, usage: v.pricedTokens.toUsage())
+            }
+            let md = ModelDay(usd: usd, tokens: v.tokens)
             switch mk.scope {
             case "day":   out.day[mk.key] = md
             case "month": out.month[mk.key] = md
@@ -388,20 +490,21 @@ public actor Aggregator {
 
         // Per-project: walk preserving model so cost is accurate when a
         // project uses multiple models with different prices.
-        for (k, tok) in projModelTok {
-            let usd = pricing.has(model: k.model)
-                ? pricing.cost(model: k.model, usage: tok.toUsage())
-                : 0
+        for (k, v) in projModelTok {
+            var usd = v.costedUSD
+            if pricing.has(model: k.model) {
+                usd += pricing.cost(model: k.model, usage: v.pricedTokens.toUsage())
+            }
             switch k.scope {
             case "day":
                 var pd = out.dayProj[k.project] ?? ProjectDay()
-                if k.isSub { pd.sub = pd.sub.adding(tok); pd.subUSD += usd }
-                else       { pd.main = pd.main.adding(tok); pd.mainUSD += usd }
+                if k.isSub { pd.sub = pd.sub.adding(v.tokens); pd.subUSD += usd }
+                else       { pd.main = pd.main.adding(v.tokens); pd.mainUSD += usd }
                 out.dayProj[k.project] = pd
             case "month":
                 var pd = out.monthProj[k.project] ?? ProjectDay()
-                if k.isSub { pd.sub = pd.sub.adding(tok); pd.subUSD += usd }
-                else       { pd.main = pd.main.adding(tok); pd.mainUSD += usd }
+                if k.isSub { pd.sub = pd.sub.adding(v.tokens); pd.subUSD += usd }
+                else       { pd.main = pd.main.adding(v.tokens); pd.mainUSD += usd }
                 out.monthProj[k.project] = pd
             default:
                 break
@@ -409,22 +512,28 @@ public actor Aggregator {
         }
 
         // Daily window: last 30 days, oldest→newest. Tokens are summed
-        // across ALL models (priced and unknown) so the token chart
-        // reflects raw activity even when a model isn't in the pricing
-        // table; cost only counts priced models, matching the USD chart.
-        // We also keep the per-model breakdown for each day so the UI
-        // layer can stack bars by model.
+        // across ALL models (priced, costed and unknown) so the token
+        // chart reflects raw activity even when a model isn't in the
+        // pricing table; cost counts vendor-reported dollars plus priced
+        // models, matching the USD chart. We also keep the per-model
+        // breakdown for each day so the UI layer can stack bars by model.
         var dayCost: [CivilDay: Double] = [:]
         var dayTokens: [CivilDay: UInt64] = [:]
         var dayCostByModel: [CivilDay: [String: Double]] = [:]
         var dayTokensByModel: [CivilDay: [String: UInt64]] = [:]
-        for (k, tok) in byDM {
-            let total = tok.input &+ tok.output &+ tok.cacheCreate &+ tok.cacheRead
+        for (k, v) in byDM {
+            let total = v.tokens.input &+ v.tokens.output &+ v.tokens.cacheCreate &+ v.tokens.cacheRead
             dayTokens[k.day, default: 0] = (dayTokens[k.day] ?? 0) &+ total
             dayTokensByModel[k.day, default: [:]][k.model] =
                 (dayTokensByModel[k.day]?[k.model] ?? 0) &+ total
-            if pricing.has(model: k.model) {
-                let cost = pricing.cost(model: k.model, usage: tok.toUsage())
+            let priced = pricing.has(model: k.model)
+            var cost = v.costedUSD
+            if priced {
+                cost += pricing.cost(model: k.model, usage: v.pricedTokens.toUsage())
+            }
+            // Non-zero-or-priced, not just "priced": a costed model has
+            // no pricing entry but must still land in the daily breakdown.
+            if priced || cost != 0 {
                 dayCost[k.day, default: 0] += cost
                 dayCostByModel[k.day, default: [:]][k.model, default: 0] += cost
             }
@@ -439,16 +548,21 @@ public actor Aggregator {
         var hourly = Array(repeating: TokenCounts.zero, count: 24)
         var hourlyUSD = Array(repeating: 0.0, count: 24)
         var hourlyUSDByDay: [CivilDay: [[String: Double]]] = [:]
-        for (hk, t) in hourBuckets {
+        for (hk, v) in hourBuckets {
             let priced = pricing.has(model: hk.model)
-            let cost = priced ? pricing.cost(model: hk.model, usage: t.toUsage()) : 0
+            var cost = v.costedUSD
             if priced {
+                cost += pricing.cost(model: hk.model, usage: v.pricedTokens.toUsage())
+            }
+            // Non-zero-or-priced, not just "priced": a costed model has
+            // no pricing entry but must still land in the stacked chart.
+            if priced || cost != 0 {
                 var hours = hourlyUSDByDay[hk.day] ?? Array(repeating: [:], count: 24)
                 hours[hk.hour][hk.model, default: 0] += cost
                 hourlyUSDByDay[hk.day] = hours
             }
             if hk.day == today {
-                hourly[hk.hour] = hourly[hk.hour].adding(t)
+                hourly[hk.hour] = hourly[hk.hour].adding(v.tokens)
                 hourlyUSD[hk.hour] += cost
             }
         }
@@ -466,6 +580,14 @@ public actor Aggregator {
                 tokensByModel: dayTokensByModel[cd] ?? [:],
                 hourlyUSDByModel: hourlyUSDByDay[cd] ?? Array(repeating: [:], count: 24)
             )
+        }
+
+        // Coverage is scoped to the displayed month, matching out.month.
+        for (k, c) in coverage where k.day.year == nowYear && k.day.month == nowMonth {
+            var cur = out.coverage[k.vendor] ?? Coverage()
+            cur.turns += c.turns
+            cur.withUsage += c.withUsage
+            out.coverage[k.vendor] = cur
         }
 
         return out

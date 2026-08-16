@@ -32,6 +32,26 @@ type Event struct {
 	// Source is the series identity "vendor/label", identifying which
 	// subscription or install produced the event.
 	Source string
+	// CostUSD is a dollar figure the vendor reported for this event.
+	// Grok emits costUsdTicks (nano-dollars) per turn and per model; that
+	// is authoritative in a way our pricing table can never be, so it is
+	// used as given rather than re-derived from Usage.
+	CostUSD float64
+	// Costed marks CostUSD as authoritative. A costed event's tokens are
+	// still recorded (the token charts want them) but never priced, and
+	// its model never counts toward the Unknown tally — there is no
+	// pricing entry to be missing.
+	Costed bool
+	// CoverageOnly marks a bookkeeping event that carries no usage and
+	// must not be counted as spend. Grok's `usage` object is present on
+	// only a fraction of historical turns, so a Grok total over an old
+	// month is a floor rather than a total. One coverage event per
+	// turn_completed lets the aggregator report that fraction instead of
+	// presenting an undercount as authoritative.
+	CoverageOnly bool
+	// HasUsage is meaningful only on a CoverageOnly event: it is the
+	// numerator of that fraction.
+	HasUsage bool
 }
 
 // rawLine mirrors only the fields we read from a JSONL event.
@@ -132,8 +152,10 @@ func (r *Reader) Forget(path string) {
 func (r *Reader) OnChange(path string) error {
 	r.mu.Lock()
 	start := r.offsets[path]
-	vendor, source := r.src.Vendor, r.src.ID()
+	src := r.src
 	r.mu.Unlock()
+	vendor, source := src.Vendor, src.ID()
+	p := parserFor(vendor)
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -172,24 +194,25 @@ func (r *Reader) OnChange(path string) error {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		ev, ok, perr := parseLine(line)
+		// Normalise to forward-slash so the project + subagent detection
+		// works the same on Windows as on Unix.
+		slashPath := filepath.ToSlash(path)
+		evs, perr := p.Parse(line, slashPath)
 		if perr != nil {
 			r.mu.Lock()
 			r.parseErrors++
 			r.mu.Unlock()
 			continue
 		}
-		if !ok {
-			continue
+		project := p.Project(src.Root, slashPath)
+		isSub := p.IsSubagent(src.Root, slashPath)
+		for _, ev := range evs {
+			ev.Project = project
+			ev.IsSubagent = isSub
+			ev.Vendor = vendor
+			ev.Source = source
+			r.out <- ev
 		}
-		// Normalise to forward-slash so the project + subagent detection
-		// works the same on Windows as on Unix.
-		slashPath := filepath.ToSlash(path)
-		ev.Project = projectFromPath(slashPath)
-		ev.IsSubagent = strings.Contains(slashPath, "/subagents/")
-		ev.Vendor = vendor
-		ev.Source = source
-		r.out <- ev
 	}
 
 	r.mu.Lock()
@@ -227,6 +250,11 @@ func projectFromPath(path string) string {
 // volume on heavy days. After this returns, the reader's offset map
 // reflects the end of every scanned file.
 func (r *Reader) InitialScan(root string, notBefore time.Time) error {
+	r.mu.Lock()
+	vendor := r.src.Vendor
+	r.mu.Unlock()
+	p := parserFor(vendor)
+
 	paths := make(chan string, 256)
 
 	walkErr := make(chan error, 1)
@@ -235,7 +263,7 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if filepath.Ext(d.Name()) != ".jsonl" {
+			if !p.Walkable(d.Name()) {
 				return nil
 			}
 			info, err := d.Info()
@@ -265,8 +293,8 @@ func (r *Reader) InitialScan(root string, notBefore time.Time) error {
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			for p := range paths {
-				_ = r.OnChange(p)
+			for path := range paths {
+				_ = r.OnChange(path)
 			}
 		}()
 	}
