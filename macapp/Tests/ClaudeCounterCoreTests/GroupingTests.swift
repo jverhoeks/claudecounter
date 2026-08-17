@@ -71,30 +71,41 @@ final class GroupingTests: XCTestCase {
         XCTAssertEqual(GroupMode.total.label, "total")
     }
 
-    // A row that spans vendors takes the worst of their coverage. Averaging
-    // would let a large complete Claude figure hide a small partial Grok one
-    // inside the same row. Mirrors Go's
-    // TestGroupCoverage_RowTakesTheWorstContributingVendor in group_test.go.
-    func test_groupCoverage_rowTakesTheWorstContributingVendor() {
+    // Mirrors Go's TestGroupCoverage_ModelModeMarksThePartialModel.
+    func test_groupCoverage_modelModeMarksThePartialModel() {
         let input: [SeriesKey: ModelDay] = [
-            SeriesKey(source: "claude/claude", vendor: "claude", model: "m"): ModelDay(usd: 100, tokens: .zero),
-            SeriesKey(source: "grok/grok", vendor: "grok", model: "m"): ModelDay(usd: 1, tokens: .zero),
+            SeriesKey(source: "claude/claude", vendor: "claude", model: "opus"): ModelDay(usd: 100, tokens: .zero),
+            SeriesKey(source: "grok/grok", vendor: "grok", model: "grok-4.6"): ModelDay(usd: 1, tokens: .zero),
         ]
         let coverage: [String: Coverage] = ["grok": Coverage(turns: 100, withUsage: 20)]
 
-        // .total merges everything into one row, which therefore spans
-        // both vendors.
-        let got = Grouping.groupCoverage(input, coverage: coverage, by: .total)
-        XCTAssertTrue(got["total"]?.partial ?? false, "total row coverage must be partial")
-
-        // .vendor keeps them apart.
-        let byVendor = Grouping.groupCoverage(input, coverage: coverage, by: .vendor)
-        XCTAssertFalse(byVendor["claude"]?.partial ?? true, "the claude row must not be marked partial")
-        XCTAssertTrue(byVendor["grok"]?.partial ?? false, "the grok row must be marked partial")
+        let byModel = Grouping.groupCoverage(input, coverage: coverage, by: .model)
+        XCTAssertFalse(byModel["opus"]?.partial ?? true, "a fully-covered model must not be marked partial")
+        XCTAssertTrue(byModel["grok-4.6"]?.partial ?? false, "the partial model must be marked")
 
         // Key sets match group's exactly, or a row would render without
         // its marker.
-        XCTAssertEqual(Grouping.group(input, by: .vendor).count, byVendor.count,
-                        "groupCoverage and group must share a key set")
+        XCTAssertEqual(Grouping.group(input, by: .model).count, byModel.count,
+                        "groupCoverage and group must share a key set in model mode")
+    }
+
+    // The marker is a per-model caveat, so it is reported only in model
+    // mode. On a rollup row it answered a question nobody asked: "grok
+    // ~90%" next to a vendor total reads as a warning about the vendor
+    // rather than about the subset of its turns that predate its usage
+    // field, and the project owner asked for it gone from those rows
+    // (2026-08-17). Mirrors Go's
+    // TestGroupCoverage_RollupModesReportNoCoverage.
+    func test_groupCoverage_rollupModesReportNoCoverage() {
+        let input: [SeriesKey: ModelDay] = [
+            SeriesKey(source: "claude/claude", vendor: "claude", model: "opus"): ModelDay(usd: 100, tokens: .zero),
+            SeriesKey(source: "grok/grok", vendor: "grok", model: "grok-4.6"): ModelDay(usd: 1, tokens: .zero),
+        ]
+        let coverage: [String: Coverage] = ["grok": Coverage(turns: 100, withUsage: 20)]
+
+        for mode in [GroupMode.vendor, .source, .total] {
+            let got = Grouping.groupCoverage(input, coverage: coverage, by: mode)
+            XCTAssertTrue(got.isEmpty, "\(mode.label) mode returned \(got.count) coverage rows, want none")
+        }
     }
 }

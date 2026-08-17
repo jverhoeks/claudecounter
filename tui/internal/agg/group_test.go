@@ -93,31 +93,46 @@ func TestModeNextCycles(t *testing.T) {
 // A row that spans vendors takes the worst of their coverage. Averaging
 // would let a large complete Claude figure hide a small partial Grok one
 // inside the same row.
-func TestGroupCoverage_RowTakesTheWorstContributingVendor(t *testing.T) {
+func TestGroupCoverage_ModelModeMarksThePartialModel(t *testing.T) {
 	in := map[SeriesKey]ModelDay{
-		{Source: "claude/claude", Vendor: "claude", Model: "m"}: {USD: 100},
-		{Source: "grok/grok", Vendor: "grok", Model: "m"}:       {USD: 1},
+		{Source: "claude/claude", Vendor: "claude", Model: "opus"}: {USD: 100},
+		{Source: "grok/grok", Vendor: "grok", Model: "grok-4.6"}:   {USD: 1},
 	}
 	cov := map[string]Coverage{"grok": {Turns: 100, WithUsage: 20}}
 
-	// GroupTotal merges everything into one row, which therefore spans
-	// both vendors.
-	got := GroupCoverage(in, cov, GroupTotal)
-	if !got["total"].Partial() {
-		t.Fatalf("total row coverage = %+v, want partial", got["total"])
+	byModel := GroupCoverage(in, cov, GroupModel)
+	if byModel["opus"].Partial() {
+		t.Fatal("a fully-covered model must not be marked partial")
 	}
-	// GroupVendor keeps them apart.
-	byVendor := GroupCoverage(in, cov, GroupVendor)
-	if byVendor["claude"].Partial() {
-		t.Fatal("the claude row must not be marked partial")
-	}
-	if !byVendor["grok"].Partial() {
-		t.Fatal("the grok row must be marked partial")
+	if !byModel["grok-4.6"].Partial() {
+		t.Fatal("the partial model must be marked")
 	}
 	// Key sets match Group's exactly, or a row would render without its
 	// marker.
-	if len(Group(in, GroupVendor)) != len(byVendor) {
-		t.Fatal("GroupCoverage and Group must share a key set")
+	if len(Group(in, GroupModel)) != len(byModel) {
+		t.Fatal("GroupCoverage and Group must share a key set in model mode")
+	}
+}
+
+// The marker is a per-model caveat, so it is reported only in model
+// mode. On a rollup row it answered a question nobody asked: "grok
+// ~90%" next to a vendor total reads as a warning about the vendor
+// rather than about the subset of its turns that predate its usage
+// field, and the project owner asked for it gone from those rows
+// (2026-08-17). Model mode keeps it, where the row and the caveat are
+// about the same thing.
+func TestGroupCoverage_RollupModesReportNoCoverage(t *testing.T) {
+	in := map[SeriesKey]ModelDay{
+		{Source: "claude/claude", Vendor: "claude", Model: "opus"}: {USD: 100},
+		{Source: "grok/grok", Vendor: "grok", Model: "grok-4.6"}:   {USD: 1},
+	}
+	cov := map[string]Coverage{"grok": {Turns: 100, WithUsage: 20}}
+
+	for _, m := range []Mode{GroupVendor, GroupSource, GroupTotal} {
+		got := GroupCoverage(in, cov, m)
+		if len(got) != 0 {
+			t.Fatalf("%s mode returned %d coverage rows, want none", m, len(got))
+		}
 	}
 }
 

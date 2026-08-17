@@ -70,6 +70,18 @@ func Group(in map[SeriesKey]ModelDay, m Mode) map[string]ModelDay {
 // small partial Grok one inside the same row, which is exactly the
 // failure this marker exists to prevent.
 func GroupCoverage(in map[SeriesKey]ModelDay, cov map[string]Coverage, m Mode) map[string]Coverage {
+	// Reported in model mode only. The marker is a caveat about one
+	// model's turns — the subset of them that predate its vendor's usage
+	// field — so on a rollup row it answers a question nobody asked:
+	// "grok ~90%" beside a vendor total reads as doubt about the vendor
+	// itself. Returning nothing here rather than gating in each view
+	// keeps the TUI and the menu bar in step by construction, and keeps
+	// the rule testable: the macapp's table lives in a target with no
+	// test path.
+	if m != GroupModel {
+		return map[string]Coverage{}
+	}
+
 	out := make(map[string]Coverage, len(in))
 	for k := range in {
 		name := m.label(k)
