@@ -323,19 +323,20 @@ struct HourlyChartRow: View {
                 // panel, leave the chart's hover region, dismiss the panel,
                 // re-enter the chart — flickering as long as you hovered.
                 if let h = hoveredHour, h < hourlyUSDByModel.count {
-                    let breakdown = hourBreakdownRows(
-                        from: hourlyUSDByModel[h], limit: hourPopupModelLimit)
+                    let breakdown = breakdownRows(
+                        from: hourlyUSDByModel[h], limit: barPopupModelLimit)
                     if !breakdown.rows.isEmpty {
-                        HourBreakdownPopup(
-                            hourLabel: formatHour(h),
-                            total: totals[h],
+                        BarBreakdownPopup(
+                            title: formatHour(h),
+                            totalText: formatUSDFine(totals[h]),
                             rows: breakdown.rows,
                             overflow: breakdown.overflow,
-                            palette: palette
+                            palette: palette,
+                            format: formatUSDFine
                         )
-                        .offset(x: popupX(forHour: h,
-                                          chartWidth: geo.size.width,
-                                          count: totals.count))
+                        .offset(x: barPopupX(forIndex: h,
+                                             chartWidth: geo.size.width,
+                                             count: totals.count))
                         .allowsHitTesting(false)
                     }
                 }
@@ -347,25 +348,6 @@ struct HourlyChartRow: View {
         .animation(.easeInOut(duration: 0.12), value: day)
     }
 
-    /// Width reserved for the hover panel. Fixed rather than measured so
-    /// the clamp below is a pure calculation — a measured width would
-    /// need a second layout pass to know where it may sit.
-    private var hourPopupWidth: CGFloat { 168 }
-
-    /// How many models the panel lists before collapsing the rest into
-    /// "+N more". Four keeps the panel shorter than the 56pt chart it
-    /// overlays on every hour seen in practice.
-    private var hourPopupModelLimit: Int { 4 }
-
-    /// Left edge for the panel: centred on the hovered bar, then clamped
-    /// so neither end leaves the chart.
-    private func popupX(forHour hour: Int, chartWidth: CGFloat, count: Int) -> CGFloat {
-        guard count > 0 else { return 0 }
-        let slot = chartWidth / CGFloat(count)
-        let centre = (CGFloat(hour) + 0.5) * slot
-        let ideal = centre - hourPopupWidth / 2
-        return min(max(0, ideal), max(0, chartWidth - hourPopupWidth))
-    }
 
     /// Map an x-coordinate inside the chart to one of the 24 hour
     /// buckets. Even spacing → integer division by per-bar slot width.
@@ -442,6 +424,7 @@ struct MonthlyChartRow: View {
 
             GeometryReader { geo in
                 let maxV = max(daily.map { $0.usd }.max() ?? 0, 0.0001)
+                ZStack(alignment: .topLeading) {
                 HStack(alignment: .bottom, spacing: 1) {
                     ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
                         StackedDailyBar(
@@ -475,6 +458,29 @@ struct MonthlyChartRow: View {
                                           count: daily.count) {
                         onSelectDay?(daily[idx].day)
                     }
+                }
+
+                // Per-model breakdown for the hovered day. `allowsHitTesting`
+                // is off so the panel neither steals the hover (which would
+                // flicker it) nor swallows the click that drills into a day.
+                if let i = hoveredIndex, i < daily.count {
+                    let breakdown = breakdownRows(
+                        from: daily[i].usdByModel, limit: barPopupModelLimit)
+                    if !breakdown.rows.isEmpty {
+                        BarBreakdownPopup(
+                            title: formatDay(daily[i].day),
+                            totalText: formatUSDFine(daily[i].usd),
+                            rows: breakdown.rows,
+                            overflow: breakdown.overflow,
+                            palette: palette,
+                            format: formatUSDFine
+                        )
+                        .offset(x: barPopupX(forIndex: i,
+                                             chartWidth: geo.size.width,
+                                             count: daily.count))
+                        .allowsHitTesting(false)
+                    }
+                }
                 }
             }
             .frame(height: 56)
@@ -659,6 +665,7 @@ struct MonthlyTokenChartRow: View {
 
             GeometryReader { geo in
                 let maxV = max(Double(daily.map { $0.tokens }.max() ?? 0), 1)
+                ZStack(alignment: .topLeading) {
                 HStack(alignment: .bottom, spacing: 1) {
                     ForEach(Array(daily.enumerated()), id: \.offset) { idx, entry in
                         // Convert tokensByModel (UInt64) → Double for
@@ -695,6 +702,31 @@ struct MonthlyTokenChartRow: View {
                                           count: daily.count) {
                         onSelectDay?(daily[idx].day)
                     }
+                }
+
+                // Per-model token breakdown for the hovered day. Same
+                // panel as the two spend charts, formatted in tokens —
+                // the ordering rule is unit-agnostic, so only the
+                // formatter differs.
+                if let i = hoveredIndex, i < daily.count {
+                    let breakdown = breakdownRows(
+                        from: daily[i].tokensByModel.mapValues { Double($0) },
+                        limit: barPopupModelLimit)
+                    if !breakdown.rows.isEmpty {
+                        BarBreakdownPopup(
+                            title: formatDay(daily[i].day),
+                            totalText: formatTokens(daily[i].tokens),
+                            rows: breakdown.rows,
+                            overflow: breakdown.overflow,
+                            palette: palette,
+                            format: { formatTokens(UInt64($0.rounded())) }
+                        )
+                        .offset(x: barPopupX(forIndex: i,
+                                             chartWidth: geo.size.width,
+                                             count: daily.count))
+                        .allowsHitTesting(false)
+                    }
+                }
                 }
             }
             .frame(height: 56)
@@ -821,30 +853,57 @@ struct ByModelTable: View {
     private func shortModel(_ name: String) -> String { shortModelName(name) }
 }
 
-/// The hovered hour's per-model spend, shown over the hourly chart.
+/// Width reserved for a hover panel. Fixed rather than measured so
+/// `barPopupX` stays a pure calculation — a measured width would need a
+/// second layout pass before it could know where the panel may sit.
+fileprivate let barPopupWidth: CGFloat = 168
+
+/// How many models a panel lists before collapsing the rest into
+/// "+N more". Four keeps the panel shorter than the charts it overlays
+/// for every bar seen in practice.
+fileprivate let barPopupModelLimit = 4
+
+/// Left edge for a hover panel: centred on the hovered bar, then clamped
+/// so neither end leaves the chart. Anchoring to the bar rather than the
+/// pointer keeps the panel still while the pointer moves within one bar.
+fileprivate func barPopupX(forIndex index: Int, chartWidth: CGFloat, count: Int) -> CGFloat {
+    guard count > 0 else { return 0 }
+    let slot = chartWidth / CGFloat(count)
+    let centre = (CGFloat(index) + 0.5) * slot
+    let ideal = centre - barPopupWidth / 2
+    return min(max(0, ideal), max(0, chartWidth - barPopupWidth))
+}
+
+/// The hovered bar's per-model breakdown, shown over a chart.
 ///
-/// The chart's stacked segments say *that* an hour was expensive; this
-/// says *which model* made it so, without the user having to match
-/// colours against the legend by eye.
+/// The stacked segments say *that* a bar was large; this says *which
+/// model* made it so, without the user having to match colours against
+/// the legend by eye. Shared by all three charts — hourly spend, 30-day
+/// spend, 30-day tokens — which differ only in labels and units, so the
+/// caller supplies both.
 ///
-/// Rows come pre-ordered and pre-capped from `hourBreakdownRows` in
-/// Core, which is where that logic is testable — this view is layout
-/// only. Colours come from the same `ModelPalette` the bars use, so a
-/// row and its segment always agree.
-struct HourBreakdownPopup: View {
-    let hourLabel: String
-    let total: Double
-    let rows: [HourBreakdownRow]
+/// Rows come pre-ordered and pre-capped from `breakdownRows` in Core,
+/// which is where that logic is testable — this view is layout only.
+/// Colours come from the same `ModelPalette` the bars use, so a row and
+/// its segment always agree.
+struct BarBreakdownPopup: View {
+    /// Left-hand header label: an hour ("14:00") or a day ("Aug 14").
+    let title: String
+    /// Right-hand header figure, already formatted in the caller's unit.
+    let totalText: String
+    let rows: [BreakdownRow]
     let overflow: Int
     let palette: ModelPalette
+    /// Formats a row's value in the caller's unit — dollars or tokens.
+    let format: (Double) -> String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Text(hourLabel)
+                Text(title)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 6)
-                Text(formatUSDFine(total))
+                Text(totalText)
                     .foregroundStyle(.primary)
                     .monospacedDigit()
             }
@@ -860,7 +919,7 @@ struct HourBreakdownPopup: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 6)
-                    Text(formatUSDFine(row.usd))
+                    Text(format(row.value))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -875,7 +934,7 @@ struct HourBreakdownPopup: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
-        .frame(width: 168, alignment: .leading)
+        .frame(width: barPopupWidth, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(.regularMaterial)

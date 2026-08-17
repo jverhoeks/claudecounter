@@ -1,19 +1,27 @@
 import Foundation
 
-/// One model's spend within a single hour, as rendered by the hourly
-/// chart's hover popup.
-public struct HourBreakdownRow: Equatable, Sendable {
+/// One model's share of a single chart bar, as rendered by the hover
+/// popups. `value` is dollars on the two spend charts and tokens on the
+/// token chart — deliberately unit-free, since the ordering rules below
+/// are the same either way and the view supplies the formatter.
+public struct BreakdownRow: Equatable, Sendable {
     public let model: String
-    public let usd: Double
+    public let value: Double
 
-    public init(model: String, usd: Double) {
+    public init(model: String, value: Double) {
         self.model = model
-        self.usd = usd
+        self.value = value
     }
 }
 
-/// Turns one hour's per-model USD map into the ordered rows the hourly
-/// chart's hover popup renders, plus how many were hidden by `limit`.
+/// Turns one bar's per-model map into the ordered rows its hover popup
+/// renders, plus how many were hidden by `limit`. Shared by all three
+/// charts: hourly spend, 30-day spend, and 30-day tokens.
+///
+/// Token maps are `UInt64` at the call site and converted to `Double`
+/// here. That is exact for any real figure — a day's tokens run to
+/// ~1e10, far inside Double's 2^53 exact-integer range — and it lets one
+/// tested ordering rule serve both units instead of two near-copies.
 ///
 /// This lives in Core rather than beside the view it serves because the
 /// test target depends on `ClaudeCounterCore` only — `ClaudeCounterBar`
@@ -38,21 +46,21 @@ public struct HourBreakdownRow: Equatable, Sendable {
 ///
 /// An hour with no positive spend yields no rows at all, which the view
 /// reads as "show no popup" rather than drawing an empty panel.
-public func hourBreakdownRows(
+public func breakdownRows(
     from byModel: [String: Double],
     limit: Int
-) -> (rows: [HourBreakdownRow], overflow: Int) {
+) -> (rows: [BreakdownRow], overflow: Int) {
     // Built in explicit steps rather than one chained expression: the
     // Swift type-checker times out on the fused filter/map/sort over a
     // dictionary here.
-    var spending: [HourBreakdownRow] = []
+    var spending: [BreakdownRow] = []
     spending.reserveCapacity(byModel.count)
-    for (model, usd) in byModel where usd > 0 {
-        spending.append(HourBreakdownRow(model: model, usd: usd))
+    for (model, value) in byModel where value > 0 {
+        spending.append(BreakdownRow(model: model, value: value))
     }
     spending.sort { lhs, rhs in
-        if lhs.usd == rhs.usd { return lhs.model < rhs.model }
-        return lhs.usd > rhs.usd
+        if lhs.value == rhs.value { return lhs.model < rhs.model }
+        return lhs.value > rhs.value
     }
 
     guard limit > 0 else { return ([], spending.count) }
