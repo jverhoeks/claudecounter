@@ -4,6 +4,46 @@ import XCTest
 @MainActor
 final class AppStateTests: XCTestCase {
 
+    // MARK: - Real pricing-override path guard
+    //
+    // On 2026-08-16, `test_refreshPricingIfStale_staleSchema_...` (and
+    // its siblings below) called `AppState.refreshPricingIfStale` with a
+    // mock fetcher, and the method's hardcoded `writeToAppOverride()`
+    // call wrote the mock's one-model stub straight to the REAL
+    // `~/Library/Application Support/claudecounter-bar/pricing.toml` —
+    // silently pricing every Claude/Codex model at $0.00 in the
+    // developer's installed menu-bar app. `AppState` now takes an
+    // injectable `pricingOverrideURL`; every test below passes a temp
+    // one. This setUp/tearDown pair is the tripwire: if any test in this
+    // file — now or added later — forgets to inject one and falls
+    // through to the real path, this fails with that test's name
+    // attached, instead of silently corrupting a developer's machine
+    // again.
+    private var realOverrideExistedBeforeTest = false
+    private var realOverrideContentsBeforeTest: Data?
+
+    override func setUp() {
+        super.setUp()
+        guard let url = try? PricingTable.appOverrideURL() else { return }
+        realOverrideExistedBeforeTest = FileManager.default.fileExists(atPath: url.path)
+        realOverrideContentsBeforeTest = try? Data(contentsOf: url)
+    }
+
+    override func tearDown() {
+        if let url = try? PricingTable.appOverrideURL() {
+            let existsNow = FileManager.default.fileExists(atPath: url.path)
+            XCTAssertEqual(existsNow, realOverrideExistedBeforeTest,
+                "this test wrote to the REAL pricing override path \(url.path) — " +
+                "inject AppState(pricingOverrideURL:) with a temp URL instead")
+            if existsNow {
+                XCTAssertEqual(try? Data(contentsOf: url), realOverrideContentsBeforeTest,
+                    "this test modified the REAL pricing override path \(url.path) — " +
+                    "inject AppState(pricingOverrideURL:) with a temp URL instead")
+            }
+        }
+        super.tearDown()
+    }
+
     // MARK: - LiveEventBuffer
 
     func test_liveBuffer_pushNewest_atFront() {
@@ -1312,7 +1352,10 @@ final class AppStateTests: XCTestCase {
     // MARK: - refreshPricingIfStale (Swift mirror of Go's loadPricing
     // stale-cache branch)
 
-    private func makeMinimalAppState(pricing: PricingTable) -> AppState {
+    /// `pricingOverrideURL` is always a fresh temp path — see the guard
+    /// at the top of this file for why a real one must never leak in
+    /// here.
+    private func makeMinimalAppState(pricing: PricingTable, pricingOverrideURL: URL) -> AppState {
         let cacheURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ascache-stale-\(UUID().uuidString).json")
         return AppState(
@@ -1323,7 +1366,8 @@ final class AppStateTests: XCTestCase {
             pricing: pricing,
             dockIcon: InMemoryDockIconController(),
             settingsStore: InMemorySettingsStore(),
-            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml"
+            sourcesConfigPath: NSTemporaryDirectory() + "as-nosrc-\(UUID().uuidString).toml",
+            pricingOverrideURL: pricingOverrideURL
         )
     }
 
@@ -1334,7 +1378,9 @@ final class AppStateTests: XCTestCase {
         let current = PricingTable(models: ["claude-opus-4-7": ModelPrice(
             inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
             schema: PricingTable.currentSchema)
-        let app = makeMinimalAppState(pricing: current)
+        let overrideURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("aspricing-current-\(UUID().uuidString).toml")
+        let app = makeMinimalAppState(pricing: current, pricingOverrideURL: overrideURL)
         let mock = CountingMockSession(data: Data(), response:
             HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 200,
                             httpVersion: "HTTP/1.1", headerFields: nil)!)
@@ -1342,17 +1388,22 @@ final class AppStateTests: XCTestCase {
         let calls = await mock.callCount
         XCTAssertEqual(calls, 0, "an up-to-date schema must never trigger a refetch")
         XCTAssertEqual(app.pricing, current)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: overrideURL.path),
+                       "no refetch means nothing should have been written at all")
     }
 
     // A table below the current schema (including PricingTable.defaults,
     // schema 0) is a complete, valid table just missing an entire
     // provider's worth of models — refetch once and adopt the fresh
     // result on success.
-    func test_refreshPricingIfStale_staleSchema_fetchesAndAdoptsFreshTable() async {
+    func test_refreshPricingIfStale_staleSchema_fetchesAndAdoptsFreshTable() async throws {
         let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
             inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
             schema: 0)
-        let app = makeMinimalAppState(pricing: stale)
+        let overrideURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("aspricing-stale-\(UUID().uuidString).toml")
+        defer { try? FileManager.default.removeItem(at: overrideURL) }
+        let app = makeMinimalAppState(pricing: stale, pricingOverrideURL: overrideURL)
         let freshJSON = """
         {
           "gpt-5.6-luna": {
@@ -1370,6 +1421,15 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(calls, 1, "a stale schema must trigger exactly one refetch")
         XCTAssertTrue(app.pricing.has(model: "gpt-5.6-luna"), "the fresh table must be adopted")
         XCTAssertFalse(app.pricing.has(model: "claude-opus-4-7"), "the stale table must not survive a successful refetch")
+
+        // The write must land at the INJECTED temp URL, never the real
+        // app-override path (that's the whole point of this fix).
+        XCTAssertTrue(FileManager.default.fileExists(atPath: overrideURL.path),
+                     "a successful refetch must persist the fresh table to the injected override URL")
+        let written = TOMLPricing.decode(try String(contentsOf: overrideURL, encoding: .utf8))
+        XCTAssertTrue(written.has(model: "gpt-5.6-luna"), "the persisted file must contain the fresh table")
+        XCTAssertEqual(written.schema, PricingTable.currentSchema,
+                       "the persisted file must stamp the current schema, or this refetch-once-per-stale-cache guard never re-fires correctly")
     }
 
     // On refetch failure (offline), the stale table already loaded must be
@@ -1380,12 +1440,16 @@ final class AppStateTests: XCTestCase {
         let stale = PricingTable(models: ["claude-opus-4-7": ModelPrice(
             inputPerMTok: 5, outputPerMTok: 25, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)],
             schema: 0)
-        let app = makeMinimalAppState(pricing: stale)
+        let overrideURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("aspricing-failed-\(UUID().uuidString).toml")
+        let app = makeMinimalAppState(pricing: stale, pricingOverrideURL: overrideURL)
         let mock = CountingMockSession(data: Data(), response:
             HTTPURLResponse(url: PricingFetcher.liteLLMURL, statusCode: 503,
                             httpVersion: "HTTP/1.1", headerFields: nil)!)
         await app.refreshPricingIfStale(session: mock)
         XCTAssertEqual(app.pricing, stale, "a failed refetch must leave the stale table in place, not drop to defaults")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: overrideURL.path),
+                       "a failed refetch must never write anything, at the injected URL or otherwise")
     }
 }
 

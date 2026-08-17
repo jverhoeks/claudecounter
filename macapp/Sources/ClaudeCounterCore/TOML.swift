@@ -196,9 +196,17 @@ extension PricingTable {
         return paths
     }
 
+    /// Persist this table as TOML to an arbitrary destination. Exposed
+    /// separately from `writeToAppOverride` so callers (namely
+    /// `AppState.refreshPricingIfStale`) can redirect the write to an
+    /// injected URL instead of the real app-override path — see
+    /// `AppState.pricingOverrideURL`'s doc comment for why that matters.
+    public func write(to url: URL) throws {
+        try TOMLPricing.encode(self).write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// Persist this table as TOML to the in-app override path.
     public func writeToAppOverride(fileManager: FileManager = .default) throws {
-        let url = try Self.appOverrideURL(fileManager: fileManager)
-        try TOMLPricing.encode(self).write(to: url, atomically: true, encoding: .utf8)
+        try write(to: try Self.appOverrideURL(fileManager: fileManager))
     }
 }
