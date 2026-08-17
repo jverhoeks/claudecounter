@@ -69,6 +69,16 @@ public enum Grouping {
     public static func groupCoverage(_ input: [SeriesKey: ModelDay],
                                      coverage: [String: Coverage],
                                      by mode: GroupMode) -> [String: Coverage] {
+        // Reported in model mode only. The marker is a caveat about one
+        // model's turns — the subset of them that predate its vendor's
+        // usage field — so on a rollup row it answers a question nobody
+        // asked: "grok ~90%" beside a vendor total reads as doubt about
+        // the vendor itself. Returning nothing here rather than gating
+        // in the view keeps this in step with Go's `GroupCoverage` by
+        // construction, and keeps the rule testable — `ByModelTable`
+        // lives in `ClaudeCounterBar`, which has no test path.
+        guard mode == .model else { return [:] }
+
         var out: [String: Coverage] = [:]
         for key in input.keys {
             let name = mode.seriesName(for: key)
