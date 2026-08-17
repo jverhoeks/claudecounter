@@ -42,6 +42,34 @@ public struct CacheFile: Codable, Sendable {
     /// caches written before Grok existed.
     public let coverage: [CoverageEntry]?
 
+    /// The `SourceEntry.id` ("vendor/label") of every source this cache's
+    /// cells/offsets actually reflect — populated on save from the
+    /// reachable source list `AppState.flushCache` just scanned. Used
+    /// only by `AppState.start()`'s catch-up scan, to decide per source
+    /// whether the cheap incremental `notBefore` (derived from
+    /// `writtenAt`) applies, or the same full backfill window a cold
+    /// start uses.
+    ///
+    /// Optional, not a version bump: a version bump would invalidate
+    /// this whole cache on load (see the version-history note above),
+    /// discarding the Claude/Grok cells and offsets it already has
+    /// correctly, and forcing a full rescan of EVERYTHING just to
+    /// backfill the one vendor that's actually new. `coveredSources`
+    /// lets an old cache keep every cell/offset it already has while
+    /// still driving a one-time full scan for the source(s) it doesn't
+    /// know about.
+    ///
+    /// `nil` MUST mean "covers nothing" — an old cache written before
+    /// this field existed has no way to declare what it covered, so
+    /// every configured source must be treated as uncovered and get one
+    /// full backfill. That is exactly what makes the currently-shipped
+    /// silent-backfill bug self-heal on the very next launch: the field
+    /// is simply absent from disk, decodes to `nil`, and every source —
+    /// old and new alike — takes the full-window path once. The
+    /// following save writes a real `coveredSources` list and every
+    /// source after that goes back to the cheap incremental path.
+    public let coveredSources: [String]?
+
     public static let currentVersion = 5
 
     public struct CellEntry: Codable, Sendable {
@@ -145,7 +173,8 @@ public struct CacheFile: Codable, Sendable {
                 offsets: [String: Int64], parseErrors: Int, dupes: Int,
                 unknownMsgs: [String],
                 hourBuckets: [HourEntry]? = nil,
-                coverage: [CoverageEntry]? = nil) {
+                coverage: [CoverageEntry]? = nil,
+                coveredSources: [String]? = nil) {
         self.version = version
         self.writtenAt = writtenAt
         self.cells = cells
@@ -156,6 +185,7 @@ public struct CacheFile: Codable, Sendable {
         self.unknownMsgs = unknownMsgs
         self.hourBuckets = hourBuckets
         self.coverage = coverage
+        self.coveredSources = coveredSources
     }
 }
 
@@ -210,9 +240,15 @@ public struct CacheStore: Sendable {
 extension CacheFile {
 
     /// Build a `CacheFile` from current aggregator + reader state.
+    /// `coveredSources` defaults to `[]`, not the source list — a call
+    /// site that forgets to pass it gets a cache that (like a pre-fix
+    /// cache decoding to `nil`) declares itself covering nothing, so the
+    /// next launch does one full backfill per source rather than
+    /// silently suppressing history for whatever that call site missed.
     public static func snapshot(aggregator: Aggregator,
                                 offsets: [String: Int64],
                                 parseErrors: Int,
+                                coveredSources: [String] = [],
                                 writtenAt: Date = Date()) async -> CacheFile {
         let state = await aggregator.exportState()
         let entries = state.cells.map { (key, v) in
@@ -252,7 +288,8 @@ extension CacheFile {
             dupes: state.dupes,
             unknownMsgs: Array(state.unknownMsgs),
             hourBuckets: hourEntries,
-            coverage: coverageEntries
+            coverage: coverageEntries,
+            coveredSources: coveredSources
         )
     }
 

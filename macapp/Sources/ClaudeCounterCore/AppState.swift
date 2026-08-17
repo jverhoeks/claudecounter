@@ -185,12 +185,20 @@ public final class AppState: ObservableObject {
         }
 
         var cacheWrittenAt: Date? = nil
+        // Which configured sources the restored cache's cells/offsets
+        // actually cover — empty when there's no usable cache at all
+        // (cold start / version mismatch), exactly like an absent
+        // `coveredSources` field. Either way, "empty" is what drives
+        // every source below onto the full backfill window, matching
+        // cold-start behaviour.
+        var coveredIDs: Set<String> = []
         if let cache = try? cacheStore.load() {
             if cache.version == CacheFile.currentVersion {
                 let offsets = await cache.restore(into: aggregator)
                 self.perFileOffsets = offsets
                 await seedReaders(from: offsets)
                 cacheWrittenAt = cache.writtenAt
+                coveredIDs = Set(cache.coveredSources ?? [])
             } else {
                 cacheStore.invalidate()
             }
@@ -205,8 +213,21 @@ public final class AppState: ObservableObject {
         // Catch-up scan, once per reachable source. A failure scanning
         // one source surfaces via lastError but does not stop the
         // others — see scanSource.
-        let notBefore = scanCutoff(now: now(), cacheWrittenAt: cacheWrittenAt, calendar: calendar)
+        //
+        // Per-source notBefore, not one shared value: a source the
+        // cache covers gets the cheap incremental cutoff (only files
+        // touched since roughly `cacheWrittenAt`); a source it does NOT
+        // cover — new to this launch, or restored from a cache written
+        // before `coveredSources` existed — gets the same full window a
+        // cold start uses. Without this split, a newly added vendor's
+        // entire pre-existing history is silently skipped forever: its
+        // files all predate `cacheWrittenAt` (they were written before
+        // the vendor was ever scanned), so the incremental cutoff alone
+        // excludes every one of them from the catch-up scan.
         for source in reachable {
+            let notBefore = coveredIDs.contains(source.id)
+                ? scanCutoff(now: now(), cacheWrittenAt: cacheWrittenAt, calendar: calendar)
+                : scanCutoff(now: now(), cacheWrittenAt: nil, calendar: calendar)
             await scanSource(source, notBefore: notBefore)
         }
         // Snapshot once at end of backfill.
@@ -877,13 +898,25 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// The single production save path — called from `start()`,
+    /// `refresh()`, `reloadSources()`, `stop()`, and the periodic-flush
+    /// loop. `coveredSources` is stamped here, on every call, from
+    /// whichever configured sources currently have a reachable root: a
+    /// save that forgot to populate it would make `start()` treat
+    /// EVERY source as uncovered forever, re-triggering a full rescan on
+    /// every single launch instead of just the one that follows an
+    /// upgrade.
     private func flushCache() async {
         let offsets = await mergedOffsets()
         let parseErrors = await totalParseErrors()
+        let reachableIDs = sources
+            .filter { FileManager.default.fileExists(atPath: $0.root) }
+            .map { $0.id }
         let cache = await CacheFile.snapshot(
             aggregator: aggregator,
             offsets: offsets,
             parseErrors: parseErrors,
+            coveredSources: reachableIDs,
             writtenAt: now()
         )
         do {
