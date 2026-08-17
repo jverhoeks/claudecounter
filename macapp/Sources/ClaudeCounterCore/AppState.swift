@@ -83,6 +83,19 @@ public final class AppState: ObservableObject {
     private var readers: [String: Reader] = [:]
     private var watcher: Watcher?
     private let cacheStore: CacheStore
+    /// Where `refreshPricingIfStale` persists a freshly-fetched table.
+    /// `nil` (the default) means "use the real app-override path" —
+    /// `PricingTable.appOverrideURL()`, resolved lazily at write time so
+    /// merely constructing an `AppState` never touches the filesystem.
+    /// Tests inject a temp URL here so `swift test` can never again do
+    /// what it did on 2026-08-16: three `AppStateTests` cases called
+    /// `refreshPricingIfStale` with a mock fetcher returning a one-model
+    /// stub, which the hardcoded `writeToAppOverride()` call wrote
+    /// straight to the developer's real
+    /// `~/Library/Application Support/claudecounter-bar/pricing.toml` —
+    /// silently pricing every Claude/Codex model at $0.00 in their
+    /// installed menu-bar app.
+    private let pricingOverrideURL: URL?
     private let dockIcon: DockIconController
     private let settingsStore: SettingsStore
     private let notifier: SessionNotifier
@@ -123,7 +136,8 @@ public final class AppState: ObservableObject {
                 sourcesConfigPath: String = Sources.defaultConfigPath(),
                 now: @escaping () -> Date = Date.init,
                 calendar: Calendar = .current,
-                home: String = NSHomeDirectory()) {
+                home: String = NSHomeDirectory(),
+                pricingOverrideURL: URL? = nil) {
         self.projectsRoot = projectsRoot
         self.aggregator = aggregator
         // Tracker shares the same pricing; production omits it and we build
@@ -131,6 +145,7 @@ public final class AppState: ObservableObject {
         self.tracker = tracker ?? SessionTracker(pricing: pricing)
         self.sourcesConfigPath = sourcesConfigPath
         self.home = home
+        self.pricingOverrideURL = pricingOverrideURL
         let defaultSource = SourceEntry(vendor: "claude", label: "claude", root: projectsRoot)
         self.readers = [defaultSource.id: reader]
         self.sources = [defaultSource]
@@ -528,10 +543,18 @@ public final class AppState: ObservableObject {
     /// table already loaded into `pricing` is left in place rather than
     /// dropping to baked-in defaults: a network hiccup must never change
     /// Claude dollars as a side effect of a Codex/OpenAI pricing change.
+    ///
+    /// Writes through `pricingOverrideURL` when injected (tests), or the
+    /// real app-override path otherwise (production) — see that
+    /// property's doc comment for why this is injectable at all.
     public func refreshPricingIfStale(session: URLSessionProtocol = URLSession.shared) async {
         guard pricing.schema < PricingTable.currentSchema else { return }
         guard let fresh = try? await PricingFetcher.fetch(session: session) else { return }
-        try? fresh.writeToAppOverride()
+        if let url = pricingOverrideURL {
+            try? fresh.write(to: url)
+        } else {
+            try? fresh.writeToAppOverride()
+        }
         await updatePricing(fresh)
     }
 
