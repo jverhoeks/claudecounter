@@ -278,6 +278,7 @@ struct HourlyChartRow: View {
             GeometryReader { geo in
                 let maxV = max(totals.max() ?? 0, 0.0001)
                 let nowHour = Calendar.current.component(.hour, from: Date())
+                ZStack(alignment: .topLeading) {
                 HStack(alignment: .bottom, spacing: 2) {
                     ForEach(0..<totals.count, id: \.self) { hour in
                         StackedDailyBar(
@@ -311,11 +312,59 @@ struct HourlyChartRow: View {
                         hoveredHour = nil
                     }
                 }
+
+                // Per-model breakdown for the hovered bar. Anchored to the
+                // bar's centre rather than the pointer so it holds still
+                // while the pointer moves within one bar, and clamped to
+                // the chart so it can't run off the popover's edge.
+                //
+                // `allowsHitTesting(false)` is load-bearing: the panel sits
+                // over the bars, and without it the pointer would enter the
+                // panel, leave the chart's hover region, dismiss the panel,
+                // re-enter the chart — flickering as long as you hovered.
+                if let h = hoveredHour, h < hourlyUSDByModel.count {
+                    let breakdown = hourBreakdownRows(
+                        from: hourlyUSDByModel[h], limit: hourPopupModelLimit)
+                    if !breakdown.rows.isEmpty {
+                        HourBreakdownPopup(
+                            hourLabel: formatHour(h),
+                            total: totals[h],
+                            rows: breakdown.rows,
+                            overflow: breakdown.overflow,
+                            palette: palette
+                        )
+                        .offset(x: popupX(forHour: h,
+                                          chartWidth: geo.size.width,
+                                          count: totals.count))
+                        .allowsHitTesting(false)
+                    }
+                }
+                }
             }
             .frame(height: 56)
         }
         .animation(.easeInOut(duration: 0.12), value: hoveredHour)
         .animation(.easeInOut(duration: 0.12), value: day)
+    }
+
+    /// Width reserved for the hover panel. Fixed rather than measured so
+    /// the clamp below is a pure calculation — a measured width would
+    /// need a second layout pass to know where it may sit.
+    private var hourPopupWidth: CGFloat { 168 }
+
+    /// How many models the panel lists before collapsing the rest into
+    /// "+N more". Four keeps the panel shorter than the 56pt chart it
+    /// overlays on every hour seen in practice.
+    private var hourPopupModelLimit: Int { 4 }
+
+    /// Left edge for the panel: centred on the hovered bar, then clamped
+    /// so neither end leaves the chart.
+    private func popupX(forHour hour: Int, chartWidth: CGFloat, count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        let slot = chartWidth / CGFloat(count)
+        let centre = (CGFloat(hour) + 0.5) * slot
+        let ideal = centre - hourPopupWidth / 2
+        return min(max(0, ideal), max(0, chartWidth - hourPopupWidth))
     }
 
     /// Map an x-coordinate inside the chart to one of the 24 hour
@@ -769,11 +818,88 @@ struct ByModelTable: View {
     private var rows: [(String, Double, Double)] { Array(sortedRows.prefix(topN)) }
     private var hiddenCount: Int { max(0, sortedRows.count - topN) }
 
-    private func shortModel(_ name: String) -> String {
-        // claude-opus-4-7 → opus-4-7 (drop "claude-" prefix for compactness)
-        if name.hasPrefix("claude-") { return String(name.dropFirst("claude-".count)) }
-        return name
+    private func shortModel(_ name: String) -> String { shortModelName(name) }
+}
+
+/// The hovered hour's per-model spend, shown over the hourly chart.
+///
+/// The chart's stacked segments say *that* an hour was expensive; this
+/// says *which model* made it so, without the user having to match
+/// colours against the legend by eye.
+///
+/// Rows come pre-ordered and pre-capped from `hourBreakdownRows` in
+/// Core, which is where that logic is testable — this view is layout
+/// only. Colours come from the same `ModelPalette` the bars use, so a
+/// row and its segment always agree.
+struct HourBreakdownPopup: View {
+    let hourLabel: String
+    let total: Double
+    let rows: [HourBreakdownRow]
+    let overflow: Int
+    let palette: ModelPalette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(hourLabel)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Text(formatUSDFine(total))
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
+            }
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+
+            ForEach(rows, id: \.model) { row in
+                HStack(spacing: 5) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(palette.colour(for: row.model))
+                        .frame(width: 6, height: 6)
+                    Text(shortModelName(row.model))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 6)
+                    Text(formatUSDFine(row.usd))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .font(.system(size: 9))
+            }
+
+            if overflow > 0 {
+                Text("+ \(overflow) more")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .frame(width: 168, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(.regularMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                )
+        )
+        .shadow(color: .black.opacity(0.25), radius: 4, y: 1)
+        .transition(.opacity)
     }
+}
+
+/// claude-opus-4-7 → opus-4-7. Shared by the by-model table and the
+/// hourly chart's hover popup so a model reads identically in both —
+/// the popup exists to explain a bar the table also lists, and two
+/// spellings of one model would undercut that.
+///
+/// Deliberately NOT the same as `ActiveSessionsList`'s `shortModel`,
+/// which collapses to a bare family name ("opus") for its much tighter
+/// row; these two are different rules on purpose.
+fileprivate func shortModelName(_ name: String) -> String {
+    if name.hasPrefix("claude-") { return String(name.dropFirst("claude-".count)) }
+    return name
 }
 
 // MARK: - By project
