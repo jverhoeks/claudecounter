@@ -169,6 +169,11 @@ public struct DailyTotal: Equatable, Sendable {
 
 public struct Totals: Equatable, Sendable {
     public var day: [SeriesKey: ModelDay] = [:]
+    /// The current ISO week (Monday-first), i.e. the same week the
+    /// weekly limit gauge counts against — see `Limits.evaluate`. A week
+    /// straddling a month boundary spans both months, so early in a
+    /// month `week` can hold spend `month` does not.
+    public var week: [SeriesKey: ModelDay] = [:]
     public var month: [SeriesKey: ModelDay] = [:]
     public var dayProj: [String: ProjectDay] = [:]
     public var monthProj: [String: ProjectDay] = [:]
@@ -180,9 +185,35 @@ public struct Totals: Equatable, Sendable {
     /// How much of each vendor's activity carried usable usage data,
     /// scoped to the displayed month (same scope as `month`).
     public var coverage: [String: Coverage] = [:]
+    /// The same tally scoped to `day` / `week`. Kept per period rather
+    /// than reusing the month figure: a vendor that only started
+    /// reporting usage mid-month is complete today and partial for the
+    /// month, and a row must be marked against the window it actually
+    /// sums.
+    public var dayCoverage: [String: Coverage] = [:]
+    public var weekCoverage: [String: Coverage] = [:]
     public var asOf: Date = .distantPast
 
     public init() {}
+
+    /// The per-series totals for one display period.
+    public func series(for period: PeriodMode) -> [SeriesKey: ModelDay] {
+        switch period {
+        case .day:   return day
+        case .week:  return week
+        case .month: return month
+        }
+    }
+
+    /// The coverage tally matching `series(for:)`'s window, so the two
+    /// are never read from different periods.
+    public func coverage(for period: PeriodMode) -> [String: Coverage] {
+        switch period {
+        case .day:   return dayCoverage
+        case .week:  return weekCoverage
+        case .month: return coverage
+        }
+    }
 }
 
 // MARK: - Civil day key (local timezone)
@@ -193,6 +224,12 @@ public struct CivilDay: Hashable, Sendable, Codable {
     public let day: Int
     public init(year: Int, month: Int, day: Int) {
         self.year = year; self.month = month; self.day = day
+    }
+}
+
+extension CivilDay: Comparable {
+    public static func < (a: CivilDay, b: CivilDay) -> Bool {
+        (a.year, a.month, a.day) < (b.year, b.month, b.day)
     }
 }
 
@@ -419,15 +456,33 @@ public actor Aggregator {
         return true
     }
 
-    /// Compute per-model and per-project totals for today and this month
-    /// from the accumulated token cells. Costs are computed once per
-    /// (model, scope) by summing tokens first then applying pricing — this
-    /// avoids float accumulation drift over thousands of events.
+    /// First day (inclusive) and day-after-last (exclusive) of the ISO
+    /// week containing `now`. ISO semantics are forced here — Monday
+    /// first, regardless of the caller's locale — so this table's week
+    /// is the same week `Limits.evaluate` bills the weekly gauge
+    /// against and the same one the Go report buckets by. Only the time
+    /// zone stays caller-controlled, since cell days are local days.
+    static func isoWeekBounds(now: Date, calendar callerCalendar: Calendar) -> (CivilDay, CivilDay) {
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = callerCalendar.timeZone
+        cal.firstWeekday = 2
+        let start = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? cal.startOfDay(for: now)
+        let end = cal.date(byAdding: .day, value: 7, to: start) ?? start
+        return (dayOf(start, calendar: cal), dayOf(end, calendar: cal))
+    }
+
+    /// Compute per-model and per-project totals for today, this ISO week
+    /// and this month from the accumulated token cells. Costs are
+    /// computed once per (model, scope) by summing tokens first then
+    /// applying pricing — this avoids float accumulation drift over
+    /// thousands of events.
     public func snapshot() -> Totals {
         let nowLocal = now()
         let today = dayOf(nowLocal, calendar: calendar)
         let nowMonth = today.month
         let nowYear = today.year
+        // Half-open [start, end) so a cell belongs to exactly one week.
+        let (weekStart, weekEnd) = Self.isoWeekBounds(now: nowLocal, calendar: calendar)
 
         var out = Totals()
         out.asOf = nowLocal
@@ -459,6 +514,12 @@ public actor Aggregator {
                 let pk = ProjScopeModel(scope: "day", project: k.project, isSub: k.isSub, model: k.model)
                 projModelTok[pk, default: .zero] = (projModelTok[pk] ?? .zero).adding(v)
             }
+            // Week scope. Projects deliberately have no week bucket —
+            // only the by-model list offers the period switch.
+            if k.day >= weekStart && k.day < weekEnd {
+                modelTok[ModelScope(scope: "week", key: sk), default: .zero] =
+                    (modelTok[ModelScope(scope: "week", key: sk)] ?? .zero).adding(v)
+            }
             // Month scope.
             if k.day.year == nowYear && k.day.month == nowMonth {
                 modelTok[ModelScope(scope: "month", key: sk), default: .zero] =
@@ -483,6 +544,7 @@ public actor Aggregator {
             let md = ModelDay(usd: usd, tokens: v.tokens)
             switch mk.scope {
             case "day":   out.day[mk.key] = md
+            case "week":  out.week[mk.key] = md
             case "month": out.month[mk.key] = md
             default: break
             }
@@ -582,12 +644,20 @@ public actor Aggregator {
             )
         }
 
-        // Coverage is scoped to the displayed month, matching out.month.
-        for (k, c) in coverage where k.day.year == nowYear && k.day.month == nowMonth {
-            var cur = out.coverage[k.vendor] ?? Coverage()
+        // One coverage tally per display period, each matching the
+        // series dictionary it qualifies (out.day / out.week / out.month).
+        func addCoverage(_ into: inout [String: Coverage], _ vendor: String, _ c: Coverage) {
+            var cur = into[vendor] ?? Coverage()
             cur.turns += c.turns
             cur.withUsage += c.withUsage
-            out.coverage[k.vendor] = cur
+            into[vendor] = cur
+        }
+        for (k, c) in coverage {
+            if k.day == today { addCoverage(&out.dayCoverage, k.vendor, c) }
+            if k.day >= weekStart && k.day < weekEnd { addCoverage(&out.weekCoverage, k.vendor, c) }
+            if k.day.year == nowYear && k.day.month == nowMonth {
+                addCoverage(&out.coverage, k.vendor, c)
+            }
         }
 
         return out

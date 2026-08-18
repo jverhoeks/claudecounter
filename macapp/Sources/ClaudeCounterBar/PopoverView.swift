@@ -49,20 +49,23 @@ struct PopoverView: View {
 
     /// The by-model/vendor/source/total list's actual rows — collapsed
     /// under whichever axis the segmented control above it currently
-    /// selects. Every mode partitions the same `state.totals.month`, so
-    /// switching modes changes only what's displayed, never what's
-    /// counted.
-    private var groupedMonth: [String: ModelDay] {
-        Grouping.group(state.totals.month, by: state.groupMode)
+    /// selects, over whichever window the period control selects. Every
+    /// mode partitions the same input, so switching modes changes only
+    /// what's displayed, never what's counted.
+    private var groupedPeriod: [String: ModelDay] {
+        Grouping.group(state.totals.series(for: state.periodMode), by: state.groupMode)
     }
 
-    /// Per-row coverage for `groupedMonth`, keyed the same way — so a row
+    /// Per-row coverage for `groupedPeriod`, keyed the same way — so a row
     /// computed from partial data (a Grok month whose usage field only
     /// recently started appearing) can be marked as a floor rather than
     /// a total. Mirrors the TUI's `agg.GroupCoverage(t.Day, t.Coverage, mode)`
-    /// call, scoped to month here since `groupedMonth` is too.
+    /// call. Both arguments come from the same period, so the tally
+    /// always qualifies the figures it is shown next to.
     private var groupedCoverage: [String: Coverage] {
-        Grouping.groupCoverage(state.totals.month, coverage: state.totals.coverage, by: state.groupMode)
+        Grouping.groupCoverage(state.totals.series(for: state.periodMode),
+                               coverage: state.totals.coverage(for: state.periodMode),
+                               by: state.groupMode)
     }
 
     /// Computed once per view body so both monthly charts AND the
@@ -125,18 +128,36 @@ struct PopoverView: View {
                     if showSettings {
                         SourcesEditorView(state: state, isExpanded: $showSettings)
                     }
-                    Picker("Group by", selection: Binding(
-                        get: { state.groupMode },
-                        set: { state.setGroupMode($0) }
-                    )) {
-                        ForEach(GroupMode.allCases, id: \.self) { mode in
-                            Text(mode.label.capitalized).tag(mode)
+                    // Both controls drive the by-model list only (the
+                    // project table stays on month). The period picker
+                    // takes its intrinsic width so the four-segment
+                    // group picker keeps the rest of the row.
+                    HStack(spacing: 8) {
+                        Picker("Group by", selection: Binding(
+                            get: { state.groupMode },
+                            set: { state.setGroupMode($0) }
+                        )) {
+                            ForEach(GroupMode.allCases, id: \.self) { mode in
+                                Text(mode.label.capitalized).tag(mode)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Picker("Period", selection: Binding(
+                            get: { state.periodMode },
+                            set: { state.setPeriodMode($0) }
+                        )) {
+                            ForEach(PeriodMode.allCases, id: \.self) { period in
+                                Text(period.buttonLabel).tag(period)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     HStack(alignment: .top, spacing: 16) {
-                        ByModelTable(month: groupedMonth, mode: state.groupMode, topN: topN,
+                        ByModelTable(totals: groupedPeriod, mode: state.groupMode,
+                                     period: state.periodMode, topN: topN,
                                      palette: palette, coverage: groupedCoverage)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ByProjectTable(month: state.totals.monthProj)
@@ -767,13 +788,18 @@ struct MonthlyTokenChartRow: View {
 // MARK: - By model
 
 struct ByModelTable: View {
-    let month: [String: ModelDay]
-    /// Which axis `month`'s keys are collapsed by (the segmented
+    /// Already collapsed by `mode` and already scoped to `period` — this
+    /// view only sorts, ranks and renders.
+    let totals: [String: ModelDay]
+    /// Which axis `totals`' keys are collapsed by (the segmented
     /// control above this table). Colour swatches and the "claude-"
     /// short-name trim only make sense for `.model` — every other mode
     /// shows a plain row instead of pretending a vendor id or "total"
     /// is a model with a chart colour.
     var mode: GroupMode = .model
+    /// Which window `totals` sums, shown in the header so a $4 figure is
+    /// never mistaken for a month's spend.
+    var period: PeriodMode = .month
     var topN: Int = 8
     /// Same palette the monthly charts use — passed in so the small
     /// colour swatch next to each model name matches its bar segment
@@ -789,7 +815,7 @@ struct ByModelTable: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("By \(mode.label) · month")
+            Text("By \(mode.label) · \(period.label)")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
             ForEach(rows, id: \.0) { name, usd, pct in
@@ -827,7 +853,7 @@ struct ByModelTable: View {
                 .font(.system(size: 12))
             }
             if rows.isEmpty {
-                Text("No spend yet this month")
+                Text("No spend yet \(period.emptyPhrase)")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -840,8 +866,8 @@ struct ByModelTable: View {
     }
 
     private var sortedRows: [(String, Double, Double)] {
-        let total = month.values.reduce(0) { $0 + $1.usd }
-        return month
+        let total = totals.values.reduce(0) { $0 + $1.usd }
+        return totals
             .map { (name: $0.key, usd: $0.value.usd) }
             .sorted { $0.usd > $1.usd }
             .map { ($0.name, $0.usd, total > 0 ? $0.usd / total : 0) }
