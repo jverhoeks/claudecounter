@@ -449,6 +449,96 @@ final class AggregatorTests: XCTestCase {
                        "a vendor with zero turns must read as complete, not partial")
     }
 
+    // MARK: - Week scope
+
+    /// fixedNow is Sunday 2026-04-26 — the last day of the ISO week that
+    /// began Monday 2026-04-20. The Sunday before that (04-19) is the
+    /// previous week, so this pins the Monday-first boundary: a
+    /// locale-default (Sunday-first) calendar would put 04-19 in the
+    /// current week and 04-20..04-26 would no longer be one week.
+    func test_snapshot_week_isMondayFirstISOWeek() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        let cal = Calendar.current
+        let monday = cal.date(byAdding: .day, value: -6, to: Self.fixedNow)!   // 04-20
+        let sundayBefore = cal.date(byAdding: .day, value: -7, to: Self.fixedNow)! // 04-19
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: monday,
+                              msgID: "m1", reqID: "r1"))
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: sundayBefore,
+                              msgID: "m2", reqID: "r2"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.week[sk("claude-opus-4-7")]?.tokens.input, 1_000_000)
+        // Both days are April, so the month view keeps them both.
+        XCTAssertEqual(s.month[sk("claude-opus-4-7")]?.tokens.input, 2_000_000)
+    }
+
+    /// Today is inside the current week by definition, so day ⊆ week.
+    func test_snapshot_week_includesToday() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: Self.fixedNow,
+                              msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.week[sk("claude-opus-4-7")]?.usd ?? 0, 5.0, accuracy: 1e-9)
+        XCTAssertEqual(s.day[sk("claude-opus-4-7")]?.usd ?? 0, 5.0, accuracy: 1e-9)
+    }
+
+    /// A week straddling a month boundary spans both months: on Friday
+    /// 2026-05-01 the ISO week began Monday 2026-04-27, so April spend
+    /// shows in `week` while `month` (May) does not see it. Guards the
+    /// silent truncation you would get by scoping the week to the
+    /// displayed month.
+    func test_snapshot_week_spansMonthBoundary() async {
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 1; c.hour = 14
+        let friday = Calendar.current.date(from: c)!
+        let agg = Aggregator(pricing: .defaults, now: { friday })
+        let tuesday = Calendar.current.date(byAdding: .day, value: -3, to: friday)! // 04-28
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: tuesday,
+                              msgID: "m1", reqID: "r1"))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.week[sk("claude-opus-4-7")]?.tokens.input, 1_000_000)
+        XCTAssertNil(s.month[sk("claude-opus-4-7")])
+    }
+
+    /// Coverage must be tallied per period, not once for the month and
+    /// reused: a vendor whose usage reporting started today is complete
+    /// for the day and partial for the month, and each row must be
+    /// marked against the window it actually sums.
+    func test_snapshot_coveragePerPeriod() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        let cal = Calendar.current
+        let lastWeek = cal.date(byAdding: .day, value: -10, to: Self.fixedNow)!
+        await agg.apply(coverageEvent(ts: lastWeek, hasUsage: false))
+        await agg.apply(coverageEvent(ts: Self.fixedNow, hasUsage: true))
+        let s = await agg.snapshot()
+        XCTAssertEqual(s.dayCoverage["grok"], Coverage(turns: 1, withUsage: 1))
+        XCTAssertEqual(s.weekCoverage["grok"], Coverage(turns: 1, withUsage: 1))
+        XCTAssertEqual(s.coverage["grok"], Coverage(turns: 2, withUsage: 1))
+    }
+
+    // MARK: - Totals period accessors
+
+    func test_totals_seriesAndCoverage_forPeriod() {
+        var t = Totals()
+        let key = sk("claude-opus-4-7")
+        t.day[key] = ModelDay(usd: 1, tokens: .zero)
+        t.week[key] = ModelDay(usd: 2, tokens: .zero)
+        t.month[key] = ModelDay(usd: 3, tokens: .zero)
+        t.dayCoverage = ["claude": Coverage(turns: 1, withUsage: 1)]
+        t.weekCoverage = ["claude": Coverage(turns: 2, withUsage: 1)]
+        t.coverage = ["claude": Coverage(turns: 3, withUsage: 1)]
+
+        XCTAssertEqual(t.series(for: .day)[key]?.usd, 1)
+        XCTAssertEqual(t.series(for: .week)[key]?.usd, 2)
+        XCTAssertEqual(t.series(for: .month)[key]?.usd, 3)
+        XCTAssertEqual(t.coverage(for: .day)["claude"]?.turns, 1)
+        XCTAssertEqual(t.coverage(for: .week)["claude"]?.turns, 2)
+        XCTAssertEqual(t.coverage(for: .month)["claude"]?.turns, 3)
+    }
+
     // MARK: - Fixtures / helpers
 
     /// 2026-04-26 14:00:00 in the user's local TZ. Late enough into the
@@ -465,6 +555,17 @@ final class AggregatorTests: XCTestCase {
     /// model varies per test.
     private func sk(_ model: String) -> SeriesKey {
         SeriesKey(source: "claude/claude", vendor: "claude", model: model)
+    }
+
+    /// A vendor bookkeeping turn: no spend, only a coverage tally.
+    /// Mirrors the Grok reader's `coverageOnly` events.
+    private func coverageEvent(ts: Date, hasUsage: Bool) -> UsageEvent {
+        UsageEvent(
+            timestamp: ts, sessionID: "s", cwd: "", project: "p",
+            model: "", messageID: "", requestID: "", isSubagent: false,
+            usage: Usage(input: 0, output: 0, cacheCreate: 0, cacheRead: 0),
+            source: "grok/grok", vendor: "grok",
+            costUSD: 0, costed: true, coverageOnly: true, hasUsage: hasUsage)
     }
 
     private func event(model: String, input: UInt64, output: UInt64,

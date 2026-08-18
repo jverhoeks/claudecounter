@@ -47,6 +47,10 @@ public final class AppState: ObservableObject {
     /// mode partitions the same underlying totals, so switching it
     /// never changes what's counted.
     @Published public private(set) var groupMode: GroupMode = .model
+    /// Which time window the per-model list totals over. Like
+    /// `groupMode`, purely a display choice — the snapshot already
+    /// carries all three windows, so switching costs nothing.
+    @Published public private(set) var periodMode: PeriodMode = .month
 
     public enum Status: Equatable, Sendable {
         case starting
@@ -348,6 +352,12 @@ public final class AppState: ObservableObject {
     /// forth is free.
     public func setGroupMode(_ mode: GroupMode) {
         self.groupMode = mode
+    }
+
+    /// Change which time window the per-model list totals over. Same
+    /// contract as `setGroupMode`: display state only.
+    public func setPeriodMode(_ mode: PeriodMode) {
+        self.periodMode = mode
     }
 
     /// Runs one source's catch-up scan through its own `Reader` and
