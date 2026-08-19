@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,13 +72,15 @@ output_per_mtok = 75.0
 func TestLoadSchema_Present(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pricing.toml")
-	body := `
-schema = 2
+	// The literal tracks TableSchema so a bump doesn't turn this into a
+	// pre-schema-cache test, which TestLoadSchema_Missing already covers.
+	body := fmt.Sprintf(`
+schema = %d
 
 [models."claude-opus-4-7"]
 input_per_mtok = 15.0
 output_per_mtok = 75.0
-`
+`, TableSchema)
 	if err := writeFile(path, body); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +95,7 @@ output_per_mtok = 75.0
 
 // TestSaveTOML_RoundTrip guards against a real TOML pitfall: top-level keys
 // must appear before any [table] header, or a decoder silently reads
-// "schema = 2" as a nested key of the last [models."..."] block instead of
+// the schema line as a nested key of the last [models."..."] block instead of
 // Table.Schema, and the schema marker would never fire. Verify at the
 // consumer (Load), not just that SaveTOML ran without error.
 func TestSaveTOML_RoundTrip(t *testing.T) {

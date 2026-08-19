@@ -195,4 +195,24 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(table.cost(model: "claude-opus-5[1m]", usage: usage), 10.0,
                        accuracy: 1e-9, "direct [1m] row must win over the fallback")
     }
+
+    // Claude Code logs bare tier names for some turns ("sonnet", "opus",
+    // "haiku", "fable" — thousands of events in real corpora). The Go
+    // defaults table has always carried them; the Swift port did not, so
+    // the macapp priced every such turn at $0. Mirrors the bare-name half
+    // of Go's TestDefaults_CoversCurrentModels / _CoversClaude5Family.
+    func test_defaults_coversBareTierAliases() {
+        let table = PricingTable.defaults
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
+        for (bare, full) in [("opus", "claude-opus-5"),
+                             ("sonnet", "claude-sonnet-4-6"),
+                             ("haiku", "claude-haiku-4-5"),
+                             ("fable", "claude-fable-5")] {
+            XCTAssertTrue(table.has(model: bare), "defaults missing price for bare \(bare)")
+            XCTAssertEqual(table.cost(model: bare, usage: usage),
+                           table.cost(model: full, usage: usage),
+                           accuracy: 1e-9,
+                           "bare \(bare) must price at the \(full) tier")
+        }
+    }
 }
