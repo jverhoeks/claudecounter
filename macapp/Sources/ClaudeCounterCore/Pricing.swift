@@ -43,16 +43,23 @@ public struct PricingTable: Equatable, Sendable {
     /// previous `writeToAppOverride`/Go `SaveTOML`. Mirrors `pricing.Table.Schema`.
     public var schema: Int
 
-    /// currentSchema is bumped whenever PricingFetcher.parse's provider
-    /// filter widens (or otherwise changes which models a fetch can
-    /// produce). A cache saved under an older schema is stale in a way
+    /// currentSchema is bumped whenever a fetched cache can be missing
+    /// models a fresh fetch would now include — either because
+    /// PricingFetcher.parse's provider filter widened, or because upstream
+    /// gained models that any cache written before them cannot contain. A
+    /// cache saved under an older schema is stale in a way
     /// `!models.isEmpty` can't detect: it's a complete, valid table — just
-    /// missing an entire provider's worth of models, which would silently
-    /// price them at $0 forever. `AppState.refreshPricingIfStale` compares
-    /// a loaded table's schema against this constant and refetches once
-    /// when it's behind, rather than trusting any non-empty cache
-    /// indefinitely. Mirrors `pricing.TableSchema` in Go — keep in sync.
-    public static let currentSchema = 2
+    /// missing models, which it would silently price at $0 forever.
+    /// `AppState.refreshPricingIfStale` compares a loaded table's schema
+    /// against this constant and refetches once when it's behind, rather
+    /// than trusting any non-empty cache indefinitely.
+    ///
+    /// 3: LiteLLM gained claude-opus-5 and claude-sonnet-5. Every cache
+    /// fetched before they landed prices what are now the two most-used
+    /// models at $0, and is otherwise indistinguishable from a current one.
+    ///
+    /// Mirrors `pricing.TableSchema` in Go — keep in sync.
+    public static let currentSchema = 3
 
     public init(models: [String: ModelPrice] = [:], schema: Int = 0) {
         self.models = models
@@ -200,6 +207,13 @@ extension PricingTable {
             "claude-sonnet-4-5":         sonnet,
             "claude-haiku-4-5":          haiku,
             "claude-haiku-4-5-20251001": haiku,
+            // Bare tier names: Claude Code logs these for some turns
+            // (thousands of events in real corpora), and without them the
+            // macapp priced every one at $0 while the Go table did not.
+            "opus":                      opus,
+            "sonnet":                    sonnet,
+            "haiku":                     haiku,
+            "fable":                     fable,
         ])
     }()
 }
