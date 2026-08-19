@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -67,12 +68,39 @@ func aliasedModel(model string) string {
 	return model
 }
 
+// longContextSuffix marks a turn that ran with the 1M-token context window
+// enabled: Claude Code logs those as e.g. "claude-opus-5[1m]". No pricing
+// source keys models this way — LiteLLM has no [1m] rows at all — so before
+// this was stripped, every such turn resolved to nothing and billed at $0.
+//
+// Stripping is the correct fix rather than a separate rate because the
+// current 1M-context models price flat: LiteLLM carries no
+// *_above_200k_tokens premium for claude-opus-5, claude-opus-4-8,
+// claude-sonnet-5, claude-fable-5 or claude-mythos-5 (its only "above"
+// field is cache_creation_input_token_cost_above_1hr, a cache-TTL rate
+// unrelated to context length). If a future model does tier by context
+// length, that needs a real [1m] row here, not this fallback.
+const longContextSuffix = "[1m]"
+
 // resolve returns the ModelPrice a model should be priced against: model's
 // own entry if the table has one, otherwise its alias's entry (which may
-// itself be absent). A direct entry always wins over the alias — see
-// TestAlias_DirectEntryWinsOverAlias — so a future LiteLLM release adding a
-// real row for an aliased name is never shadowed by the redirect.
+// itself be absent), and failing both, whatever the same lookups find for
+// the name with any [1m] long-context suffix removed. A direct entry always
+// wins over the alias — see TestAlias_DirectEntryWinsOverAlias — so a future
+// LiteLLM release adding a real row for an aliased or [1m] name is never
+// shadowed by the fallback.
 func (t Table) resolve(model string) (ModelPrice, bool) {
+	if p, ok := t.lookup(model); ok {
+		return p, true
+	}
+	if base := strings.TrimSuffix(model, longContextSuffix); base != model {
+		return t.lookup(base)
+	}
+	return ModelPrice{}, false
+}
+
+// lookup tries model's own entry, then its alias's.
+func (t Table) lookup(model string) (ModelPrice, bool) {
 	if p, ok := t.Models[model]; ok {
 		return p, true
 	}

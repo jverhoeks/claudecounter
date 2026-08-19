@@ -2,7 +2,7 @@ package pricing
 
 // DefaultsDate is the ISO date the baked-in prices were captured.
 // Update when bumping prices.
-const DefaultsDate = "2026-06-12"
+const DefaultsDate = "2026-08-19"
 
 // Defaults returns a best-effort price table used when no pricing.toml
 // is available and live fetch also fails.
@@ -13,11 +13,16 @@ const DefaultsDate = "2026-06-12"
 // (1.25× input) — LiteLLM does not split by TTL.
 func Defaults() Table {
 	opus := ModelPrice{
-		// Claude 4.5/4.6/4.7 Opus: $5/$25/$6.25/$0.50 per 1M.
+		// Every Opus from 4.5 through 5: $5/$25/$6.25/$0.50 per 1M.
 		InputPerMTok: 5.00, OutputPerMTok: 25.00,
 		CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.50,
 	}
 	sonnet := ModelPrice{
+		// Sonnet's standard rate. Sonnet 5 carries a promotional
+		// $2/$10 through 2026-08-31, which LiteLLM tracks; these
+		// baked-in defaults deliberately hold the list price, since a
+		// fallback table outlives the intro window and under-reporting
+		// after it lapses is worse than over-reporting during it.
 		InputPerMTok: 3.00, OutputPerMTok: 15.00,
 		CacheCreationPerMTok: 3.75, CacheReadPerMTok: 0.30,
 	}
@@ -33,6 +38,9 @@ func Defaults() Table {
 	return Table{
 		Models: map[string]ModelPrice{
 			"claude-fable-5":            fable,
+			"claude-mythos-5":           fable,
+			"claude-opus-5":             opus,
+			"claude-sonnet-5":           sonnet,
 			"claude-opus-4-8":           opus,
 			"claude-opus-4-7":           opus,
 			"claude-opus-4-6":           opus,
@@ -44,6 +52,7 @@ func Defaults() Table {
 			"opus":                      opus,
 			"sonnet":                    sonnet,
 			"haiku":                     haiku,
+			"fable":                     fable,
 		},
 	}
 }
