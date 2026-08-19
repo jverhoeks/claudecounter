@@ -245,3 +245,61 @@ func TestAlias_ClaudeModelsUnaffected(t *testing.T) {
 		t.Fatalf("Cost(claude-opus-4-8) = %v, want %v", got, want)
 	}
 }
+
+// TestDefaults_CoversClaude5Family covers the release defect these entries
+// exist to fix: claude-opus-5 and claude-sonnet-5 were the two most-used
+// models in real logs yet had no Defaults() row, so any install without a
+// pricing.toml (or with a failed live fetch) priced ~85% of its traffic at
+// $0 and under-reported total spend roughly tenfold.
+func TestDefaults_CoversClaude5Family(t *testing.T) {
+	d := Defaults()
+	for _, m := range []string{
+		"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+		"fable",
+	} {
+		if !d.Has(m) {
+			t.Errorf("Defaults() missing price for %q", m)
+		}
+	}
+	// Opus 5 sits in the same $5/$25 tier as Opus 4.5 through 4.8.
+	if p := d.Models["claude-opus-5"]; p.InputPerMTok != 5.00 || p.OutputPerMTok != 25.00 {
+		t.Errorf("opus-5 price = $%v/$%v, want $5/$25", p.InputPerMTok, p.OutputPerMTok)
+	}
+	// Mythos 5 bills at the Fable tier, above Opus.
+	if p := d.Models["claude-mythos-5"]; p.InputPerMTok != 10.00 || p.OutputPerMTok != 50.00 {
+		t.Errorf("mythos-5 price = $%v/$%v, want $10/$50", p.InputPerMTok, p.OutputPerMTok)
+	}
+}
+
+// TestLongContextSuffix_PricesAtBaseRate covers turns logged with the
+// 1M-context window (e.g. "claude-opus-5[1m]"). No pricing source keys
+// models that way, so without the suffix strip these billed at $0.
+func TestLongContextSuffix_PricesAtBaseRate(t *testing.T) {
+	d := Defaults()
+	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+
+	for _, base := range []string{"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"} {
+		long := base + "[1m]"
+		if !d.Has(long) {
+			t.Errorf("Has(%q) = false, want true", long)
+		}
+		if got, want := d.Cost(long, u), d.Cost(base, u); got != want {
+			t.Errorf("Cost(%q) = %v, want %v (the base rate)", long, got, want)
+		}
+	}
+
+	// A real [1m] row must win over the stripped fallback, so a future
+	// pricing source that does tier by context length is not shadowed.
+	tiered := Table{Models: map[string]ModelPrice{
+		"claude-opus-5":     {InputPerMTok: 5.00},
+		"claude-opus-5[1m]": {InputPerMTok: 10.00},
+	}}
+	if p, _ := tiered.resolve("claude-opus-5[1m]"); p.InputPerMTok != 10.00 {
+		t.Errorf("direct [1m] row lost to the fallback: got $%v, want $10", p.InputPerMTok)
+	}
+
+	// The strip must not invent prices for models nothing knows about.
+	if d.Has("claude-nonexistent-9[1m]") {
+		t.Error("Has(unknown[1m]) = true, want false")
+	}
+}

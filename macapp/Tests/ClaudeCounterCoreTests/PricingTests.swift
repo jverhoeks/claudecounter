@@ -142,4 +142,57 @@ final class PricingTests: XCTestCase {
         let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
         XCTAssertEqual(table.cost(model: "claude-opus-4-8", usage: usage), 5.0 + 25.0, accuracy: 1e-9)
     }
+
+    // MARK: - Claude 5 family and the [1m] long-context suffix
+
+    // Covers the release defect these entries exist to fix: claude-opus-5
+    // and claude-sonnet-5 were the two most-used models in real logs yet
+    // had no defaults row, so any install without a pricing override (or
+    // with a failed live fetch) priced ~85% of its traffic at $0.
+    // Mirrors Go's TestDefaults_CoversClaude5Family.
+    func test_defaults_coversClaude5Family() {
+        let table = PricingTable.defaults
+        for model in ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"] {
+            XCTAssertTrue(table.has(model: model), "defaults missing price for \(model)")
+        }
+        let opus5 = table.models["claude-opus-5"]
+        XCTAssertEqual(opus5?.inputPerMTok, 5.00)
+        XCTAssertEqual(opus5?.outputPerMTok, 25.00)
+        // Mythos 5 bills at the Fable tier, above Opus.
+        let mythos = table.models["claude-mythos-5"]
+        XCTAssertEqual(mythos?.inputPerMTok, 10.00)
+        XCTAssertEqual(mythos?.outputPerMTok, 50.00)
+    }
+
+    // Turns logged with the 1M-context window (e.g. "claude-opus-5[1m]")
+    // have no row in any pricing source, so without the suffix strip they
+    // billed at $0. Mirrors Go's TestLongContextSuffix_PricesAtBaseRate.
+    func test_longContextSuffix_pricesAtBaseRate() {
+        let table = PricingTable.defaults
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
+        for base in ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"] {
+            let long = base + "[1m]"
+            XCTAssertTrue(table.has(model: long), "has(\(long)) must be true")
+            XCTAssertEqual(table.cost(model: long, usage: usage),
+                           table.cost(model: base, usage: usage),
+                           accuracy: 1e-9,
+                           "\(long) must price at the base rate")
+        }
+        // The strip must not invent prices for unknown models.
+        XCTAssertFalse(table.has(model: "claude-nonexistent-9[1m]"))
+    }
+
+    // A real [1m] row must win over the stripped fallback, so a future
+    // pricing source that does tier by context length is not shadowed.
+    func test_longContextSuffix_directRowWinsOverStrip() {
+        let table = PricingTable(models: [
+            "claude-opus-5": ModelPrice(inputPerMTok: 5, outputPerMTok: 0,
+                                        cacheCreationPerMTok: 0, cacheReadPerMTok: 0),
+            "claude-opus-5[1m]": ModelPrice(inputPerMTok: 10, outputPerMTok: 0,
+                                            cacheCreationPerMTok: 0, cacheReadPerMTok: 0)
+        ])
+        let usage = Usage(input: 1_000_000, output: 0, cacheCreate: 0, cacheRead: 0)
+        XCTAssertEqual(table.cost(model: "claude-opus-5[1m]", usage: usage), 10.0,
+                       accuracy: 1e-9, "direct [1m] row must win over the fallback")
+    }
 }

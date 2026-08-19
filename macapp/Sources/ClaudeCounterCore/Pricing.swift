@@ -86,15 +86,42 @@ public struct PricingTable: Equatable, Sendable {
 
     /// Returns the ModelPrice a model should be priced against: model's
     /// own entry if the table has one, otherwise its alias's entry (which
-    /// may itself be absent). A direct entry always wins over the alias —
+    /// may itself be absent), and failing both, whatever the same lookups
+    /// find for the name with any [1m] long-context suffix removed. A
+    /// direct entry always wins over the alias —
     /// see test_alias_directEntryWinsOverAlias — so a future LiteLLM
-    /// release adding a real row for an aliased name is never shadowed by
-    /// the redirect. Mirrors `pricing.Table.resolve` in Go.
+    /// release adding a real row for an aliased or [1m] name is never
+    /// shadowed by the fallback. Mirrors `pricing.Table.resolve` in Go.
     private func resolve(model: String) -> ModelPrice? {
+        if let p = lookup(model) { return p }
+        if model.hasSuffix(longContextSuffix) {
+            return lookup(String(model.dropLast(longContextSuffix.count)))
+        }
+        return nil
+    }
+
+    /// Tries model's own entry, then its alias's. Mirrors
+    /// `pricing.Table.lookup` in Go.
+    private func lookup(_ model: String) -> ModelPrice? {
         if let p = models[model] { return p }
         return models[aliasedModel(model)]
     }
 }
+
+/// Marks a turn that ran with the 1M-token context window enabled: Claude
+/// Code logs those as e.g. "claude-opus-5[1m]". No pricing source keys
+/// models this way — LiteLLM has no [1m] rows at all — so before this was
+/// stripped, every such turn resolved to nothing and billed at $0.
+///
+/// Stripping is the correct fix rather than a separate rate because the
+/// current 1M-context models price flat: LiteLLM carries no
+/// *_above_200k_tokens premium for claude-opus-5, claude-opus-4-8,
+/// claude-sonnet-5, claude-fable-5 or claude-mythos-5 (its only "above"
+/// field is cache_creation_input_token_cost_above_1hr, a cache-TTL rate
+/// unrelated to context length). If a future model does tier by context
+/// length, that needs a real [1m] row, not this fallback. Mirrors
+/// `pricing.longContextSuffix` in Go — keep in sync.
+private let longContextSuffix = "[1m]"
 
 /// modelAliases maps a display model name with no LiteLLM entry of its own
 /// to the model it actually bills at. Codex's auto-review runs on GPT-5.6
@@ -122,7 +149,7 @@ private func aliasedModel(_ model: String) -> String {
 extension PricingTable {
 
     /// ISO date the baked-in prices were captured. Update when bumping prices.
-    public static let defaultsDate = "2026-06-12"
+    public static let defaultsDate = "2026-08-19"
 
     /// Best-effort price table used when no pricing.toml is available and
     /// live fetch also fails.
@@ -130,12 +157,18 @@ extension PricingTable {
     /// ccusage uses). Cache-creation rate is the 5-minute TTL multiplier
     /// (1.25× input) — LiteLLM does not split by TTL.
     public static let defaults: PricingTable = {
+        // Every Opus from 4.5 through 5: $5/$25/$6.25/$0.50 per 1M.
         let opus = ModelPrice(
             inputPerMTok: 5.00,
             outputPerMTok: 25.00,
             cacheCreationPerMTok: 6.25,
             cacheReadPerMTok: 0.50
         )
+        // Sonnet's standard rate. Sonnet 5 carries a promotional $2/$10
+        // through 2026-08-31, which LiteLLM tracks; these baked-in
+        // defaults deliberately hold the list price, since a fallback
+        // table outlives the intro window and under-reporting after it
+        // lapses is worse than over-reporting during it.
         let sonnet = ModelPrice(
             inputPerMTok: 3.00,
             outputPerMTok: 15.00,
@@ -156,6 +189,9 @@ extension PricingTable {
         )
         return PricingTable(models: [
             "claude-fable-5":            fable,
+            "claude-mythos-5":           fable,
+            "claude-opus-5":             opus,
+            "claude-sonnet-5":           sonnet,
             "claude-opus-4-8":           opus,
             "claude-opus-4-7":           opus,
             "claude-opus-4-6":           opus,
