@@ -215,4 +215,56 @@ final class PricingTests: XCTestCase {
                            "bare \(bare) must price at the \(full) tier")
         }
     }
+
+    // Codex/OpenAI coverage in the baked-in table. Grok bypasses this table
+    // (its events are pre-costed from the vendor's logs) but Codex is
+    // priced only from here, so with no gpt-* rows an install on defaults
+    // reported $0 for all Codex usage while Claude stayed correct.
+    // Mirrors Go's TestDefaults_CoversCodexModels.
+    func test_defaults_coversCodexModels() {
+        let table = PricingTable.defaults
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheCreate: 0, cacheRead: 0)
+        for m in ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna"] {
+            XCTAssertTrue(table.has(model: m), "defaults missing price for \(m)")
+            XCTAssertNotEqual(table.cost(model: m, usage: usage), 0, "\(m) must cost something")
+        }
+        XCTAssertEqual(table.models["gpt-5.6-sol"]?.inputPerMTok, 5.00)
+        XCTAssertEqual(table.models["gpt-5.6-sol"]?.outputPerMTok, 30.00)
+        // codex-auto-review prices only via its alias to gpt-5.6-luna.
+        XCTAssertTrue(table.has(model: "codex-auto-review"))
+        XCTAssertEqual(table.cost(model: "codex-auto-review", usage: usage),
+                       table.cost(model: "gpt-5.6-luna", usage: usage), accuracy: 1e-9)
+    }
+
+    // MARK: - Override shadowing
+
+    // Reproduces the 2026-08-16 incident exactly: a one-model stub written
+    // to the app-override path must NOT be accepted as the whole table,
+    // because that path outranks the shared ~/.config table and the stub
+    // would zero every Claude and Codex price except the aliased one.
+    func test_isUsableAsFullTable_rejectsStubWithNoClaudeModel() {
+        let stub = PricingTable(models: [
+            "gpt-5.6-luna": ModelPrice(inputPerMTok: 0.2, outputPerMTok: 1.2,
+                                       cacheCreationPerMTok: 0, cacheReadPerMTok: 0.02)
+        ], schema: 2)
+        XCTAssertFalse(stub.models.isEmpty, "the stub is non-empty — that is why the old check passed it")
+        XCTAssertFalse(stub.isUsableAsFullTable,
+                       "a table with no Claude row must not stand in as the full table")
+    }
+
+    // A legitimate override must still be believed — including one written
+    // with bare tier names rather than full claude-* ids.
+    func test_isUsableAsFullTable_acceptsRealTables() {
+        XCTAssertTrue(PricingTable.defaults.isUsableAsFullTable)
+        let hand = PricingTable(models: [
+            "claude-opus-5": ModelPrice(inputPerMTok: 5, outputPerMTok: 25,
+                                        cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)
+        ])
+        XCTAssertTrue(hand.isUsableAsFullTable, "a one-model Claude override is still usable")
+        let bare = PricingTable(models: [
+            "opus": ModelPrice(inputPerMTok: 5, outputPerMTok: 25,
+                               cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.5)
+        ])
+        XCTAssertTrue(bare.isUsableAsFullTable, "bare tier names count as Anthropic rows")
+    }
 }

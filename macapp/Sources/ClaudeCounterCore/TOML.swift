@@ -155,7 +155,10 @@ extension PricingTable {
         for url in resolutionPaths(fileManager: fileManager, env: env) {
             if let body = try? String(contentsOf: url, encoding: .utf8) {
                 let parsed = TOMLPricing.decode(body)
-                if !parsed.models.isEmpty {
+                // Non-empty is not enough — a partial file must not
+                // shadow a complete one further down the list. See
+                // `PricingTable.isUsableAsFullTable`.
+                if !parsed.models.isEmpty && parsed.isUsableAsFullTable {
                     return parsed
                 }
             }
