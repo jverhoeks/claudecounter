@@ -306,3 +306,33 @@ func TestLongContextSuffix_PricesAtBaseRate(t *testing.T) {
 		t.Error("Has(unknown[1m]) = true, want false")
 	}
 }
+
+// TestDefaults_CoversCodexModels covers the asymmetry that made Codex spend
+// look absent rather than mispriced: Grok events arrive pre-costed from the
+// vendor's own logs and bypass this table, but Codex events are priced only
+// from here. With no gpt-* rows, any install on Defaults reported $0 for all
+// Codex usage while every Claude figure stayed correct.
+func TestDefaults_CoversCodexModels(t *testing.T) {
+	d := Defaults()
+	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+	for _, m := range []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna"} {
+		if !d.Has(m) {
+			t.Errorf("Defaults() missing price for %q", m)
+		}
+		if d.Cost(m, u) == 0 {
+			t.Errorf("Cost(%q) = 0, want non-zero", m)
+		}
+	}
+	// gpt-5.6-sol is the Codex workhorse: $5 in / $30 out per 1M.
+	if p := d.Models["gpt-5.6-sol"]; p.InputPerMTok != 5.00 || p.OutputPerMTok != 30.00 {
+		t.Errorf("gpt-5.6-sol = $%v/$%v, want $5/$30", p.InputPerMTok, p.OutputPerMTok)
+	}
+	// codex-auto-review is priced only through its alias to gpt-5.6-luna,
+	// so a missing luna row silently zeroes it — see modelAliases.
+	if !d.Has("codex-auto-review") {
+		t.Error("Has(codex-auto-review) = false; the gpt-5.6-luna alias target must be in Defaults()")
+	}
+	if d.Cost("codex-auto-review", u) != d.Cost("gpt-5.6-luna", u) {
+		t.Error("codex-auto-review must price at the gpt-5.6-luna rate")
+	}
+}

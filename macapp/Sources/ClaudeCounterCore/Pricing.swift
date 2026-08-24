@@ -115,6 +115,37 @@ public struct PricingTable: Equatable, Sendable {
     }
 }
 
+extension PricingTable {
+
+    /// Whether this table can stand in as the *entire* price table.
+    ///
+    /// `resolveFromDisk` walks candidate files in precedence order and
+    /// takes the first one that parses to something non-empty. "Non-empty"
+    /// alone is too weak a test: on 2026-08-16 a test run wrote a
+    /// one-model stub (`gpt-5.6-luna` only) to the real app-override path,
+    /// and because that path is checked *before* the shared
+    /// `~/.config/claudecounter/pricing.toml`, the stub shadowed a
+    /// complete 171-model table. Every Claude model and every Codex model
+    /// except the aliased one then priced at $0, and since the stub was
+    /// stamped with the then-current schema, the staleness check could
+    /// never refetch it either.
+    ///
+    /// A table with no Anthropic row cannot be the whole truth for a tool
+    /// whose entire purpose is Claude spend, so treat it as unusable and
+    /// let resolution fall through to the next candidate. This keeps a
+    /// legitimate hand-written override working — it just has to carry at
+    /// least one Claude price to be believed as the full table.
+    var isUsableAsFullTable: Bool {
+        models.keys.contains { key in
+            key.hasPrefix("claude") || PricingTable.anthropicBareNames.contains(key)
+        }
+    }
+
+    /// Bare tier names the Go defaults table also carries, so an override
+    /// written with them (rather than full `claude-*` ids) still counts.
+    static let anthropicBareNames: Set<String> = ["opus", "sonnet", "haiku", "fable"]
+}
+
 /// Marks a turn that ran with the 1M-token context window enabled: Claude
 /// Code logs those as e.g. "claude-opus-5[1m]". No pricing source keys
 /// models this way — LiteLLM has no [1m] rows at all — so before this was
@@ -194,6 +225,38 @@ extension PricingTable {
             cacheCreationPerMTok: 12.50,
             cacheReadPerMTok: 1.00
         )
+        // Codex/OpenAI models, from the same LiteLLM table as the Claude
+        // rows above. These matter more than their spend share suggests:
+        // Grok events arrive pre-costed from the vendor's own logs
+        // (GrokReader reads costUsdTicks) and bypass this table entirely,
+        // but Codex events carry no cost and are priced only from here.
+        // Before these rows existed, every install that fell back to
+        // `defaults` priced all Codex usage at $0 while Claude looked
+        // correct — an asymmetry that reads as "Codex is missing" rather
+        // than as a pricing failure.
+        //
+        // gpt-5.6-luna is the model codex-auto-review bills at (see
+        // modelAliases); without a row here that alias resolves to
+        // nothing. gpt-5.5's cache-creation rate is 0 because LiteLLM
+        // carries no such field for it, matching a live fetch.
+        let gpt56 = ModelPrice(
+            inputPerMTok: 5.00,
+            outputPerMTok: 30.00,
+            cacheCreationPerMTok: 6.25,
+            cacheReadPerMTok: 0.50
+        )
+        let gpt55 = ModelPrice(
+            inputPerMTok: 5.00,
+            outputPerMTok: 30.00,
+            cacheCreationPerMTok: 0,
+            cacheReadPerMTok: 0.50
+        )
+        let gptLuna = ModelPrice(
+            inputPerMTok: 0.20,
+            outputPerMTok: 1.20,
+            cacheCreationPerMTok: 0.25,
+            cacheReadPerMTok: 0.02
+        )
         return PricingTable(models: [
             "claude-fable-5":            fable,
             "claude-mythos-5":           fable,
@@ -214,6 +277,9 @@ extension PricingTable {
             "sonnet":                    sonnet,
             "haiku":                     haiku,
             "fable":                     fable,
+            "gpt-5.6-sol":               gpt56,
+            "gpt-5.5":                   gpt55,
+            "gpt-5.6-luna":              gptLuna,
         ])
     }()
 }

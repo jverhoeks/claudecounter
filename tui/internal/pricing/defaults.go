@@ -35,6 +35,32 @@ func Defaults() Table {
 		InputPerMTok: 10.00, OutputPerMTok: 50.00,
 		CacheCreationPerMTok: 12.50, CacheReadPerMTok: 1.00,
 	}
+	// Codex/OpenAI models, from the same LiteLLM table as the Claude rows
+	// above. These matter more than their spend share suggests: Grok
+	// events arrive pre-costed from the vendor's own logs
+	// (reader.grokParser reads costUsdTicks) and bypass this table
+	// entirely, but Codex events carry no cost and are priced only from
+	// here. Before these rows existed, every install that fell back to
+	// Defaults priced all Codex usage at $0 while Claude looked correct —
+	// an asymmetry that reads as "Codex is missing" rather than as a
+	// pricing failure.
+	//
+	// gpt-5.6-luna is the model codex-auto-review bills at (see
+	// modelAliases); without a row here that alias resolves to nothing.
+	// gpt-5.5's cache-creation rate is 0 because LiteLLM carries no such
+	// field for it, matching what a live fetch produces.
+	gpt56 := ModelPrice{
+		InputPerMTok: 5.00, OutputPerMTok: 30.00,
+		CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.50,
+	}
+	gpt55 := ModelPrice{
+		InputPerMTok: 5.00, OutputPerMTok: 30.00,
+		CacheCreationPerMTok: 0, CacheReadPerMTok: 0.50,
+	}
+	gptLuna := ModelPrice{
+		InputPerMTok: 0.20, OutputPerMTok: 1.20,
+		CacheCreationPerMTok: 0.25, CacheReadPerMTok: 0.02,
+	}
 	return Table{
 		Models: map[string]ModelPrice{
 			"claude-fable-5":            fable,
@@ -53,6 +79,9 @@ func Defaults() Table {
 			"sonnet":                    sonnet,
 			"haiku":                     haiku,
 			"fable":                     fable,
+			"gpt-5.6-sol":               gpt56,
+			"gpt-5.5":                   gpt55,
+			"gpt-5.6-luna":              gptLuna,
 		},
 	}
 }
