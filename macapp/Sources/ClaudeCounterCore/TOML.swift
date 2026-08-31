@@ -28,7 +28,11 @@ enum TOMLPricing {
                 inputPerMTok:        pending["input_per_mtok"] ?? 0,
                 outputPerMTok:       pending["output_per_mtok"] ?? 0,
                 cacheCreationPerMTok: pending["cache_creation_per_mtok"] ?? 0,
-                cacheReadPerMTok:    pending["cache_read_per_mtok"] ?? 0
+                cacheReadPerMTok:    pending["cache_read_per_mtok"] ?? 0,
+                // Absent on any table written before the 1h rate was
+                // tracked; ModelPrice.cacheCreation1hRate then falls back
+                // to 2x input, which is the documented rate anyway.
+                cacheCreation1hPerMTok: pending["cache_creation_1h_per_mtok"] ?? 0
             )
             models[name] = p
             pending.removeAll(keepingCapacity: true)
@@ -107,6 +111,12 @@ enum TOMLPricing {
             lines.append("output_per_mtok         = \(formatNum(p.outputPerMTok))")
             lines.append("cache_creation_per_mtok = \(formatNum(p.cacheCreationPerMTok))")
             lines.append("cache_read_per_mtok     = \(formatNum(p.cacheReadPerMTok))")
+            // Never write a zero: a literal 0 would read back as a real
+            // rate and bill 1h cache writes free, where an absent key
+            // falls back to 2x input.
+            if p.cacheCreation1hPerMTok > 0 {
+                lines.append("cache_creation_1h_per_mtok = \(formatNum(p.cacheCreation1hPerMTok))")
+            }
             lines.append("")
         }
         return lines.joined(separator: "\n")

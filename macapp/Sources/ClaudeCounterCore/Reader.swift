@@ -87,6 +87,30 @@ private struct RawLine: Decodable {
         let output_tokens: UInt64?
         let cache_creation_input_tokens: UInt64?
         let cache_read_input_tokens: UInt64?
+        let cache_creation: RawCacheCreation?
+        /// Per-API-call breakdown of a turn that took more than one round
+        /// trip. Absent on single-call turns and on every record written
+        /// before Claude Code started emitting it.
+        ///
+        /// The enclosing block's cache_creation_input_tokens and
+        /// cache_read_input_tokens already equal the sum over iterations,
+        /// but input_tokens and output_tokens do NOT — they omit whole
+        /// iterations. Verified example: top-level in=4/out=691 against
+        /// iterations of (2, 357), (88762, 1249), (2, 334); the middle
+        /// call's 88,762 input tokens are invisible at the top level.
+        /// Summing only those two fields is necessary and sufficient —
+        /// summing the cache fields too would double-count.
+        let iterations: [RawIteration]?
+    }
+
+    struct RawCacheCreation: Decodable {
+        let ephemeral_1h_input_tokens: UInt64?
+        let ephemeral_5m_input_tokens: UInt64?
+    }
+
+    struct RawIteration: Decodable {
+        let input_tokens: UInt64?
+        let output_tokens: UInt64?
     }
 }
 
@@ -120,11 +144,22 @@ public func parseLine(_ data: Data) -> ParseResult {
         return .skip
     }
 
+    var input = u.input_tokens ?? 0
+    var output = u.output_tokens ?? 0
+    if let its = u.iterations, !its.isEmpty {
+        input = 0
+        output = 0
+        for it in its {
+            input &+= it.input_tokens ?? 0
+            output &+= it.output_tokens ?? 0
+        }
+    }
     let usage = Usage(
-        input: u.input_tokens ?? 0,
-        output: u.output_tokens ?? 0,
+        input: input,
+        output: output,
         cacheCreate: u.cache_creation_input_tokens ?? 0,
-        cacheRead: u.cache_read_input_tokens ?? 0
+        cacheRead: u.cache_read_input_tokens ?? 0,
+        cacheCreate1h: u.cache_creation?.ephemeral_1h_input_tokens ?? 0
     )
 
     let ev = UsageEvent(

@@ -67,6 +67,10 @@ public enum PricingFetcher {
             let input = perMTok(entry["input_cost_per_token"])
             let output = perMTok(entry["output_cost_per_token"])
             let cacheCreate = perMTok(entry["cache_creation_input_token_cost"])
+            // Most entries omit this; ModelPrice.cacheCreation1hRate then
+            // falls back to 2x input, the rate Anthropic documents for
+            // every current model.
+            let cacheCreate1h = perMTok(entry["cache_creation_input_token_cost_above_1hr"])
             let cacheRead = perMTok(entry["cache_read_input_token_cost"])
 
             // Only include models with at least an input price — LiteLLM has
@@ -77,7 +81,8 @@ public enum PricingFetcher {
                 inputPerMTok: input,
                 outputPerMTok: output,
                 cacheCreationPerMTok: cacheCreate,
-                cacheReadPerMTok: cacheRead
+                cacheReadPerMTok: cacheRead,
+                cacheCreation1hPerMTok: cacheCreate1h
             )
         }
         guard !models.isEmpty else { throw FetchError.noPricedModels }

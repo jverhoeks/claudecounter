@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"time"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/sources"
@@ -700,5 +702,79 @@ func TestReader_OnChange_ConcurrentSamePath_NoRaceNoDuplication(t *testing.T) {
 	// codexParser state), which duplicates a portion of the file.
 	if gotTotal != wantTotal {
 		t.Fatalf("summed input tokens across both concurrent OnChange calls = %d, want %d (single-pass total, not duplicated)", gotTotal, wantTotal)
+	}
+}
+
+// Claude Code logs a multi-round-trip turn as usage.iterations[]. The
+// enclosing block's input_tokens/output_tokens omit whole iterations, so
+// they must be summed from the array — but its cache fields ALREADY equal
+// the sum over iterations, so summing those too would double-count.
+//
+// The numbers below are a real record: top-level in=4/out=691 against
+// iterations of (2,357), (88762,1249), (2,334). The middle call's 88,762
+// input tokens are invisible at the top level.
+func TestParseLine_IterationsSumInputOutputButNotCacheFields(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"req1",
+	 "message":{"id":"m1","model":"claude-opus-5","usage":{
+	   "input_tokens":4,"output_tokens":691,
+	   "cache_creation_input_tokens":2763,"cache_read_input_tokens":173258,
+	   "iterations":[
+	     {"input_tokens":2,"output_tokens":357,"cache_creation_input_tokens":1154,"cache_read_input_tokens":86052},
+	     {"input_tokens":88762,"output_tokens":1249,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},
+	     {"input_tokens":2,"output_tokens":334,"cache_creation_input_tokens":1609,"cache_read_input_tokens":87206}]}}}`)
+	ev, ok, err := parseLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parseLine: ok=%v err=%v", ok, err)
+	}
+	if ev.Usage.InputTokens != 88766 {
+		t.Errorf("input: got %d, want 88766 (sum of iterations, not the top-level 4)", ev.Usage.InputTokens)
+	}
+	if ev.Usage.OutputTokens != 1940 {
+		t.Errorf("output: got %d, want 1940 (sum of iterations, not the top-level 691)", ev.Usage.OutputTokens)
+	}
+	if ev.Usage.CacheCreationInputTokens != 2763 {
+		t.Errorf("cache create: got %d, want 2763 — top level already is the sum", ev.Usage.CacheCreationInputTokens)
+	}
+	if ev.Usage.CacheReadInputTokens != 173258 {
+		t.Errorf("cache read: got %d, want 173258 — top level already is the sum", ev.Usage.CacheReadInputTokens)
+	}
+}
+
+// A turn with no iterations array (single round trip, or any record
+// written before Claude Code emitted the field) keeps top-level values.
+func TestParseLine_NoIterationsUsesTopLevel(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"r",
+	 "message":{"id":"m","model":"claude-opus-5","usage":{
+	   "input_tokens":11,"output_tokens":22,
+	   "cache_creation_input_tokens":33,"cache_read_input_tokens":44}}}`)
+	ev, ok, err := parseLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parseLine: ok=%v err=%v", ok, err)
+	}
+	if ev.Usage != (pricing.Usage{InputTokens: 11, OutputTokens: 22,
+		CacheCreationInputTokens: 33, CacheReadInputTokens: 44}) {
+		t.Errorf("got %+v", ev.Usage)
+	}
+}
+
+// The 1h/5m split comes from usage.cache_creation. Those two fields do
+// not always sum to cache_creation_input_tokens (observed 507,455 vs
+// 510,803 over one day), so only the 1h figure is carried and the
+// remainder is derived by subtraction at pricing time — that keeps the
+// token total intact instead of losing the unattributed part.
+func TestParseLine_CarriesOneHourCacheWriteSplit(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"r",
+	 "message":{"id":"m","model":"claude-opus-5","usage":{
+	   "cache_creation_input_tokens":510803,
+	   "cache_creation":{"ephemeral_1h_input_tokens":471162,"ephemeral_5m_input_tokens":36293}}}}`)
+	ev, _, err := parseLine(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Usage.CacheCreationInputTokens != 510803 {
+		t.Errorf("total cache create: got %d, want the full 510803", ev.Usage.CacheCreationInputTokens)
+	}
+	if ev.Usage.CacheCreation1hInputTokens != 471162 {
+		t.Errorf("1h subset: got %d, want 471162", ev.Usage.CacheCreation1hInputTokens)
 	}
 }

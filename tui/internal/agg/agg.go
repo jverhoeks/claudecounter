@@ -10,23 +10,30 @@ import (
 
 type TokenCounts struct {
 	In, Out, CacheCreate, CacheRead uint64
+	// CacheCreate1h is the subset of CacheCreate written with a 1-hour
+	// TTL, carried separately only so Cost can bill it at 2× input
+	// instead of the 5-minute rate. It is never displayed: every token
+	// readout uses CacheCreate, which remains the full figure.
+	CacheCreate1h uint64
 }
 
 func (a TokenCounts) Add(b TokenCounts) TokenCounts {
 	return TokenCounts{
-		In:          a.In + b.In,
-		Out:         a.Out + b.Out,
-		CacheCreate: a.CacheCreate + b.CacheCreate,
-		CacheRead:   a.CacheRead + b.CacheRead,
+		In:            a.In + b.In,
+		Out:           a.Out + b.Out,
+		CacheCreate:   a.CacheCreate + b.CacheCreate,
+		CacheRead:     a.CacheRead + b.CacheRead,
+		CacheCreate1h: a.CacheCreate1h + b.CacheCreate1h,
 	}
 }
 
 func (a TokenCounts) ToUsage() pricing.Usage {
 	return pricing.Usage{
-		InputTokens:              a.In,
-		OutputTokens:             a.Out,
-		CacheCreationInputTokens: a.CacheCreate,
-		CacheReadInputTokens:     a.CacheRead,
+		InputTokens:                a.In,
+		OutputTokens:               a.Out,
+		CacheCreationInputTokens:   a.CacheCreate,
+		CacheReadInputTokens:       a.CacheRead,
+		CacheCreation1hInputTokens: a.CacheCreate1h,
 	}
 }
 
@@ -251,10 +258,11 @@ func (a *Aggregator) Apply(e reader.Event) {
 		}
 	}
 	tok := TokenCounts{
-		In:          e.Usage.InputTokens,
-		Out:         e.Usage.OutputTokens,
-		CacheCreate: e.Usage.CacheCreationInputTokens,
-		CacheRead:   e.Usage.CacheReadInputTokens,
+		In:            e.Usage.InputTokens,
+		Out:           e.Usage.OutputTokens,
+		CacheCreate:   e.Usage.CacheCreationInputTokens,
+		CacheRead:     e.Usage.CacheReadInputTokens,
+		CacheCreate1h: e.Usage.CacheCreation1hInputTokens,
 	}
 	contrib := cellVal{Tokens: tok}
 	if e.Costed {

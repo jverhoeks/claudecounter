@@ -70,7 +70,12 @@ public struct CacheFile: Codable, Sendable {
     /// source after that goes back to the cheap incremental path.
     public let coveredSources: [String]?
 
-    public static let currentVersion = 5
+    /// 6: the reader began summing `usage.iterations[]` for input/output
+    /// and recording the 1-hour cache-write split. Cells written by
+    /// version 5 hold token counts the current pricing code would bill
+    /// differently, and no incremental scan revisits them — so they must
+    /// be discarded and rebuilt rather than merged with new ones.
+    public static let currentVersion = 6
 
     public struct CellEntry: Codable, Sendable {
         public let day: String       // YYYY-MM-DD (matches civilDayString)
@@ -106,12 +111,22 @@ public struct CacheFile: Codable, Sendable {
         /// reconstruction silently mis-restores — preserve that invariant
         /// rather than relaxing it.
         public let costed: Bool
+        /// Subset of `cacheCreate` billed at the 1-hour rate. Optional for
+        /// the same reason as `hourBuckets`: a non-optional field would
+        /// make synthesized Codable throw on any cache written before it
+        /// existed, discarding that whole file rather than the one number
+        /// it lacks. The version bump already forces such a cache to be
+        /// rebuilt; staying tolerant just means a downgrade-then-upgrade
+        /// doesn't compound into data loss. Absent means "no 1h split
+        /// recorded", which prices exactly as the old code did.
+        public let cacheCreate1h: UInt64?
 
         public init(day: String, project: String, source: String, vendor: String,
                     model: String, isSub: Bool,
                     input: UInt64, output: UInt64,
                     cacheCreate: UInt64, cacheRead: UInt64,
-                    usd: Double = 0, costed: Bool = false) {
+                    usd: Double = 0, costed: Bool = false,
+                    cacheCreate1h: UInt64? = nil) {
             self.day = day; self.project = project
             self.source = source; self.vendor = vendor
             self.model = model
@@ -119,6 +134,7 @@ public struct CacheFile: Codable, Sendable {
             self.input = input; self.output = output
             self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
             self.usd = usd; self.costed = costed
+            self.cacheCreate1h = cacheCreate1h
         }
     }
 
@@ -141,15 +157,19 @@ public struct CacheFile: Codable, Sendable {
         public let cacheRead: UInt64
         public let usd: Double
         public let costed: Bool
+        /// See `CellEntry.cacheCreate1h`.
+        public let cacheCreate1h: UInt64?
 
         public init(day: String, hour: Int, vendor: String, model: String,
                     input: UInt64, output: UInt64,
                     cacheCreate: UInt64, cacheRead: UInt64,
-                    usd: Double = 0, costed: Bool = false) {
+                    usd: Double = 0, costed: Bool = false,
+                    cacheCreate1h: UInt64? = nil) {
             self.day = day; self.hour = hour; self.vendor = vendor; self.model = model
             self.input = input; self.output = output
             self.cacheCreate = cacheCreate; self.cacheRead = cacheRead
             self.usd = usd; self.costed = costed
+            self.cacheCreate1h = cacheCreate1h
         }
     }
 
@@ -261,7 +281,8 @@ extension CacheFile {
                 isSub: key.isSub,
                 input: v.tokens.input, output: v.tokens.output,
                 cacheCreate: v.tokens.cacheCreate, cacheRead: v.tokens.cacheRead,
-                usd: v.costedUSD, costed: v.pricedTokens == .zero
+                usd: v.costedUSD, costed: v.pricedTokens == .zero,
+                cacheCreate1h: v.tokens.cacheCreate1h
             )
         }
         let hourEntries = await aggregator.exportHourBuckets().map {
@@ -272,7 +293,8 @@ extension CacheFile {
                 output: $0.value.tokens.output,
                 cacheCreate: $0.value.tokens.cacheCreate,
                 cacheRead: $0.value.tokens.cacheRead,
-                usd: $0.value.costedUSD, costed: $0.value.pricedTokens == .zero
+                usd: $0.value.costedUSD, costed: $0.value.pricedTokens == .zero,
+                cacheCreate1h: $0.value.tokens.cacheCreate1h
             )
         }
         let coverageEntries = state.coverage.map {
@@ -305,7 +327,8 @@ extension CacheFile {
             )
             let tokens = TokenCounts(
                 input: e.input, output: e.output,
-                cacheCreate: e.cacheCreate, cacheRead: e.cacheRead
+                cacheCreate: e.cacheCreate, cacheRead: e.cacheRead,
+                cacheCreate1h: e.cacheCreate1h ?? 0
             )
             // `pricedTokens` is recovered exactly, not merely
             // approximated — see `CellEntry.costed` for the full
@@ -336,7 +359,8 @@ extension CacheFile {
                 guard let cd = parseCivilDayString(e.day) else { return nil }
                 let tokens = TokenCounts(
                     input: e.input, output: e.output,
-                    cacheCreate: e.cacheCreate, cacheRead: e.cacheRead)
+                    cacheCreate: e.cacheCreate, cacheRead: e.cacheRead,
+                    cacheCreate1h: e.cacheCreate1h ?? 0)
                 let value = CellValue(
                     tokens: tokens, costedUSD: e.usd,
                     pricedTokens: e.costed ? .zero : tokens
