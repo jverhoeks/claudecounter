@@ -51,11 +51,17 @@ on all three screens. If a side shows upside down on your unit, edit
 - Colours: green below the app's warn percentage, amber above it, red at
   100, grey if stale.
 
-## Alarm
+## Alarms
 
-When the context warning turns on, the LED bar goes red and the speaker
-beeps once. LEDs stay red while the warning holds. Touch the screen or
-any button to turn the LEDs off until the next new warning.
+- Context: when the context warning turns on, the LED bar goes red and
+  the speaker beeps once. LEDs stay red while the warning holds.
+- Usage: when any plan window (Codex 5h/7d, Grok wk, Claude budgets)
+  reaches 90 %, the LED bar goes orange and the tab strip under the
+  header is replaced by that window's name, a bar and the percentage.
+  No beep. At 100 % the LEDs go off again; the strip stays. A context warning takes precedence.
+
+Touch the screen or any button to turn the LEDs off until the next new
+alarm.
 
 ## Security note
 

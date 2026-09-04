@@ -82,6 +82,26 @@ static void drawHeader(const HeaderState& h) {
 
 // Tab strip under the header; the active screen is bright and underlined.
 // Positioned over the three touch buttons' columns so the mapping is obvious.
+// Replaces the tab strip while a plan window is at/over the alert
+// threshold: "vendor window  [====   ] 100%" in the alert colour.
+static void drawUsageAlert(const UsageRow& u, int warnPct) {
+  uint16_t c = pctColor(u.pct, warnPct, false);
+  gfx.setTextSize(1);
+  gfx.setTextDatum(top_left);
+  String label = u.vendor + " " + u.window;
+  gfx.setTextColor(c, BG);
+  gfx.drawString(label.c_str(), 8, 28);
+  int lx = 8 + gfx.textWidth(label.c_str()) + 10;
+  char pct[8]; snprintf(pct, sizeof pct, "%d%%", u.pct);
+  int pw = gfx.textWidth(pct);
+  int bx = lx, bw = W - 10 - pw - 8 - bx, bh = 8;
+  gfx.drawRect(bx, 28, bw, bh, c);
+  gfx.fillRect(bx + 1, 29, (bw - 2) * min(u.pct, 100) / 100, bh - 2, c);
+  gfx.setTextDatum(top_right);
+  gfx.drawString(pct, W - 10, 28);
+  gfx.setTextDatum(top_left);
+}
+
 static void drawTabs(Screen active, const String& vendorFilter) {
   String modelsName = vendorFilter.length() ? "models: " + vendorFilter : String("models");
   const char* names[3] = {"overview", modelsName.c_str(), "usage"};
@@ -265,7 +285,8 @@ static void drawOverview(const Payload& p) {
 void renderPayload(const Payload& p, const HeaderState& h, Screen screen, const String& vendorFilter) {
   beginFrame();
   drawHeader(h);
-  drawTabs(screen, vendorFilter);
+  if (const UsageRow* a = usageAlert(p)) drawUsageAlert(*a, p.warnPct);
+  else drawTabs(screen, vendorFilter);
   switch (screen) {
     case Screen::Overview: drawOverview(p); break;
     case Screen::Models:   drawModels(p, vendorFilter); break;

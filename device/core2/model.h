@@ -17,6 +17,11 @@ struct Payload {
   String ctxSession; int ctxPct = 0; bool ctxWarn = false;
 };
 
+// Any non-stale usage window at or above USAGE_ALERT_PCT is an alert.
+// Returns the highest such row, or nullptr.
+static const int USAGE_ALERT_PCT = 90;
+const UsageRow* usageAlert(const Payload& p);
+
 // Parses a v1 body. Returns false (and sets valid=false) on malformed
 // JSON or a version other than 1.
 bool parsePayload(const String& body, Payload& out);

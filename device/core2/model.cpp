@@ -13,6 +13,16 @@ time_t parseIso8601Utc(const char* s) {
   return mktime(&t);
 }
 
+const UsageRow* usageAlert(const Payload& p) {
+  const UsageRow* worst = nullptr;
+  for (int i = 0; i < p.usageCount; i++) {
+    const UsageRow& u = p.usage[i];
+    if (u.stale || u.pct < USAGE_ALERT_PCT) continue;
+    if (!worst || u.pct > worst->pct) worst = &u;
+  }
+  return worst;
+}
+
 static const char* VENDOR_ORDER[] = {"claude", "codex", "grok"};
 
 bool parsePayload(const String& body, Payload& out) {

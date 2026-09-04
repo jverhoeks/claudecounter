@@ -154,6 +154,15 @@ void loop() {
     bodyChanged = false;
   }
 
-  alarmUpdate(havePayload && payload.hasContext && payload.ctxWarn, touched);
+  AlarmLevel level = AlarmLevel::None;
+  if (havePayload) {
+    if (payload.hasContext && payload.ctxWarn) level = AlarmLevel::Context;
+    else if (const UsageRow* a = usageAlert(payload)) {
+      // Orange only while there is still headroom to protect; at 100 %
+      // the window is spent and the strip alone says so.
+      if (a->pct < 100) level = AlarmLevel::Usage;
+    }
+  }
+  alarmUpdate(level, touched);
   delay(50);
 }

@@ -243,6 +243,11 @@ Behaviour:
 - Colours everywhere: green under `warnPct`, amber from `warnPct`, red
   at 100 or above, grey when stale. Text uses the built-in fonts; no
   custom font files. Screen size is 320×240.
+- Usage alert: when any non-stale `usage` row is at or above 90 %, the
+  tab strip is replaced by that row's vendor, window, a bar and the
+  percentage. The LED bar turns orange (no beep) only while the row is
+  below 100 %; a spent window shows the strip with the LEDs off. A context warning
+  takes precedence over it.
 - Alarm: on `context.warn` rising edge, set all ten LEDs red and play
   one 200 ms 1 kHz tone. LEDs stay red while warn is true, off when it
   falls. Any touch, including a screen-switch button, clears the LEDs

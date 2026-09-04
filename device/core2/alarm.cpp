@@ -5,7 +5,7 @@
 static const int LED_PIN = 25;   // SK6812 bar on Core2 for AWS
 static const int LED_COUNT = 10;
 static CRGB leds[LED_COUNT];
-static bool wasWarn = false;
+static AlarmLevel wasLevel = AlarmLevel::None;
 static bool silenced = false;
 
 static void setBar(CRGB c) {
@@ -19,16 +19,23 @@ void alarmInit() {
   setBar(CRGB::Black);
 }
 
-void alarmUpdate(bool warn, bool touched) {
-  if (warn && !wasWarn) {
+void alarmUpdate(AlarmLevel level, bool touched) {
+  if (level > wasLevel) {
     silenced = false;
-    setBar(CRGB::Red);
-    M5.Speaker.tone(1000, 200);   // one 200 ms beep at 1 kHz
-  } else if (!warn && wasWarn) {
+    if (level == AlarmLevel::Context) {
+      setBar(CRGB::Red);
+      M5.Speaker.tone(1000, 200);   // one 200 ms beep at 1 kHz
+    } else {
+      setBar(CRGB(255, 80, 0));     // orange
+    }
+  } else if (level == AlarmLevel::None && wasLevel != AlarmLevel::None) {
     setBar(CRGB::Black);
-  } else if (warn && touched && !silenced) {
+  } else if (level < wasLevel && !silenced) {
+    // Context cleared but a usage alert remains: step down to orange.
+    setBar(CRGB(255, 80, 0));
+  } else if (level != AlarmLevel::None && touched && !silenced) {
     silenced = true;
     setBar(CRGB::Black);
   }
-  wasWarn = warn;
+  wasLevel = level;
 }
