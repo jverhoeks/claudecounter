@@ -1654,3 +1654,101 @@ private extension String {
         try handle.write(contentsOf: Data(self.utf8))
     }
 }
+
+// MARK: - Device publishing
+
+final class AppStateDevicePublishTests: XCTestCase {
+
+    @MainActor
+    private func makeApp(deviceURL: String, token: String?, session: URLSessionProtocol) -> (AppState, String) {
+        let root = NSTemporaryDirectory() + "asd-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: root + "/projects", withIntermediateDirectories: true)
+        let cacheURL = URL(fileURLWithPath: root).appendingPathComponent("cache.json")
+        var settings = AppSettings.defaults
+        settings.deviceURL = deviceURL
+        let app = AppState(
+            projectsRoot: root + "/projects",
+            aggregator: Aggregator(pricing: .defaults, now: Date.init),
+            cacheStore: CacheStore(url: cacheURL),
+            pricing: .defaults,
+            dockIcon: InMemoryDockIconController(),
+            settingsStore: InMemorySettingsStore(initial: settings),
+            sourcesConfigPath: root + "/nosrc.toml",
+            home: root,
+            deviceSession: session,
+            deviceSecret: InMemoryDeviceSecretStore(token: token)
+        )
+        return (app, root)
+    }
+
+    @MainActor
+    func test_publishDevice_offWhenURLEmpty() async {
+        let mock = RecordingSession(status: 204)
+        let (app, root) = makeApp(deviceURL: "", token: "t", session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let out = await app.publishDevice()
+        XCTAssertNil(out)
+        let n = await mock.requests.count
+        XCTAssertEqual(n, 0)
+    }
+
+    @MainActor
+    func test_publishDevice_sendsOnceThenUnchanged() async {
+        let mock = RecordingSession(status: 204)
+        let (app, root) = makeApp(deviceURL: "https://x.workers.dev/state", token: "t", session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let first = await app.publishDevice()
+        XCTAssertEqual(first, .sent)
+        let second = await app.publishDevice()
+        XCTAssertEqual(second, .unchanged)
+        let n = await mock.requests.count
+        XCTAssertEqual(n, 1)
+        XCTAssertNil(app.lastError)
+    }
+
+    @MainActor
+    func test_publishDevice_forceResends() async {
+        let mock = RecordingSession(status: 204)
+        let (app, root) = makeApp(deviceURL: "https://x.workers.dev/state", token: "t", session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = await app.publishDevice()
+        let out = await app.publishDevice(force: true)
+        XCTAssertEqual(out, .sent)
+        let n = await mock.requests.count
+        XCTAssertEqual(n, 2)
+    }
+
+    @MainActor
+    func test_publishDevice_missingTokenIsFailure() async {
+        let mock = RecordingSession(status: 204)
+        let (app, root) = makeApp(deviceURL: "https://x.workers.dev/state", token: nil, session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let out = await app.publishDevice()
+        XCTAssertEqual(out, .failed("no write token set"))
+        XCTAssertEqual(app.lastError, "Device publish failed: no write token set")
+    }
+
+    @MainActor
+    func test_publishDevice_errorSetsThenClearsLastError() async {
+        let mock = RecordingSession(status: 500)
+        let (app, root) = makeApp(deviceURL: "https://x.workers.dev/state", token: "t", session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        _ = await app.publishDevice()
+        XCTAssertEqual(app.lastError, "Device publish failed: HTTP 500")
+        await mock.setStatus(204)
+        let out = await app.publishDevice()
+        XCTAssertEqual(out, .sent)
+        XCTAssertNil(app.lastError, "a recovered publish clears the error it set")
+    }
+
+    @MainActor
+    func test_setDeviceURL_persistsAndSetDeviceToken_stores() throws {
+        let mock = RecordingSession(status: 204)
+        let (app, root) = makeApp(deviceURL: "", token: nil, session: mock)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        app.setDeviceURL("https://y.workers.dev/state")
+        XCTAssertEqual(app.settings.deviceURL, "https://y.workers.dev/state")
+        try app.setDeviceToken("zzz")
+        XCTAssertEqual(app.deviceToken, "zzz")
+    }
+}

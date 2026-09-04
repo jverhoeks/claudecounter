@@ -31,6 +31,9 @@ public final class AppState: ObservableObject {
     /// Vendor-reported plan utilisation (Codex, Grok). Empty when neither
     /// vendor is installed.
     @Published public private(set) var planGauges: [PlanGauge] = []
+    /// Result of the most recent `publishDevice`, nil while publishing is
+    /// off. The popover's Device section shows it inline.
+    @Published public private(set) var lastDeviceOutcome: DevicePublisher.Outcome? = nil
     /// The amber threshold from `limits.toml`'s `warn_pct`
     /// (`LimitsConfig.defaultWarnPct` when unconfigured or the file is
     /// malformed). This is what `GaugesView` and `MenuBarLabel` render
@@ -103,6 +106,13 @@ public final class AppState: ObservableObject {
     private let dockIcon: DockIconController
     private let settingsStore: SettingsStore
     private let notifier: SessionNotifier
+    private let deviceSession: URLSessionProtocol
+    private let deviceSecret: DeviceSecretStore
+    private let devicePublisher = DevicePublisher()
+    /// Mirrors whatever `lastError` `publishDevice` most recently set,
+    /// same pattern as `lastLimitsError`, so a later successful publish
+    /// clears exactly the error it set and nothing else.
+    private var lastDeviceError: String? = nil
     private let now: () -> Date
     private let calendar: Calendar
 
@@ -141,7 +151,9 @@ public final class AppState: ObservableObject {
                 now: @escaping () -> Date = Date.init,
                 calendar: Calendar = .current,
                 home: String = NSHomeDirectory(),
-                pricingOverrideURL: URL? = nil) {
+                pricingOverrideURL: URL? = nil,
+                deviceSession: URLSessionProtocol = URLSession.shared,
+                deviceSecret: DeviceSecretStore? = nil) {
         self.projectsRoot = projectsRoot
         self.aggregator = aggregator
         // Tracker shares the same pricing; production omits it and we build
@@ -170,6 +182,8 @@ public final class AppState: ObservableObject {
         self.settings = resolvedStore.load()
         self.now = now
         self.calendar = calendar
+        self.deviceSession = deviceSession
+        self.deviceSecret = deviceSecret ?? KeychainDeviceSecretStore()
     }
 
     // MARK: Lifecycle
@@ -227,6 +241,7 @@ public final class AppState: ObservableObject {
 
         startWatcher()
         startPeriodicFlush()
+        await publishDevice()
 
         self.status = .scanning
         // Catch-up scan, once per reachable source. A failure scanning
@@ -301,6 +316,7 @@ public final class AppState: ObservableObject {
         self.perFileOffsets = await mergedOffsets()
         self.status = .live
         await refreshGauges()
+        await publishDevice()
         await flushCache()
     }
 
@@ -900,6 +916,66 @@ public final class AppState: ObservableObject {
         settingsStore.save(settings)
     }
 
+    // MARK: Device publishing
+
+    /// The Worker write token, read from the secret store each time so
+    /// the popover reflects what is actually stored.
+    public var deviceToken: String? { deviceSecret.readWriteToken() }
+
+    public func setDeviceURL(_ url: String) {
+        settings.deviceURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        settingsStore.save(settings)
+    }
+
+    public func setDeviceToken(_ token: String) throws {
+        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { try deviceSecret.deleteWriteToken() } else { try deviceSecret.saveWriteToken(t) }
+    }
+
+    /// Builds the current payload and PUTs it to the configured Worker.
+    /// Returns nil when `settings.deviceURL` is empty (publishing off).
+    /// `force` bypasses the publisher's unchanged-body skip; the popover's
+    /// "Send now" uses it so the user sees a real round-trip.
+    ///
+    /// Failures land in `lastError` with the set-and-clear discipline
+    /// `refreshBudgets` uses: only the error this method set is cleared
+    /// on recovery.
+    @discardableResult
+    public func publishDevice(force: Bool = false) async -> DevicePublisher.Outcome? {
+        let urlString = settings.deviceURL
+        guard !urlString.isEmpty else { return nil }
+
+        let outcome: DevicePublisher.Outcome
+        if let url = URL(string: urlString), url.scheme?.hasPrefix("http") == true {
+            if let token = deviceSecret.readWriteToken(), !token.isEmpty {
+                let payload = DevicePayload.build(totals: totals,
+                                                  statuses: limitStatuses,
+                                                  gauges: planGauges,
+                                                  sessions: activeSessions,
+                                                  warnPct: warnPct,
+                                                  now: now())
+                if force { await devicePublisher.reset() }
+                outcome = await devicePublisher.publish(payload, to: url, token: token, session: deviceSession)
+            } else {
+                outcome = .failed("no write token set")
+            }
+        } else {
+            outcome = .failed("invalid URL")
+        }
+
+        switch outcome {
+        case .failed(let msg):
+            let message = "Device publish failed: \(msg)"
+            lastError = message
+            lastDeviceError = message
+        case .sent, .unchanged:
+            if lastError != nil && lastError == lastDeviceError { lastError = nil }
+            lastDeviceError = nil
+        }
+        lastDeviceOutcome = outcome
+        return outcome
+    }
+
     private func startPeriodicFlush() {
         periodicFlushTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -926,6 +1002,10 @@ public final class AppState: ObservableObject {
                     // refreshBudgets above needs.
                     await self.rescanPlanGauges()
                 }
+                // Publish after budgets (and possibly gauges) refreshed so
+                // the device sees this tick's numbers. Cheap when nothing
+                // changed: the publisher skips byte-equal bodies.
+                await self.publishDevice()
                 await self.flushCache()
             }
         }
