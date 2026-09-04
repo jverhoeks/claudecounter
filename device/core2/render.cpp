@@ -113,7 +113,7 @@ static void drawModels(const Payload& p, const String& vendorFilter) {
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(DIM, BG);
   M5.Display.setTextDatum(top_right);
-  M5.Display.drawString("today", 230, y0);
+  M5.Display.drawString("today", 220, y0);
   M5.Display.drawString("month", 310, y0);
   M5.Display.setTextDatum(top_left);
   int y = y0 + 12;
@@ -127,7 +127,7 @@ static void drawModels(const Payload& p, const String& vendorFilter) {
     M5.Display.setTextColor(FG, BG);
     M5.Display.drawString(shortModel(m.model).c_str(), 56, y);
     M5.Display.setTextDatum(top_right);
-    M5.Display.drawString(usd(m.day).c_str(), 230, y);
+    M5.Display.drawString(usd(m.day).c_str(), 220, y);
     M5.Display.drawString(usd(m.month).c_str(), 310, y);
     M5.Display.setTextDatum(top_left);
     y += rowH;
@@ -173,18 +173,20 @@ String vendorAtY(const Payload& p, int y) {
 }
 
 static void drawOverview(const Payload& p) {
-  // Spend table: vendor | today | week | month, right-aligned numbers.
+  // Spend table: vendor | today | month, right-aligned numbers. Two
+  // columns only: at text size 2 a "$1234.56" is ~96 px wide, so three
+  // columns overlapped. Week is still in the payload for later use.
   // Row geometry is shared with vendorAtY so taps land on the right row.
   const int y0 = SPEND_Y0 - 14, rowH = SPEND_ROW_H;
+  const int COL_DAY = 190, COL_MONTH = 310;
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(DIM, BG);
   M5.Display.setTextDatum(top_right);
-  M5.Display.drawString("today", 150, y0);
-  M5.Display.drawString("week", 230, y0);
-  M5.Display.drawString("month", 310, y0);
+  M5.Display.drawString("today", COL_DAY, y0);
+  M5.Display.drawString("month", COL_MONTH, y0);
   M5.Display.setTextDatum(top_left);
 
-  float td = 0, tw = 0, tm = 0;
+  float td = 0, tm = 0;
   int y = SPEND_Y0;
   M5.Display.setTextSize(2);
   for (int i = 0; i < p.spendCount; i++) {
@@ -192,11 +194,10 @@ static void drawOverview(const Payload& p) {
     M5.Display.setTextColor(FG, BG);
     M5.Display.drawString(s.vendor.c_str(), 8, y);
     M5.Display.setTextDatum(top_right);
-    M5.Display.drawString(usd(s.day).c_str(), 150, y);
-    M5.Display.drawString(usd(s.week).c_str(), 230, y);
-    M5.Display.drawString(usd(s.month).c_str(), 310, y);
+    M5.Display.drawString(usd(s.day).c_str(), COL_DAY, y);
+    M5.Display.drawString(usd(s.month).c_str(), COL_MONTH, y);
     M5.Display.setTextDatum(top_left);
-    td += s.day; tw += s.week; tm += s.month;
+    td += s.day; tm += s.month;
     y += rowH;
   }
   if (p.spendCount == 0) {
@@ -209,9 +210,8 @@ static void drawOverview(const Payload& p) {
   M5.Display.setTextColor(DIM, BG);
   M5.Display.drawString("total", 8, y);
   M5.Display.setTextDatum(top_right);
-  M5.Display.drawString(usd(td).c_str(), 150, y);
-  M5.Display.drawString(usd(tw).c_str(), 230, y);
-  M5.Display.drawString(usd(tm).c_str(), 310, y);
+  M5.Display.drawString(usd(td).c_str(), COL_DAY, y);
+  M5.Display.drawString(usd(tm).c_str(), COL_MONTH, y);
   M5.Display.setTextDatum(top_left);
 
   // Usage strip: one line, wraps to a second if needed.

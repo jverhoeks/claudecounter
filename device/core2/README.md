@@ -35,8 +35,8 @@ Three screens, switched with the three touch buttons under the display
 - Header: title, UTC clock, Wi-Fi bars. "stale" and a dimmed backlight
   when the payload is older than 10 minutes; "offline Nm" when the last
   fetch failed. A tab strip shows which screen is active.
-- Overview (left button): spend table per vendor with today, this ISO
-  week and this month, plus a total row, and a usage strip with each
+- Overview (left button): spend table per vendor with today and this
+  month, plus a total row, and a usage strip with each
   reported window as `vendor window pct`.
 - Models (middle button): models by month spend with today and month
   columns. Tap a vendor's row on Overview to see only that vendor's

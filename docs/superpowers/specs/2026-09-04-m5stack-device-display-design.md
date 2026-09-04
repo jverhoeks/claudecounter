@@ -220,8 +220,9 @@ Behaviour:
   underlined in a small tab strip at the bottom of the header. The
   device starts on Overview and does not persist the choice across
   reboots.
-  - **Overview** (BtnA): spend table with columns today / week / month
-    per vendor plus a total row; usage strip with `vendor window pct`
+  - **Overview** (BtnA): spend table with columns today / month per
+    vendor plus a total row (week stays in the payload but three
+    size-2 columns overlap on 320 px); usage strip with `vendor window pct`
     items.
   - **Models** (BtnB): `models` rows as `model  today  month`, model
     names shortened to fit (vendor prefix dropped, truncated at 14
