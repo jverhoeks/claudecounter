@@ -538,6 +538,18 @@ and by-project tables, and a live tail of recent events.
 
 → Full menu bar app docs: **[`macapp/README.md`](./macapp/README.md)**
 
+## 🖥️ Desk display (M5Stack Core2)
+
+The menu bar app can publish its spend and usage to a Cloudflare Worker,
+and an M5Stack Core2 for AWS shows them on your desk with an LED alarm
+when a session's context window runs hot. Three screens (overview,
+per-model spend, usage bars) switch with the touch buttons; tapping a
+vendor row opens that vendor's models.
+
+- Worker: `cloudflare/README.md`
+- Firmware: `device/core2/README.md`
+- Mac app: gear menu → Device display…
+
 ## Quick start
 
 ```bash
@@ -741,8 +753,11 @@ macapp/                       ← Swift menu bar app (ClaudeCounterBar.app)
                                 conformance against the Go fixtures
   scripts/build-app.sh          assemble `.app` from the SPM exe
 
-Makefile                      ← drives both: `make build` (TUI),
-                                `make macapp`, `make test-all`, etc.
+cloudflare/                   ← Worker + KV storing the desk-display payload
+device/core2/                 ← Arduino firmware for the M5Stack Core2 for AWS
+
+Makefile                      ← drives all: `make build` (TUI),
+                                `make macapp`, `make device-flash`, etc.
 docs/superpowers/             ← design specs and implementation plans
 ```
 
