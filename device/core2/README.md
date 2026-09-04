@@ -29,8 +29,12 @@ never goes on the device.
 
 ## What it shows
 
-Three screens, switched with the three touch buttons under the display
-(left, middle, right). The header and the context row are on all three.
+Three screens. Switch with the three touch buttons under the display
+(left, middle, right), or just turn the device: upright landscape shows
+Overview, standing on one side shows Models, on the other side Usage.
+The display rotates to stay upright. The header and the context row are
+on all three screens. If a side shows upside down on your unit, edit
+`ORIENT_MAP` at the top of `core2.ino`.
 
 - Header: title, UTC clock, Wi-Fi bars. "stale" and a dimmed backlight
   when the payload is older than 10 minutes; "offline Nm" when the last

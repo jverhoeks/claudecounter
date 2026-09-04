@@ -8,6 +8,7 @@
 #include "net.h"
 #include "render.h"
 #include "alarm.h"
+#include "orient.h"
 
 static const uint32_t POLL_MS = 30000;
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -26,6 +27,32 @@ static Screen screen = Screen::Overview;
 static Screen drawnScreen = Screen::Overview;
 static String vendorFilter;        // Models screen filter, "" = all
 static String drawnVendorFilter;
+static uint32_t lastOrientLogMs = 0;
+static uint32_t lastWifiSampleMs = 0;
+static const uint32_t WIFI_SAMPLE_MS = 10000;   // RSSI jitters; don't redraw on every wobble
+
+// Orientation → (display rotation, screen). Rotation values follow
+// M5GFX: 1 is the Core2's normal landscape. If a side shows upside down
+// on your unit, change its rotation here (0 <-> 2, 1 <-> 3).
+struct OrientMap { Orient o; int rotation; Screen screen; };
+static const OrientMap ORIENT_MAP[] = {
+  { Orient::ButtonsDown,  1, Screen::Overview },
+  { Orient::ButtonsUp,    3, Screen::Overview },
+  { Orient::ButtonsRight, 0, Screen::Models },
+  { Orient::ButtonsLeft,  2, Screen::Usage },
+};
+
+static void applyOrientation(Orient o) {
+  for (const OrientMap& m : ORIENT_MAP) {
+    if (m.o != o) continue;
+    M5.Display.setRotation(m.rotation);
+    screen = m.screen;
+    vendorFilter = "";
+    bodyChanged = true;   // canvas size changed: full redraw
+    Serial.printf("orient %s -> rotation %d\n", orientName(o), m.rotation);
+    return;
+  }
+}
 
 static void connectWifiBlocking() {
   while (!wifiConnect(WIFI_TIMEOUT_MS)) {
@@ -92,6 +119,16 @@ void loop() {
   }
   bool touched = screenTap || M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
 
+  // Physical rotation switches screens too; buttons and taps keep
+  // working until the next rotation.
+  Orient o = orientPoll();
+  if (o != Orient::Unknown) applyOrientation(o);
+  if (millis() - lastOrientLogMs > 1000) {
+    lastOrientLogMs = millis();
+    float ax, ay, az; orientRaw(ax, ay, az);
+    Serial.printf("accel x=%.2f y=%.2f z=%.2f rot=%d screen=%d\n", ax, ay, az, M5.Display.getRotation(), (int)screen);
+  }
+
   if (!wifiUp()) { connectWifiBlocking(); lastPollMs = millis() - POLL_MS; }
 
   if (millis() - lastPollMs >= POLL_MS) { lastPollMs = millis(); poll(); }
@@ -99,7 +136,10 @@ void loop() {
   // Header state that changes without a new body.
   time_t now = time(nullptr);
   if (clockValid()) { struct tm t; gmtime_r(&now, &t); header.hour = t.tm_hour; header.minute = t.tm_min; }
-  header.wifiBars = wifiBars();
+  if (millis() - lastWifiSampleMs >= WIFI_SAMPLE_MS || lastWifiSampleMs == 0) {
+    lastWifiSampleMs = millis();
+    header.wifiBars = wifiBars();
+  }
   header.stale = havePayload && payload.at > 0 && clockValid() && (now - payload.at) > STALE_AFTER_S;
   renderSetDim(header.stale);
 

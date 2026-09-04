@@ -215,7 +215,15 @@ Behaviour:
 - Staleness: if `at` is more than 10 minutes old, header shows "stale"
   and the backlight drops to 30 %. Restores on a fresh `at`.
 - Three screens, switched with the Core2's three touch buttons below
-  the display (BtnA left, BtnB middle, BtnC right). The header and the
+  the display (BtnA left, BtnB middle, BtnC right) or by turning the
+  device: the accelerometer picks the orientation (hysteresis 0.75 g
+  enter / 0.45 g leave, 800 ms hold; lying flat changes nothing) and
+  the display rotates to stay upright. Upright landscape shows
+  Overview, standing on the side with the buttons to the right shows
+  Models, buttons to the left shows Usage, inverted landscape shows
+  Overview. Every frame is drawn to an off-screen canvas and pushed
+  in one blit; Wi-Fi bars are sampled every 10 s so RSSI jitter does
+  not force redraws. The header and the
   context row are common to all three; the active screen's name is
   underlined in a small tab strip at the bottom of the header. The
   device starts on Overview and does not persist the choice across
