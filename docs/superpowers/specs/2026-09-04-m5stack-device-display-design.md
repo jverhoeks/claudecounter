@@ -77,8 +77,8 @@ Rules:
 - `models` is every `SeriesKey` in `Totals.month` with positive month
   spend, sorted by month spend descending then by model name, capped at
   20 rows. `day` and `week` are looked up from the matching period maps
-  and are 0 when absent. The device's Models screen shows the first
-  eight.
+  and are 0 when absent. The device keeps all 20 and shows the first
+  eight that match the active vendor filter.
 - `usage` is exactly what `GaugeRows.build` would render for both bands,
   in that order: Claude budget rows from `limits.toml` (only when the
   budget is set), then Codex, then Grok plan gauges. `pct` is an
@@ -223,9 +223,12 @@ Behaviour:
   - **Overview** (BtnA): spend table with columns today / week / month
     per vendor plus a total row; usage strip with `vendor window pct`
     items.
-  - **Models** (BtnB): the first eight `models` rows as
-    `model  today  month`, model names shortened to fit (vendor prefix
-    dropped, truncated at 14 characters).
+  - **Models** (BtnB): `models` rows as `model  today  month`, model
+    names shortened to fit (vendor prefix dropped, truncated at 14
+    characters). Unfiltered when opened with BtnB. Tapping a vendor's
+    row on Overview (a full-width 22 px hit zone) opens it filtered to
+    that vendor, with the vendor named in the tab strip. Tapping
+    anywhere on the Models screen returns to Overview.
   - **Usage** (BtnC): one row per `usage` entry with a 120 px bar and the
     percentage, so the windows are readable from across the room.
 - Colours everywhere: green under `warnPct`, amber from `warnPct`, red

@@ -17,7 +17,7 @@
 - `models` capped at 20 rows, sorted by month spend descending then model name.
 - Publisher PUT timeout 10 s. Device GET every 30 s with 8 s timeout. Device marks payload stale when `at` is older than 10 minutes.
 - KV key `state`, TTL 24 h. PUT body limit 8 KB.
-- Three screens: BtnA Overview, BtnB Models (first 8 model rows), BtnC Usage bars. Starts on Overview, not persisted.
+- Three screens: BtnA Overview, BtnB Models (all rows, 8 fit), BtnC Usage bars. Tapping a vendor row on Overview opens Models filtered to that vendor; tapping Models returns to Overview. Starts on Overview, not persisted.
 - Board FQBN `m5stack:esp32:m5stack_core2`. Libraries: M5Unified, ArduinoJson (7.x), FastLED. LED bar: 10 × SK6812 on GPIO 25.
 - Swift tests run with `cd macapp && swift test`. Never point tests at real config paths under `~/.config/claudecounter` (they can corrupt the installed app's data).
 - Commits are SSH-signed. Before each commit in this session run `export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"`.
@@ -1464,7 +1464,7 @@ struct Payload {
   int version = 0;
   time_t at = 0;               // parsed from "at", UTC
   VendorSpend spend[4]; int spendCount = 0;
-  ModelRow models[8];   int modelCount = 0;   // first 8 of the payload's (already sorted) rows
+  ModelRow models[20];  int modelCount = 0;   // payload order (sorted by month spend)
   UsageRow usage[8];    int usageCount = 0;
   int warnPct = 80;
   bool hasContext = false;
@@ -1520,7 +1520,7 @@ bool parsePayload(const String& body, Payload& out) {
   }
 
   for (JsonObject m : doc["models"].as<JsonArray>()) {
-    if (out.modelCount >= 8) break;
+    if (out.modelCount >= 20) break;
     ModelRow& r = out.models[out.modelCount++];
     r.vendor = (const char*)(m["vendor"] | "");
     r.model = (const char*)(m["model"] | "");
@@ -1701,8 +1701,13 @@ enum class Screen { Overview = 0, Models = 1, Usage = 2 };
 
 void renderInit();
 void renderMessage(const char* line1, const char* line2);   // full-screen status
-void renderPayload(const Payload& p, const HeaderState& h, Screen screen);
+// vendorFilter is empty for "all vendors" (Models screen only).
+void renderPayload(const Payload& p, const HeaderState& h, Screen screen, const String& vendorFilter);
 void renderSetDim(bool dim);                                 // 30 % backlight when true
+
+// Overview spend rows occupy y in [SPEND_Y0, SPEND_Y0 + n*SPEND_ROW_H).
+// Returns the vendor whose row contains y, or "" if none.
+String vendorAtY(const Payload& p, int y);
 ```
 
 ```cpp
@@ -1769,8 +1774,9 @@ static void drawHeader(const HeaderState& h) {
 
 // Tab strip under the header; the active screen is bright and underlined.
 // Positioned over the three touch buttons' columns so the mapping is obvious.
-static void drawTabs(Screen active) {
-  const char* names[3] = {"overview", "models", "usage"};
+static void drawTabs(Screen active, const String& vendorFilter) {
+  String modelsName = vendorFilter.length() ? "models: " + vendorFilter : String("models");
+  const char* names[3] = {"overview", modelsName.c_str(), "usage"};
   const int centers[3] = {64, 160, 256};
   M5.Display.setTextSize(1);
   M5.Display.setTextDatum(top_center);
@@ -1815,7 +1821,7 @@ static void drawContextRow(const Payload& p) {
   }
 }
 
-static void drawModels(const Payload& p) {
+static void drawModels(const Payload& p, const String& vendorFilter) {
   const int y0 = 44, rowH = 18;
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(DIM, BG);
@@ -1824,8 +1830,11 @@ static void drawModels(const Payload& p) {
   M5.Display.drawString("month", 310, y0);
   M5.Display.setTextDatum(top_left);
   int y = y0 + 12;
+  int shown = 0;
   for (int i = 0; i < p.modelCount && y + rowH <= 204; i++) {
     const ModelRow& m = p.models[i];
+    if (vendorFilter.length() && m.vendor != vendorFilter) continue;
+    shown++;
     M5.Display.setTextColor(DIM, BG);
     M5.Display.drawString(m.vendor.c_str(), 8, y);
     M5.Display.setTextColor(FG, BG);
@@ -1836,10 +1845,12 @@ static void drawModels(const Payload& p) {
     M5.Display.setTextDatum(top_left);
     y += rowH;
   }
-  if (p.modelCount == 0) {
+  if (shown == 0) {
     M5.Display.setTextColor(DIM, BG);
     M5.Display.drawString("no model spend this month", 8, y);
   }
+  M5.Display.setTextColor(DIM, BG);
+  M5.Display.drawString("tap to return", 8, 196);
 }
 
 static void drawUsageBars(const Payload& p) {
@@ -1866,9 +1877,18 @@ static void drawUsageBars(const Payload& p) {
   }
 }
 
+static const int SPEND_Y0 = 58, SPEND_ROW_H = 22;
+
+String vendorAtY(const Payload& p, int y) {
+  int idx = (y - SPEND_Y0) / SPEND_ROW_H;
+  if (y < SPEND_Y0 || idx < 0 || idx >= p.spendCount) return "";
+  return p.spend[idx].vendor;
+}
+
 static void drawOverview(const Payload& p) {
   // Spend table: vendor | today | week | month, right-aligned numbers.
-  const int y0 = 44, rowH = 20;
+  // Row geometry is shared with vendorAtY so taps land on the right row.
+  const int y0 = SPEND_Y0 - 14, rowH = SPEND_ROW_H;
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(DIM, BG);
   M5.Display.setTextDatum(top_right);
@@ -1931,14 +1951,14 @@ static void drawOverview(const Payload& p) {
   }
 }
 
-void renderPayload(const Payload& p, const HeaderState& h, Screen screen) {
+void renderPayload(const Payload& p, const HeaderState& h, Screen screen, const String& vendorFilter) {
   M5.Display.startWrite();
   M5.Display.fillScreen(BG);
   drawHeader(h);
-  drawTabs(screen);
+  drawTabs(screen, vendorFilter);
   switch (screen) {
     case Screen::Overview: drawOverview(p); break;
-    case Screen::Models:   drawModels(p); break;
+    case Screen::Models:   drawModels(p, vendorFilter); break;
     case Screen::Usage:    drawUsageBars(p); break;
   }
   drawContextRow(p);
@@ -1976,6 +1996,8 @@ static time_t lastGoodFetch = 0;
 static bool bodyChanged = false;
 static Screen screen = Screen::Overview;
 static Screen drawnScreen = Screen::Overview;
+static String vendorFilter;        // Models screen filter, "" = all
+static String drawnVendorFilter;
 
 static void connectWifiBlocking() {
   while (!wifiConnect(WIFI_TIMEOUT_MS)) {
@@ -2026,11 +2048,21 @@ void loop() {
   M5.update();
   // The three touch buttons under the display switch screens; any touch,
   // including those, also silences the alarm.
-  if (M5.BtnA.wasPressed()) screen = Screen::Overview;
-  if (M5.BtnB.wasPressed()) screen = Screen::Models;
-  if (M5.BtnC.wasPressed()) screen = Screen::Usage;
-  bool touched = (M5.Touch.getCount() > 0 && M5.Touch.getDetail(0).wasPressed()) ||
-                 M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
+  if (M5.BtnA.wasPressed()) { screen = Screen::Overview; }
+  if (M5.BtnB.wasPressed()) { screen = Screen::Models; vendorFilter = ""; }
+  if (M5.BtnC.wasPressed()) { screen = Screen::Usage; }
+  bool screenTap = M5.Touch.getCount() > 0 && M5.Touch.getDetail(0).wasPressed();
+  if (screenTap && havePayload) {
+    auto t = M5.Touch.getDetail(0);
+    if (screen == Screen::Overview) {
+      // Tap a vendor's spend row → that vendor's models.
+      String v = vendorAtY(payload, t.y);
+      if (v.length()) { screen = Screen::Models; vendorFilter = v; }
+    } else if (screen == Screen::Models) {
+      screen = Screen::Overview;
+    }
+  }
+  bool touched = screenTap || M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
 
   if (!wifiUp()) { connectWifiBlocking(); lastPollMs = millis() - POLL_MS; }
 
@@ -2046,10 +2078,11 @@ void loop() {
   bool headerChanged = header.hour != drawnHeader.hour || header.minute != drawnHeader.minute ||
                        header.wifiBars != drawnHeader.wifiBars || header.stale != drawnHeader.stale ||
                        header.offline != drawnHeader.offline || header.offlineMinutes != drawnHeader.offlineMinutes;
-  if (havePayload && (bodyChanged || headerChanged || screen != drawnScreen)) {
-    renderPayload(payload, header, screen);
+  if (havePayload && (bodyChanged || headerChanged || screen != drawnScreen || vendorFilter != drawnVendorFilter)) {
+    renderPayload(payload, header, screen, vendorFilter);
     drawnHeader = header;
     drawnScreen = screen;
+    drawnVendorFilter = vendorFilter;
     bodyChanged = false;
   }
 
@@ -2101,8 +2134,9 @@ Three screens, switched with the three touch buttons under the display
 - Overview (left button): spend table per vendor with today, this ISO
   week and this month, plus a total row, and a usage strip with each
   reported window as `vendor window pct`.
-- Models (middle button): the top eight models by month spend with
-  today and month columns.
+- Models (middle button): models by month spend with today and month
+  columns. Tap a vendor's row on Overview to see only that vendor's
+  models; tap the Models screen to go back.
 - Usage (right button): one bar per reported window.
 - Context row: the active session with the highest context use, with a
   bar and `!` when it is over the warning threshold.
@@ -2156,6 +2190,8 @@ Fill in the real `secrets.h`, then `make device-flash`. Expected on screen withi
 3. Quit the mac app for 11 minutes: header shows "stale", backlight dims. Relaunch: clears.
 4. Press the middle and right buttons: the Models and Usage screens
    appear with the tab strip moving; the left button returns to Overview.
+   Tap the "codex" row on Overview: the Models screen shows only Codex
+   models and the tab reads "models: codex". Tap it again to return.
 5. Trigger a context warning: in the mac app gear menu lower the context warn threshold (or open a long Claude session). The LED bar goes red and one beep sounds. Touch the screen: LEDs off. When the warning clears in the app, the `!` disappears.
 
 If the device is not on hand, complete Step 9 and mark Step 10 as not verified in the final report.
