@@ -18,8 +18,11 @@ The Go TUI does not publish. Only the mac app does.
 - Publishing from the Go TUI.
 - Any on-device configuration UI. Wi-Fi and Worker credentials are
   compiled in.
-- HTTPS certificate pinning on the device. It uses the ESP32 root CA
-  bundle.
+- TLS verification on the device. The ESP32 Arduino core has no
+  built-in root CA bundle reachable from `HTTPClient` without embedding
+  a certificate file, so the firmware connects with `setInsecure()`.
+  The only secret this exposes to a man-in-the-middle on the local
+  Wi-Fi is the read-only token; the README states this.
 - Claude subscription quota. The user is on Enterprise, which has none.
 - Historical charts on the device.
 
@@ -74,9 +77,8 @@ Rules:
 - `models` is every `SeriesKey` in `Totals.month` with positive month
   spend, sorted by month spend descending then by model name, capped at
   20 rows. `day` and `week` are looked up from the matching period maps
-  and are 0 when absent. The device currently uses only `spend`; the
-  per-model rows are there so a later firmware can show them without a
-  mac-side change.
+  and are 0 when absent. The device's Models screen shows the first
+  eight.
 - `usage` is exactly what `GaugeRows.build` would render for both bands,
   in that order: Claude budget rows from `limits.toml` (only when the
   budget is set), then Codex, then Grok plan gauges. `pct` is an
@@ -212,16 +214,27 @@ Behaviour:
   (clock minute, Wi-Fi bars, stale flag) changes.
 - Staleness: if `at` is more than 10 minutes old, header shows "stale"
   and the backlight drops to 30 %. Restores on a fresh `at`.
-- Layout (320×240): header row with title, clock and Wi-Fi bars; spend
-  table with columns today / week / month per vendor plus a total row;
-  usage strip with `vendor window pct` items, coloured green under
-  `warnPct`, amber from `warnPct`, red at 100 or above, grey when
-  stale; bottom row `ctx <session> <bar> <pct>` with a `!` when warn.
-  Text uses the built-in fonts; no custom font files.
+- Three screens, switched with the Core2's three touch buttons below
+  the display (BtnA left, BtnB middle, BtnC right). The header and the
+  context row are common to all three; the active screen's name is
+  underlined in a small tab strip at the bottom of the header. The
+  device starts on Overview and does not persist the choice across
+  reboots.
+  - **Overview** (BtnA): spend table with columns today / week / month
+    per vendor plus a total row; usage strip with `vendor window pct`
+    items.
+  - **Models** (BtnB): the first eight `models` rows as
+    `model  today  month`, model names shortened to fit (vendor prefix
+    dropped, truncated at 14 characters).
+  - **Usage** (BtnC): one row per `usage` entry with a 120 px bar and the
+    percentage, so the windows are readable from across the room.
+- Colours everywhere: green under `warnPct`, amber from `warnPct`, red
+  at 100 or above, grey when stale. Text uses the built-in fonts; no
+  custom font files. Screen size is 320×240.
 - Alarm: on `context.warn` rising edge, set all ten LEDs red and play
   one 200 ms 1 kHz tone. LEDs stay red while warn is true, off when it
-  falls. Any touch clears the LEDs until the next rising edge. Touch
-  does nothing else.
+  falls. Any touch, including a screen-switch button, clears the LEDs
+  until the next rising edge.
 
 ## Error handling summary
 
