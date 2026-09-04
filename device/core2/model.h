@@ -17,8 +17,9 @@ struct Payload {
   String ctxSession; int ctxPct = 0; bool ctxWarn = false;
 };
 
-// Any non-stale usage window at or above USAGE_ALERT_PCT is an alert.
-// Returns the highest such row, or nullptr.
+// A non-stale usage window in [USAGE_ALERT_PCT, 100) is an alert: there
+// is still headroom worth protecting. A spent window (>= 100) is not;
+// the usage strip already shows it red. Returns the highest such row.
 static const int USAGE_ALERT_PCT = 90;
 const UsageRow* usageAlert(const Payload& p);
 
