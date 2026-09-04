@@ -13,6 +13,7 @@ struct PopoverView: View {
     @ObservedObject var state: AppState
     @State private var refreshing: Bool = false
     @State private var showSettings: Bool = false
+    @State private var showDevice: Bool = false
 
     /// User-adjustable popover height, dragged via the grip at the bottom
     /// and persisted so a relaunch keeps the chosen size. Clamped to
@@ -128,6 +129,9 @@ struct PopoverView: View {
                     if showSettings {
                         SourcesEditorView(state: state, isExpanded: $showSettings)
                     }
+                    if showDevice {
+                        DeviceSettingsView(state: state, isExpanded: $showDevice)
+                    }
                     // Both controls drive the by-model list only (the
                     // project table stays on month). The period picker
                     // takes its intrinsic width so the four-segment
@@ -172,7 +176,8 @@ struct PopoverView: View {
             FooterRow(
                 state: state,
                 refreshing: $refreshing,
-                showSettings: $showSettings
+                showSettings: $showSettings,
+                showDevice: $showDevice
             )
 
             // Drag grip: MenuBarExtra windows can't be OS-resized, so we
@@ -1217,6 +1222,7 @@ struct FooterRow: View {
     @ObservedObject var state: AppState
     @Binding var refreshing: Bool
     @Binding var showSettings: Bool
+    @Binding var showDevice: Bool
 
     /// Local mirror of the SMAppService state so the toggle can read it
     /// synchronously. Refreshed every time the menu opens (cheap call,
@@ -1261,6 +1267,7 @@ struct FooterRow: View {
                 ))
                 Divider()
                 Button("Edit sources…") { showSettings = true }
+                Button("Device display…") { showDevice = true }
                 Divider()
                 Button("Refresh pricing from LiteLLM") {
                     Task {
