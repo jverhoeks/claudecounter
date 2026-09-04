@@ -26,6 +26,10 @@ public struct AppSettings: Equatable, Sendable {
     /// A session counts as "active" if its last turn is within this many
     /// minutes. Default 30.
     public var activeWindowMinutes: Int
+    /// Cloudflare Worker URL the desk device payload is PUT to, e.g.
+    /// `https://claudecounter.<account>.workers.dev/state`. Empty means
+    /// publishing is off. Default: empty.
+    public var deviceURL: String
 
     public static let defaults = AppSettings(
         dockIconEnabled: true,
@@ -33,7 +37,8 @@ public struct AppSettings: Equatable, Sendable {
         turnWarnCount: 150,
         contextWarnPct: 0.80,
         cacheWarnUSD: 2.00,
-        activeWindowMinutes: 30
+        activeWindowMinutes: 30,
+        deviceURL: ""
     )
 
     public init(dockIconEnabled: Bool,
@@ -41,13 +46,15 @@ public struct AppSettings: Equatable, Sendable {
                 turnWarnCount: Int = 150,
                 contextWarnPct: Double = 0.80,
                 cacheWarnUSD: Double = 2.00,
-                activeWindowMinutes: Int = 30) {
+                activeWindowMinutes: Int = 30,
+                deviceURL: String = "") {
         self.dockIconEnabled = dockIconEnabled
         self.notificationsEnabled = notificationsEnabled
         self.turnWarnCount = turnWarnCount
         self.contextWarnPct = contextWarnPct
         self.cacheWarnUSD = cacheWarnUSD
         self.activeWindowMinutes = activeWindowMinutes
+        self.deviceURL = deviceURL
     }
 
     /// The tracker thresholds implied by these settings.
@@ -79,6 +86,7 @@ public final class UserDefaultsSettingsStore: SettingsStore, @unchecked Sendable
     static let contextWarnKey = "ClaudeCounterBar.AppSettings.contextWarnPct"
     static let cacheWarnKey = "ClaudeCounterBar.AppSettings.cacheWarnUSD"
     static let activeWindowKey = "ClaudeCounterBar.AppSettings.activeWindowMinutes"
+    static let deviceURLKey = "ClaudeCounterBar.AppSettings.deviceURL"
 
     private let defaults: UserDefaults
 
@@ -99,7 +107,8 @@ public final class UserDefaultsSettingsStore: SettingsStore, @unchecked Sendable
             turnWarnCount: (defaults.object(forKey: Self.turnWarnKey) as? Int) ?? d.turnWarnCount,
             contextWarnPct: (defaults.object(forKey: Self.contextWarnKey) as? Double) ?? d.contextWarnPct,
             cacheWarnUSD: (defaults.object(forKey: Self.cacheWarnKey) as? Double) ?? d.cacheWarnUSD,
-            activeWindowMinutes: (defaults.object(forKey: Self.activeWindowKey) as? Int) ?? d.activeWindowMinutes
+            activeWindowMinutes: (defaults.object(forKey: Self.activeWindowKey) as? Int) ?? d.activeWindowMinutes,
+            deviceURL: (defaults.object(forKey: Self.deviceURLKey) as? String) ?? d.deviceURL
         )
     }
 
@@ -110,6 +119,7 @@ public final class UserDefaultsSettingsStore: SettingsStore, @unchecked Sendable
         defaults.set(settings.contextWarnPct, forKey: Self.contextWarnKey)
         defaults.set(settings.cacheWarnUSD, forKey: Self.cacheWarnKey)
         defaults.set(settings.activeWindowMinutes, forKey: Self.activeWindowKey)
+        defaults.set(settings.deviceURL, forKey: Self.deviceURLKey)
     }
 }
 

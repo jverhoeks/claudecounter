@@ -71,3 +71,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(store2.load().dockIconEnabled)
     }
 }
+
+// MARK: - deviceURL
+
+final class SettingsDeviceURLTests: XCTestCase {
+
+    func test_appSettings_defaults_deviceURLEmpty() {
+        XCTAssertEqual(AppSettings.defaults.deviceURL, "", "publishing must be off until the user sets a URL")
+    }
+
+    func test_userDefaultsStore_deviceURLRoundTrip() {
+        let suite = "SettingsTests-\(UUID().uuidString)"
+        let ud = UserDefaults(suiteName: suite)!
+        defer { ud.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsSettingsStore(defaults: ud)
+        var s = AppSettings.defaults
+        s.deviceURL = "https://x.workers.dev/state"
+        store.save(s)
+        XCTAssertEqual(store.load().deviceURL, "https://x.workers.dev/state")
+    }
+}
