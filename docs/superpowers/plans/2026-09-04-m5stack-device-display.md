@@ -42,7 +42,7 @@
 | `macapp/Tests/ClaudeCounterCoreTests/AppStateTests.swift` | Gains publish wiring tests |
 | `cloudflare/wrangler.toml`, `cloudflare/src/index.ts`, `cloudflare/package.json`, `cloudflare/tsconfig.json`, `cloudflare/README.md` | Worker |
 | `device/core2/core2.ino` | Setup and loop |
-| `device/core2/secrets.example.h` | Template for the gitignored `secrets.h` |
+| `device/core2/secrets.h.example` | Template for the gitignored `secrets.h` |
 | `device/core2/net.h`, `device/core2/net.cpp` | Wi-Fi, NTP, HTTPS GET |
 | `device/core2/model.h`, `device/core2/model.cpp` | Parsed payload struct and JSON parse |
 | `device/core2/render.h`, `device/core2/render.cpp` | Screen drawing |
@@ -1383,7 +1383,7 @@ git commit -m "feat(cloudflare): Worker storing device payload in KV behind bear
 ### Task 7: Firmware
 
 **Files:**
-- Create: `device/core2/core2.ino`, `device/core2/secrets.example.h`, `device/core2/net.h`, `device/core2/net.cpp`, `device/core2/model.h`, `device/core2/model.cpp`, `device/core2/render.h`, `device/core2/render.cpp`, `device/core2/alarm.h`, `device/core2/alarm.cpp`, `device/core2/README.md`
+- Create: `device/core2/core2.ino`, `device/core2/secrets.h.example`, `device/core2/net.h`, `device/core2/net.cpp`, `device/core2/model.h`, `device/core2/model.cpp`, `device/core2/render.h`, `device/core2/render.cpp`, `device/core2/alarm.h`, `device/core2/alarm.cpp`, `device/core2/README.md`
 - Modify: `Makefile`, `.gitignore`
 
 **Interfaces:**
@@ -1420,7 +1420,7 @@ device-deps: ## Install arduino-cli (brew), the M5Stack core and the sketch's li
 
 .PHONY: device-build
 device-build: ## Compile the Core2 sketch (needs device/core2/secrets.h)
-	@test -f $(DEVICE_DIR)/secrets.h || { echo "copy $(DEVICE_DIR)/secrets.example.h to secrets.h and fill it in"; exit 1; }
+	@test -f $(DEVICE_DIR)/secrets.h || { echo "copy $(DEVICE_DIR)/secrets.h.example to secrets.h and fill it in"; exit 1; }
 	arduino-cli compile --fqbn $(DEVICE_FQBN) --output-dir $(DEVICE_DIR)/build $(DEVICE_DIR)
 
 .PHONY: device-flash
@@ -1436,7 +1436,7 @@ device-monitor: ## Serial monitor at 115200
 - [ ] **Step 2: secrets template**
 
 ```cpp
-// device/core2/secrets.example.h
+// device/core2/secrets.h.example
 // Copy to secrets.h (gitignored) and fill in.
 #pragma once
 
@@ -2101,7 +2101,7 @@ Shows the mac app's spend and usage on an M5Stack Core2 for AWS. Reads
 
 ## Configure
 
-    cp secrets.example.h secrets.h
+    cp secrets.h.example secrets.h
     # edit: WIFI_SSID, WIFI_PASS, WORKER_URL (with /state), READ_TOKEN
 
 `secrets.h` is gitignored. Use the READ token only; the write token
@@ -2170,7 +2170,7 @@ token, which grants nothing but reading the same JSON. Rotate it with
 Run:
 
 ```bash
-cp device/core2/secrets.example.h device/core2/secrets.h
+cp device/core2/secrets.h.example device/core2/secrets.h
 make device-deps
 make device-build 2>&1 | tail -15
 ```

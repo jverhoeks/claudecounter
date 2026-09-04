@@ -182,7 +182,7 @@ sees 429 and reports it in `lastError`.
 
 ## 4. Firmware (`device/core2/`)
 
-Files: `core2.ino`, `secrets.example.h`, `render.h/.cpp`, `net.h/.cpp`,
+Files: `core2.ino`, `secrets.h.example`, `render.h/.cpp`, `net.h/.cpp`,
 `alarm.h/.cpp`, `README.md`. `secrets.h` is gitignored.
 
 Libraries, pinned in the README and in a `Makefile` target that drives
@@ -194,7 +194,7 @@ work is called done:
 
 1. **Arduino IDE 2.x**: open the `core2` folder, install the three
    libraries from Library Manager and the M5Stack board package, copy
-   `secrets.example.h` to `secrets.h`, fill it in, Upload.
+   `secrets.h.example` to `secrets.h`, fill it in, Upload.
 2. **`make device-build` / `make device-flash`** from the repo root:
    installs `arduino-cli` via Homebrew if absent, installs the core and
    libraries, compiles, flashes to the first detected serial port.

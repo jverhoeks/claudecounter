@@ -1,18 +1,44 @@
 #include "net.h"
 #include "secrets.h"
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <time.h>
 
+struct WifiCred { const char* ssid; const char* pass; };
+// Accept the older single-network secrets.h too.
+#ifndef WIFI_NETWORKS
+#define WIFI_NETWORKS { WIFI_SSID, WIFI_PASS }
+#endif
+static const WifiCred NETWORKS[] = { WIFI_NETWORKS };
+static const int NETWORK_COUNT = sizeof(NETWORKS) / sizeof(NETWORKS[0]);
+
+static WiFiMulti multi;
+static bool multiReady = false;
+
 bool wifiConnect(uint32_t timeoutMs) {
   if (WiFi.status() == WL_CONNECTED) return true;
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) delay(250);
-  return WiFi.status() == WL_CONNECTED;
+  if (!multiReady) {
+    WiFi.mode(WIFI_STA);
+    for (int i = 0; i < NETWORK_COUNT; i++) multi.addAP(NETWORKS[i].ssid, NETWORKS[i].pass);
+    multiReady = true;
+  }
+  // run() scans, picks the strongest configured network and connects,
+  // blocking up to timeoutMs.
+  return multi.run(timeoutMs) == WL_CONNECTED;
 }
+
+String wifiNetworkList() {
+  String s;
+  for (int i = 0; i < NETWORK_COUNT; i++) {
+    if (i) s += ", ";
+    s += NETWORKS[i].ssid;
+  }
+  return s;
+}
+
+String wifiCurrentSsid() { return WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String(); }
 
 bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
 

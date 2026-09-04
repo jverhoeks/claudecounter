@@ -56,7 +56,7 @@ static void applyOrientation(Orient o) {
 
 static void connectWifiBlocking() {
   while (!wifiConnect(WIFI_TIMEOUT_MS)) {
-    renderMessage("connecting", WIFI_SSID);
+    renderMessage("connecting", wifiNetworkList().c_str());
     delay(WIFI_RETRY_MS);
   }
 }
@@ -95,7 +95,7 @@ void setup() {
   alarmInit();
   connectWifiBlocking();
   ntpStart();
-  renderMessage("connected", "fetching...");
+  renderMessage("connected", (wifiCurrentSsid() + ", fetching...").c_str());
   lastPollMs = millis() - POLL_MS;  // poll immediately
 }
 

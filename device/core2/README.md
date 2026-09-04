@@ -5,8 +5,12 @@ Shows the mac app's spend and usage on an M5Stack Core2 for AWS. Reads
 
 ## Configure
 
-    cp secrets.example.h secrets.h
-    # edit: WIFI_SSID, WIFI_PASS, WORKER_URL (with /state), READ_TOKEN
+    cp secrets.h.example secrets.h
+    # edit: WIFI_NETWORKS (one or more ssid/password pairs, 2.4 GHz only),
+    #       WORKER_URL (with /state), READ_TOKEN
+
+The device connects to whichever listed network is in range with the
+strongest signal, and reconnects to any of them if the link drops.
 
 `secrets.h` is gitignored. Use the READ token only; the write token
 never goes on the device.

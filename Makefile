@@ -140,7 +140,7 @@ device-deps: ## Install arduino-cli (brew), the M5Stack core and the sketch's li
 
 .PHONY: device-build
 device-build: ## Compile the Core2 sketch (needs device/core2/secrets.h)
-	@test -f $(DEVICE_DIR)/secrets.h || { echo "copy $(DEVICE_DIR)/secrets.example.h to secrets.h and fill it in"; exit 1; }
+	@test -f $(DEVICE_DIR)/secrets.h || { echo "copy $(DEVICE_DIR)/secrets.h.example to secrets.h and fill it in"; exit 1; }
 	arduino-cli compile --fqbn $(DEVICE_FQBN) --output-dir $(DEVICE_DIR)/build $(DEVICE_DIR)
 
 .PHONY: device-flash
