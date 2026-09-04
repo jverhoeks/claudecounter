@@ -51,10 +51,14 @@ int wifiBars() {
   return 1;
 }
 
+#ifndef TIME_ZONE
+#define TIME_ZONE "CET-1CEST,M3.5.0,M10.5.0/3"
+#endif
+
 void ntpStart() {
-  // UTC everywhere on the device; parseIso8601Utc relies on mktime
-  // being UTC. The header clock is rendered in UTC too — see README.
-  configTzTime("UTC0", "pool.ntp.org", "time.cloudflare.com");
+  // Local time for the header clock; payload timestamps are parsed as
+  // UTC independently (see parseIso8601Utc), so TZ never affects them.
+  configTzTime(TIME_ZONE, "pool.ntp.org", "time.cloudflare.com");
 }
 
 bool clockValid() { return time(nullptr) > 1700000000; }

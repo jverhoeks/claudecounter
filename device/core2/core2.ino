@@ -135,7 +135,7 @@ void loop() {
 
   // Header state that changes without a new body.
   time_t now = time(nullptr);
-  if (clockValid()) { struct tm t; gmtime_r(&now, &t); header.hour = t.tm_hour; header.minute = t.tm_min; }
+  if (clockValid()) { struct tm t; localtime_r(&now, &t); header.hour = t.tm_hour; header.minute = t.tm_min; }
   if (millis() - lastWifiSampleMs >= WIFI_SAMPLE_MS || lastWifiSampleMs == 0) {
     lastWifiSampleMs = millis();
     header.wifiBars = wifiBars();

@@ -40,7 +40,7 @@ The display rotates to stay upright. The header and the context row are
 on all three screens. If a side shows upside down on your unit, edit
 `ORIENT_MAP` at the top of `core2.ino`.
 
-- Header: title, UTC clock, Wi-Fi bars. "stale" and a dimmed backlight
+- Header: title, local clock (`TIME_ZONE` in secrets.h, default CET/CEST), Wi-Fi bars. "stale" and a dimmed backlight
   when the payload is older than 10 minutes; "offline Nm" when the last
   fetch failed. A tab strip shows which screen is active.
 - Overview (left button): spend table per vendor with today and this
