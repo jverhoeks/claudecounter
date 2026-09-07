@@ -1,14 +1,13 @@
 # claudecounter Worker
 
-Stores the mac app's device payload in KV and serves it to the M5Stack.
+Stores the mac app's device payload in a Durable Object and serves it to
+the M5Stack.
 
 ## One-time setup
 
     cd cloudflare
     npm install
     npx wrangler login
-    npx wrangler kv namespace create STATE
-    # paste the printed id into wrangler.toml under [[kv_namespaces]]
     openssl rand -hex 24   # write token
     openssl rand -hex 24   # read token
     npx wrangler secret put WRITE_TOKEN
@@ -35,12 +34,14 @@ Stores the mac app's device payload in KV and serves it to the M5Stack.
 
 ## Quota
 
-Free-tier KV allows 1 000 writes per day. The mac app only PUTs when the
-payload's bytes changed, which is well under that in normal use. If the
-Worker returns 429 the app shows `Device publish failed: HTTP 429` in
-the popover footer. Reads are one per 30 s from the device, about 2 900
-per day, under the 100 000 free reads.
+The payload lives in one SQLite-backed Durable Object (the kind the
+Workers free plan includes; no KV namespace, no card). The free plan
+allows 100 000 Durable Object requests a day. The mac app PUTs once per
+60 s tick when the payload's bytes changed, the device GETs every 30 s:
+about 4 300 requests a day at the very most, so the interval is not
+quota-bound. If the Worker returns 429 the app shows `Device publish
+failed: HTTP 429` in the popover footer.
 
-The stored value expires 24 h after the last PUT, so a stopped mac app
-eventually yields 404 and the device shows "no data" rather than a
-day-old number forever.
+The stored value expires 24 h after the last PUT (an alarm clears
+storage), so a stopped mac app eventually yields 404 and the device
+shows "no data" rather than a day-old number forever.

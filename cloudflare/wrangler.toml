@@ -2,8 +2,12 @@ name = "claudecounter"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
-# Created with: npx wrangler kv namespace create STATE
-# Paste the printed id below.
-[[kv_namespaces]]
-binding = "STATE"
-id = "0dfb65d9d0eb426893144275e8eecfcb"
+# A single SQLite-backed Durable Object holds the latest payload.
+# SQLite-backed classes are the kind available on the Workers free plan.
+[[durable_objects.bindings]]
+name = "STATE"
+class_name = "State"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["State"]
