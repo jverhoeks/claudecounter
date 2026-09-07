@@ -17,3 +17,11 @@ DerivedData/
 
 # git worktrees
 /.worktrees/
+
+# cloudflare worker
+cloudflare/node_modules/
+cloudflare/.wrangler/
+
+# device firmware
+device/core2/secrets.h
+device/core2/build/

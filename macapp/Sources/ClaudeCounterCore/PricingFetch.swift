@@ -100,13 +100,26 @@ public enum PricingFetcher {
     }
 }
 
-/// Test seam over URLSession.
+/// Test seam over URLSession. The request-based method has a default
+/// so the existing GET-only mocks keep compiling; `DevicePublisher`
+/// needs it for PUT with headers and body.
 public protocol URLSessionProtocol: Sendable {
     func dataReturning(from url: URL) async throws -> (Data, URLResponse)
+    func dataReturning(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+public extension URLSessionProtocol {
+    func dataReturning(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let url = request.url else { throw URLError(.badURL) }
+        return try await dataReturning(from: url)
+    }
 }
 
 extension URLSession: URLSessionProtocol {
     public func dataReturning(from url: URL) async throws -> (Data, URLResponse) {
         try await self.data(from: url)
+    }
+    public func dataReturning(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await self.data(for: request)
     }
 }

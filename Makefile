@@ -123,6 +123,35 @@ macapp-publish: ## Tag macapp-VERSION + push (CI builds + creates GitHub Release
 	@echo "Tag pushed. Watch the release build at:"
 	@echo "  https://github.com/jverhoeks/claudecounter/actions"
 
+# ────────────────────── M5Stack Core2 firmware (Arduino) ──────────────────────
+
+DEVICE_DIR  := device/core2
+DEVICE_FQBN := m5stack:esp32:m5stack_core2
+M5_INDEX    := https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
+DEVICE_PORT ?= $(shell ls /dev/cu.usbserial-* /dev/cu.wchusbserial* 2>/dev/null | head -1)
+
+.PHONY: device-deps
+device-deps: ## Install arduino-cli (brew), the M5Stack core and the sketch's libraries
+	@command -v arduino-cli >/dev/null || brew install arduino-cli
+	arduino-cli config init --overwrite --additional-urls $(M5_INDEX)
+	arduino-cli core update-index
+	arduino-cli core install m5stack:esp32
+	arduino-cli lib install "M5Unified" "ArduinoJson" "FastLED"
+
+.PHONY: device-build
+device-build: ## Compile the Core2 sketch (needs device/core2/secrets.h)
+	@test -f $(DEVICE_DIR)/secrets.h || { echo "copy $(DEVICE_DIR)/secrets.h.example to secrets.h and fill it in"; exit 1; }
+	arduino-cli compile --fqbn $(DEVICE_FQBN) --output-dir $(DEVICE_DIR)/build $(DEVICE_DIR)
+
+.PHONY: device-flash
+device-flash: device-build ## Compile and upload to the first USB serial port (override with DEVICE_PORT=)
+	@test -n "$(DEVICE_PORT)" || { echo "no serial port found; plug in the Core2 or set DEVICE_PORT="; exit 1; }
+	arduino-cli upload --fqbn $(DEVICE_FQBN) --port $(DEVICE_PORT) --input-dir $(DEVICE_DIR)/build
+
+.PHONY: device-monitor
+device-monitor: ## Serial monitor at 115200
+	arduino-cli monitor --port $(DEVICE_PORT) --config baudrate=115200
+
 # ────────────────────── meta ──────────────────────
 
 .PHONY: test-all
