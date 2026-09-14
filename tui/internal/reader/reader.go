@@ -62,15 +62,63 @@ type rawLine struct {
 	Cwd       string    `json:"cwd"`
 	RequestID string    `json:"requestId"`
 	Message   *struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
-		Usage *struct {
-			InputTokens              uint64 `json:"input_tokens"`
-			OutputTokens             uint64 `json:"output_tokens"`
-			CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     uint64 `json:"cache_read_input_tokens"`
-		} `json:"usage"`
+		ID    string    `json:"id"`
+		Model string    `json:"model"`
+		Usage *rawUsage `json:"usage"`
 	} `json:"message"`
+}
+
+// rawUsage mirrors one usage block. The same shape appears at
+// message.usage and, since Claude Code began logging multi-iteration
+// turns, once per entry in message.usage.iterations.
+type rawUsage struct {
+	InputTokens              uint64 `json:"input_tokens"`
+	OutputTokens             uint64 `json:"output_tokens"`
+	CacheCreationInputTokens uint64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     uint64 `json:"cache_read_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral1hInputTokens uint64 `json:"ephemeral_1h_input_tokens"`
+		Ephemeral5mInputTokens uint64 `json:"ephemeral_5m_input_tokens"`
+	} `json:"cache_creation"`
+	// Iterations is the per-API-call breakdown of a turn that took more
+	// than one round trip. It is absent on single-call turns and on every
+	// record written before Claude Code started emitting it.
+	//
+	// The enclosing block's cache_creation_input_tokens and
+	// cache_read_input_tokens already equal the sum over iterations, but
+	// input_tokens and output_tokens do NOT — they omit whole iterations.
+	// A verified example: top-level in=4/out=691 against iterations of
+	// (2, 357), (88762, 1249), (2, 334) — the middle call's 88,762 input
+	// tokens are invisible at the top level. Summing only those two fields
+	// is therefore both necessary and sufficient; summing the cache fields
+	// as well would double-count.
+	Iterations []struct {
+		InputTokens  uint64 `json:"input_tokens"`
+		OutputTokens uint64 `json:"output_tokens"`
+	} `json:"iterations"`
+}
+
+// toUsage flattens a raw usage block into billable token counts.
+func (u *rawUsage) toUsage() pricing.Usage {
+	in, out := u.InputTokens, u.OutputTokens
+	if len(u.Iterations) > 0 {
+		in, out = 0, 0
+		for _, it := range u.Iterations {
+			in += it.InputTokens
+			out += it.OutputTokens
+		}
+	}
+	var cc1h uint64
+	if u.CacheCreation != nil {
+		cc1h = u.CacheCreation.Ephemeral1hInputTokens
+	}
+	return pricing.Usage{
+		InputTokens:                in,
+		OutputTokens:               out,
+		CacheCreationInputTokens:   u.CacheCreationInputTokens,
+		CacheReadInputTokens:       u.CacheReadInputTokens,
+		CacheCreation1hInputTokens: cc1h,
+	}
 }
 
 // parseLine returns (event, ok, err). ok=false means the line has no
@@ -93,7 +141,6 @@ func parseLine(line []byte) (Event, bool, error) {
 		// All-zero bookkeeping events; inflate "unknown" otherwise.
 		return Event{}, false, nil
 	}
-	u := r.Message.Usage
 	return Event{
 		Timestamp: r.Timestamp,
 		SessionID: r.SessionID,
@@ -101,12 +148,7 @@ func parseLine(line []byte) (Event, bool, error) {
 		Model:     r.Message.Model,
 		MessageID: r.Message.ID,
 		RequestID: r.RequestID,
-		Usage: pricing.Usage{
-			InputTokens:              u.InputTokens,
-			OutputTokens:             u.OutputTokens,
-			CacheCreationInputTokens: u.CacheCreationInputTokens,
-			CacheReadInputTokens:     u.CacheReadInputTokens,
-		},
+		Usage:     r.Message.Usage.toUsage(),
 	}, true, nil
 }
 

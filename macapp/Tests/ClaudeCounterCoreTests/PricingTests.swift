@@ -267,4 +267,40 @@ final class PricingTests: XCTestCase {
         ])
         XCTAssertTrue(bare.isUsableAsFullTable, "bare tier names count as Anthropic rows")
     }
+
+    // Mirrors TestCost_OneHourCacheWriteBillsAtTwiceInput in the Go
+    // implementation. cacheCreate1h is a SUBSET of cacheCreate, so the
+    // token total is unchanged and only the rate split moves.
+    func test_cost_oneHourCacheWrite_billsAtTwiceInput() {
+        let p = ModelPrice(inputPerMTok: 5, outputPerMTok: 25,
+                           cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.50)
+        let t = PricingTable(models: ["m": p])
+
+        let all5m = t.cost(model: "m", usage: Usage(cacheCreate: 1_000_000))
+        let all1h = t.cost(model: "m", usage: Usage(cacheCreate: 1_000_000, cacheCreate1h: 1_000_000))
+        let mixed = t.cost(model: "m", usage: Usage(cacheCreate: 1_000_000, cacheCreate1h: 400_000))
+
+        XCTAssertEqual(all5m, 6.25, accuracy: 1e-9)
+        XCTAssertEqual(all1h, 10.0, accuracy: 1e-9, "1h writes bill at 2x the $5 input rate")
+        XCTAssertEqual(mixed, 0.6 * 6.25 + 0.4 * 10.0, accuracy: 1e-9)
+    }
+
+    func test_cost_explicitOneHourRate_overridesTwiceInputFallback() {
+        let t = PricingTable(models: ["m": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 0,
+            cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0,
+            cacheCreation1hPerMTok: 30)])
+        XCTAssertEqual(t.cost(model: "m", usage: Usage(cacheCreate: 1_000_000, cacheCreate1h: 1_000_000)),
+                       30.0, accuracy: 1e-9,
+                       "the table's own rate must win over the 2x-input fallback")
+    }
+
+    // A malformed event claiming more 1h tokens than total cache-creation
+    // tokens must clamp, not wrap UInt64 subtraction.
+    func test_cost_oneHourTokensExceedingTotal_areClamped() {
+        let t = PricingTable(models: ["m": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 0, cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0)])
+        XCTAssertEqual(t.cost(model: "m", usage: Usage(cacheCreate: 1_000, cacheCreate1h: 9_999)),
+                       1_000.0 / 1_000_000 * 10.0, accuracy: 1e-12)
+    }
 }

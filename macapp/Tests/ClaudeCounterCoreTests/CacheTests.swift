@@ -3,11 +3,22 @@ import XCTest
 
 final class CacheTests: XCTestCase {
 
-    // Bumping the version invalidates old caches so a stale cell without a
-    // vendor-reported cost cannot be resurrected and silently render as
-    // $0.00 for every past Grok day.
-    func test_cacheVersion_wasBumpedForCostedCells() {
-        XCTAssertEqual(CacheFile.currentVersion, 5)
+    // Pins the current version so a bump is always a deliberate act with a
+    // stated reason. Each past reason keeps its own invalidation test below.
+    //
+    // v6: the reader began summing `usage.iterations[]` into input/output
+    // and recording the 1-hour cache-write split. A v5 cell holds token
+    // counts the current pricing code bills differently, and no incremental
+    // scan ever revisits a cell — so v5 files must be rebuilt, not merged.
+    func test_cacheVersion_wasBumpedForIterationTokens() {
+        XCTAssertEqual(CacheFile.currentVersion, 6)
+    }
+
+    func test_cache_v5IsInvalidatedOnLoad() throws {
+        // A v5 cell's input/output omit whole API calls within a turn, and
+        // it carries no 1h cache-write split. Restoring one would under-bill
+        // every past day it covers, permanently — nothing rescans it.
+        XCTAssertGreaterThan(CacheFile.currentVersion, 5)
     }
 
     func test_save_then_load_roundTrip() async throws {
@@ -242,6 +253,39 @@ final class CacheTests: XCTestCase {
             1_000_000)
     }
 
+    // MARK: - 1-hour cache-write split round-trip (cache v6)
+
+    // The 1h/5m split lives only in the cost formula, so it is exactly the
+    // kind of thing a persistence layer drops silently: tokens still add
+    // up, only the dollars quietly fall back to the cheaper rate on the
+    // next launch. Pin it at the seam.
+    func test_cache_roundTripsOneHourCacheWriteSplit() async throws {
+        let now = Date(timeIntervalSince1970: 1_786_800_000)
+        // opus-5 rates: $5 in / $6.25 5m write / $10 1h write.
+        let table = PricingTable(models: ["claude-opus-5": ModelPrice(
+            inputPerMTok: 5, outputPerMTok: 25,
+            cacheCreationPerMTok: 6.25, cacheReadPerMTok: 0.50)])
+        let source = Aggregator(pricing: table, now: { now })
+        await source.apply(UsageEvent(
+            timestamp: now, sessionID: "s", cwd: "", project: "p",
+            model: "claude-opus-5", messageID: "m1", requestID: "r1", isSubagent: false,
+            usage: Usage(cacheCreate: 1_000_000, cacheCreate1h: 1_000_000),
+            source: "claude/claude", vendor: "claude"))
+
+        let key = SeriesKey(source: "claude/claude", vendor: "claude", model: "claude-opus-5")
+        let before = await source.snapshot().month[key]?.usd ?? 0
+        XCTAssertEqual(before, 10.0, accuracy: 1e-9, "1h write bills at 2x the $5 input rate")
+
+        let file = await CacheFile.snapshot(aggregator: source, offsets: [:], parseErrors: 0)
+        let restored = Aggregator(pricing: table, now: { now })
+        _ = await file.restore(into: restored)
+        let after = await restored.snapshot().month[key]?.usd ?? 0
+
+        XCTAssertEqual(after, before, accuracy: 1e-9,
+                       "the cache dropped the 1h split — restored cells fell back to the 5m rate")
+        XCTAssertEqual(after, 10.0, accuracy: 1e-9)
+    }
+
     // MARK: - costed cells / coverage round-trip (cache v5)
 
     func test_cache_roundTripsVendorReportedCost() async throws {
@@ -260,7 +304,7 @@ final class CacheTests: XCTestCase {
             source: "grok/grok", vendor: "grok", coverageOnly: true, hasUsage: true))
 
         let file = await CacheFile.snapshot(aggregator: source, offsets: [:], parseErrors: 0)
-        XCTAssertEqual(file.version, 5)
+        XCTAssertEqual(file.version, CacheFile.currentVersion)
 
         let restored = Aggregator(pricing: PricingTable(models: [:]), now: { now })
         _ = await file.restore(into: restored)

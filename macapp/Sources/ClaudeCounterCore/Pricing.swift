@@ -8,12 +8,19 @@ public struct Usage: Equatable, Hashable, Sendable {
     public var output: UInt64
     public var cacheCreate: UInt64
     public var cacheRead: UInt64
+    /// The subset of `cacheCreate` written with a 1-hour TTL, which bills
+    /// at 2× base input instead of the 5-minute rate's 1.25×. A subset,
+    /// not a sibling: every token readout keeps using `cacheCreate` and
+    /// stays correct. Mirrors `pricing.Usage.CacheCreation1hInputTokens`.
+    public var cacheCreate1h: UInt64
 
-    public init(input: UInt64 = 0, output: UInt64 = 0, cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0) {
+    public init(input: UInt64 = 0, output: UInt64 = 0, cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0,
+                cacheCreate1h: UInt64 = 0) {
         self.input = input
         self.output = output
         self.cacheCreate = cacheCreate
         self.cacheRead = cacheRead
+        self.cacheCreate1h = cacheCreate1h
     }
 }
 
@@ -23,12 +30,43 @@ public struct ModelPrice: Equatable, Hashable, Sendable, Codable {
     public var outputPerMTok: Double
     public var cacheCreationPerMTok: Double
     public var cacheReadPerMTok: Double
+    /// LiteLLM's `cache_creation_input_token_cost_above_1hr`. Optional: a
+    /// pricing.toml or cached table written before this field existed
+    /// leaves it 0 and `cacheCreation1hRate` falls back to the documented
+    /// universal rule (2× base input), so no refetch is forced.
+    public var cacheCreation1hPerMTok: Double
 
-    public init(inputPerMTok: Double, outputPerMTok: Double, cacheCreationPerMTok: Double, cacheReadPerMTok: Double) {
+    public init(inputPerMTok: Double, outputPerMTok: Double, cacheCreationPerMTok: Double,
+                cacheReadPerMTok: Double, cacheCreation1hPerMTok: Double = 0) {
         self.inputPerMTok = inputPerMTok
         self.outputPerMTok = outputPerMTok
         self.cacheCreationPerMTok = cacheCreationPerMTok
         self.cacheReadPerMTok = cacheReadPerMTok
+        self.cacheCreation1hPerMTok = cacheCreation1hPerMTok
+    }
+
+    /// Per-MTok rate for 1-hour cache writes. Anthropic prices these at a
+    /// flat 2× base input on every current model, so the fallback is exact
+    /// rather than approximate — the stored field exists only so a future
+    /// model that breaks the rule can override it.
+    public var cacheCreation1hRate: Double {
+        cacheCreation1hPerMTok > 0 ? cacheCreation1hPerMTok : inputPerMTok * 2
+    }
+
+    // Decoded by hand so a cached table written before
+    // cacheCreation1hPerMTok existed still decodes (synthesized Codable
+    // would throw on the missing key and drop the whole table).
+    private enum CodingKeys: String, CodingKey {
+        case inputPerMTok, outputPerMTok, cacheCreationPerMTok, cacheReadPerMTok, cacheCreation1hPerMTok
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inputPerMTok = try c.decode(Double.self, forKey: .inputPerMTok)
+        outputPerMTok = try c.decode(Double.self, forKey: .outputPerMTok)
+        cacheCreationPerMTok = try c.decode(Double.self, forKey: .cacheCreationPerMTok)
+        cacheReadPerMTok = try c.decode(Double.self, forKey: .cacheReadPerMTok)
+        cacheCreation1hPerMTok = try c.decodeIfPresent(Double.self, forKey: .cacheCreation1hPerMTok) ?? 0
     }
 }
 
@@ -85,10 +123,16 @@ public struct PricingTable: Equatable, Sendable {
     public func cost(model: String, usage: Usage) -> Double {
         guard let p = resolve(model: model) else { return 0 }
         let m = 1_000_000.0
-        return Double(usage.input)        / m * p.inputPerMTok +
-               Double(usage.output)       / m * p.outputPerMTok +
-               Double(usage.cacheCreate)  / m * p.cacheCreationPerMTok +
-               Double(usage.cacheRead)    / m * p.cacheReadPerMTok
+        // Clamp before subtracting: cacheCreate1h is meant to be a subset,
+        // but a malformed event reporting more 1h tokens than total
+        // cache-creation tokens must not wrap UInt64 into a nonsense bill.
+        let cc1h = min(usage.cacheCreate1h, usage.cacheCreate)
+        let cc5m = usage.cacheCreate - cc1h
+        return Double(usage.input)   / m * p.inputPerMTok +
+               Double(usage.output)  / m * p.outputPerMTok +
+               Double(cc5m)          / m * p.cacheCreationPerMTok +
+               Double(cc1h)          / m * p.cacheCreation1hRate +
+               Double(usage.cacheRead) / m * p.cacheReadPerMTok
     }
 
     /// Returns the ModelPrice a model should be priced against: model's

@@ -12,6 +12,19 @@ type Usage struct {
 	OutputTokens             uint64
 	CacheCreationInputTokens uint64
 	CacheReadInputTokens     uint64
+	// CacheCreation1hInputTokens is the subset of
+	// CacheCreationInputTokens written with a 1-hour TTL, which bills at
+	// 2× base input instead of the 5-minute rate's 1.25×. It is a subset,
+	// not a sibling: every token counter that only reports volume can keep
+	// reading CacheCreationInputTokens and stay correct.
+	//
+	// Claude Code reports the split as usage.cache_creation.{ephemeral_1h,
+	// ephemeral_5m}_input_tokens. Those two do not always sum to
+	// cache_creation_input_tokens (observed: 507,455 vs 510,803 over one
+	// day), so Cost derives the 5-minute share by subtraction — the
+	// unattributed remainder bills at the cheaper rate rather than
+	// vanishing from the total.
+	CacheCreation1hInputTokens uint64
 }
 
 type ModelPrice struct {
@@ -19,6 +32,23 @@ type ModelPrice struct {
 	OutputPerMTok        float64 `toml:"output_per_mtok"`
 	CacheCreationPerMTok float64 `toml:"cache_creation_per_mtok"`
 	CacheReadPerMTok     float64 `toml:"cache_read_per_mtok"`
+	// CacheCreation1hPerMTok is LiteLLM's
+	// cache_creation_input_token_cost_above_1hr. It is optional: a
+	// pricing.toml written before this field existed leaves it 0, and
+	// cacheCreation1hRate falls back to the documented universal rule
+	// (2× base input) rather than forcing a refetch.
+	CacheCreation1hPerMTok float64 `toml:"cache_creation_1h_per_mtok"`
+}
+
+// cacheCreation1hRate returns the per-MTok rate for 1-hour cache writes.
+// Anthropic prices these at a flat 2× base input for every model, so the
+// fallback is exact rather than approximate — the table field only exists
+// so a future model that breaks the rule can override it.
+func (p ModelPrice) cacheCreation1hRate() float64 {
+	if p.CacheCreation1hPerMTok > 0 {
+		return p.CacheCreation1hPerMTok
+	}
+	return p.InputPerMTok * 2
 }
 
 // TableSchema is bumped whenever a fetched cache can be missing models a
@@ -120,9 +150,18 @@ func (t Table) Cost(model string, u Usage) float64 {
 		return 0
 	}
 	const m = 1_000_000.0
+	// Clamp before subtracting: CacheCreation1hInputTokens is meant to be a
+	// subset, but a malformed event that reports more 1h tokens than total
+	// cache-creation tokens must not underflow uint64 into a nonsense bill.
+	cc1h := u.CacheCreation1hInputTokens
+	if cc1h > u.CacheCreationInputTokens {
+		cc1h = u.CacheCreationInputTokens
+	}
+	cc5m := u.CacheCreationInputTokens - cc1h
 	return float64(u.InputTokens)/m*p.InputPerMTok +
 		float64(u.OutputTokens)/m*p.OutputPerMTok +
-		float64(u.CacheCreationInputTokens)/m*p.CacheCreationPerMTok +
+		float64(cc5m)/m*p.CacheCreationPerMTok +
+		float64(cc1h)/m*p.cacheCreation1hRate() +
 		float64(u.CacheReadInputTokens)/m*p.CacheReadPerMTok
 }
 

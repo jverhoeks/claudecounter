@@ -304,6 +304,62 @@ final class ReaderTests: XCTestCase {
         try FileManager.default.copyItem(at: url, to: dest)
         return (dest, projectsRoot)
     }
+
+    // Mirrors TestParseLine_IterationsSumInputOutputButNotCacheFields in Go.
+    // Real record: top-level in=4/out=691 against iterations of (2,357),
+    // (88762,1249), (2,334) — the middle call's 88,762 input tokens are
+    // invisible at the top level. The cache fields at top level ALREADY
+    // equal the sum over iterations, so summing them would double-count.
+    func test_parseLine_iterations_sumInputOutputButNotCacheFields() throws {
+        let line = """
+        {"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"req1",\
+        "message":{"id":"m1","model":"claude-opus-5","usage":{\
+        "input_tokens":4,"output_tokens":691,\
+        "cache_creation_input_tokens":2763,"cache_read_input_tokens":173258,\
+        "iterations":[\
+        {"input_tokens":2,"output_tokens":357,"cache_read_input_tokens":86052},\
+        {"input_tokens":88762,"output_tokens":1249,"cache_read_input_tokens":0},\
+        {"input_tokens":2,"output_tokens":334,"cache_read_input_tokens":87206}]}}}
+        """
+        guard case .event(let ev) = parseLine(Data(line.utf8)) else {
+            return XCTFail("expected an event")
+        }
+        XCTAssertEqual(ev.usage.input, 88766, "sum of iterations, not the top-level 4")
+        XCTAssertEqual(ev.usage.output, 1940, "sum of iterations, not the top-level 691")
+        XCTAssertEqual(ev.usage.cacheCreate, 2763, "top level already is the sum")
+        XCTAssertEqual(ev.usage.cacheRead, 173258, "top level already is the sum")
+    }
+
+    func test_parseLine_noIterations_usesTopLevel() throws {
+        let line = """
+        {"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"r",\
+        "message":{"id":"m","model":"claude-opus-5","usage":{\
+        "input_tokens":11,"output_tokens":22,\
+        "cache_creation_input_tokens":33,"cache_read_input_tokens":44}}}
+        """
+        guard case .event(let ev) = parseLine(Data(line.utf8)) else {
+            return XCTFail("expected an event")
+        }
+        XCTAssertEqual(ev.usage, Usage(input: 11, output: 22, cacheCreate: 33, cacheRead: 44))
+    }
+
+    // ephemeral_1h + ephemeral_5m do not always sum to
+    // cache_creation_input_tokens (observed 507,455 vs 510,803 over one
+    // day), so only the 1h figure is carried; the remainder is derived by
+    // subtraction at pricing time so no tokens go missing from the total.
+    func test_parseLine_carriesOneHourCacheWriteSplit() throws {
+        let line = """
+        {"type":"assistant","timestamp":"2026-08-20T10:00:00Z","requestId":"r",\
+        "message":{"id":"m","model":"claude-opus-5","usage":{\
+        "cache_creation_input_tokens":510803,\
+        "cache_creation":{"ephemeral_1h_input_tokens":471162,"ephemeral_5m_input_tokens":36293}}}}
+        """
+        guard case .event(let ev) = parseLine(Data(line.utf8)) else {
+            return XCTFail("expected an event")
+        }
+        XCTAssertEqual(ev.usage.cacheCreate, 510803, "the full figure, not the ephemeral sum")
+        XCTAssertEqual(ev.usage.cacheCreate1h, 471162)
+    }
 }
 
 private extension String {

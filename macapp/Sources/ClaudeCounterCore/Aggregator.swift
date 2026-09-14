@@ -8,14 +8,20 @@ public struct TokenCounts: Equatable, Hashable, Sendable, Codable {
     public var input: UInt64
     public var output: UInt64
     public var cacheCreate: UInt64
+    /// Subset of `cacheCreate` written with a 1-hour TTL, carried only so
+    /// `cost` can bill it at 2× input. Never displayed — every token
+    /// readout uses `cacheCreate`, which stays the full figure.
+    public var cacheCreate1h: UInt64 = 0
     public var cacheRead: UInt64
 
     public init(input: UInt64 = 0, output: UInt64 = 0,
-                cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0) {
+                cacheCreate: UInt64 = 0, cacheRead: UInt64 = 0,
+                cacheCreate1h: UInt64 = 0) {
         self.input = input
         self.output = output
         self.cacheCreate = cacheCreate
         self.cacheRead = cacheRead
+        self.cacheCreate1h = cacheCreate1h
     }
 
     public static let zero = TokenCounts()
@@ -25,7 +31,8 @@ public struct TokenCounts: Equatable, Hashable, Sendable, Codable {
             input: input &+ other.input,
             output: output &+ other.output,
             cacheCreate: cacheCreate &+ other.cacheCreate,
-            cacheRead: cacheRead &+ other.cacheRead
+            cacheRead: cacheRead &+ other.cacheRead,
+            cacheCreate1h: cacheCreate1h &+ other.cacheCreate1h
         )
     }
 
@@ -34,12 +41,14 @@ public struct TokenCounts: Equatable, Hashable, Sendable, Codable {
             input: input &+ usage.input,
             output: output &+ usage.output,
             cacheCreate: cacheCreate &+ usage.cacheCreate,
-            cacheRead: cacheRead &+ usage.cacheRead
+            cacheRead: cacheRead &+ usage.cacheRead,
+            cacheCreate1h: cacheCreate1h &+ usage.cacheCreate1h
         )
     }
 
     public func toUsage() -> Usage {
-        Usage(input: input, output: output, cacheCreate: cacheCreate, cacheRead: cacheRead)
+        Usage(input: input, output: output, cacheCreate: cacheCreate, cacheRead: cacheRead,
+              cacheCreate1h: cacheCreate1h)
     }
 }
 

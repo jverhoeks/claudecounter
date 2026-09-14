@@ -49,6 +49,10 @@ type liteLLMEntry struct {
 	OutputCost  float64 `json:"output_cost_per_token"`
 	CacheCreate float64 `json:"cache_creation_input_token_cost"`
 	CacheRead   float64 `json:"cache_read_input_token_cost"`
+	// CacheCreate1h is the 1-hour-TTL cache-write rate. Most entries omit
+	// it; ModelPrice.cacheCreation1hRate falls back to 2× input, which is
+	// the rate Anthropic documents for every current model.
+	CacheCreate1h float64 `json:"cache_creation_input_token_cost_above_1hr"`
 }
 
 // parseLiteLLM extracts Anthropic and OpenAI models from LiteLLM's JSON.
@@ -87,10 +91,11 @@ func parseLiteLLM(body []byte) (Table, error) {
 		}
 		name := strings.TrimPrefix(rawName, "anthropic/")
 		out.Models[name] = ModelPrice{
-			InputPerMTok:         e.InputCost * m,
-			OutputPerMTok:        e.OutputCost * m,
-			CacheCreationPerMTok: e.CacheCreate * m,
-			CacheReadPerMTok:     e.CacheRead * m,
+			InputPerMTok:           e.InputCost * m,
+			OutputPerMTok:          e.OutputCost * m,
+			CacheCreationPerMTok:   e.CacheCreate * m,
+			CacheReadPerMTok:       e.CacheRead * m,
+			CacheCreation1hPerMTok: e.CacheCreate1h * m,
 		}
 	}
 	if len(out.Models) == 0 {
@@ -115,7 +120,14 @@ func SaveTOML(t Table, path string) error {
 		fmt.Fprintf(&buf, "input_per_mtok = %g\n", p.InputPerMTok)
 		fmt.Fprintf(&buf, "output_per_mtok = %g\n", p.OutputPerMTok)
 		fmt.Fprintf(&buf, "cache_creation_per_mtok = %g\n", p.CacheCreationPerMTok)
-		fmt.Fprintf(&buf, "cache_read_per_mtok = %g\n\n", p.CacheReadPerMTok)
+		fmt.Fprintf(&buf, "cache_read_per_mtok = %g\n", p.CacheReadPerMTok)
+		// Omitted when upstream has no 1h rate, so the reader falls back
+		// to 2× input rather than reading a hard 0 and billing 1h writes
+		// free. Never write a zero here.
+		if p.CacheCreation1hPerMTok > 0 {
+			fmt.Fprintf(&buf, "cache_creation_1h_per_mtok = %g\n", p.CacheCreation1hPerMTok)
+		}
+		buf.WriteString("\n")
 	}
 	return writeFileAtomic(path, buf.Bytes())
 }

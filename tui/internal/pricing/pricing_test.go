@@ -336,3 +336,55 @@ func TestDefaults_CoversCodexModels(t *testing.T) {
 		t.Error("codex-auto-review must price at the gpt-5.6-luna rate")
 	}
 }
+
+// A 1-hour cache write bills at 2× base input, not the 5-minute rate.
+// CacheCreation1hInputTokens is a SUBSET of CacheCreationInputTokens, so
+// the total token count is unchanged and only the rate split moves.
+func TestCost_OneHourCacheWriteBillsAtTwiceInput(t *testing.T) {
+	// opus-5's published rates: $5 in, $6.25 5m write, $10 1h write.
+	p := ModelPrice{InputPerMTok: 5, OutputPerMTok: 25,
+		CacheCreationPerMTok: 6.25, CacheReadPerMTok: 0.50}
+	tbl := Table{Models: map[string]ModelPrice{"m": p}}
+
+	all5m := tbl.Cost("m", Usage{CacheCreationInputTokens: 1_000_000})
+	all1h := tbl.Cost("m", Usage{CacheCreationInputTokens: 1_000_000,
+		CacheCreation1hInputTokens: 1_000_000})
+	half := tbl.Cost("m", Usage{CacheCreationInputTokens: 1_000_000,
+		CacheCreation1hInputTokens: 400_000})
+
+	if all5m != 6.25 {
+		t.Errorf("all-5m: got %v, want 6.25", all5m)
+	}
+	if all1h != 10.0 {
+		t.Errorf("all-1h: got %v, want 10.00 (2x the $5 input rate)", all1h)
+	}
+	// 600k at 6.25 + 400k at 10.00
+	if want := 0.6*6.25 + 0.4*10.0; half != want {
+		t.Errorf("mixed TTL: got %v, want %v", half, want)
+	}
+}
+
+// The table's own 1h rate wins when present, so a future model that
+// doesn't follow the 2x rule can override it.
+func TestCost_ExplicitOneHourRateOverridesFallback(t *testing.T) {
+	tbl := Table{Models: map[string]ModelPrice{"m": {
+		InputPerMTok: 5, CacheCreationPerMTok: 6.25, CacheCreation1hPerMTok: 30,
+	}}}
+	got := tbl.Cost("m", Usage{CacheCreationInputTokens: 1_000_000,
+		CacheCreation1hInputTokens: 1_000_000})
+	if got != 30.0 {
+		t.Errorf("got %v, want 30.00 from the explicit rate, not 10.00 from 2x input", got)
+	}
+}
+
+// A malformed event claiming more 1h tokens than total cache-creation
+// tokens must clamp, not wrap uint64 subtraction into a nonsense bill.
+func TestCost_OneHourTokensExceedingTotalAreClamped(t *testing.T) {
+	tbl := Table{Models: map[string]ModelPrice{"m": {
+		InputPerMTok: 5, CacheCreationPerMTok: 6.25,
+	}}}
+	got := tbl.Cost("m", Usage{CacheCreationInputTokens: 1_000, CacheCreation1hInputTokens: 9_999})
+	if want := 1_000.0 / 1_000_000 * 10.0; got != want {
+		t.Errorf("got %v, want %v (all 1,000 tokens at the 1h rate)", got, want)
+	}
+}
