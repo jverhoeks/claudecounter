@@ -9,6 +9,9 @@ import (
 
 const minePromptCap = 60 // max prompts fed to the miner, to bound LLM input
 
+// mineSchema constrains the miner's reply to rawMined's shape.
+const mineSchema = `{"type":"object","properties":{"candidates":{"type":"array","items":{"type":"object","properties":{"suggestion":{"type":"string"},"evidence":{"type":"string"}},"required":["suggestion","evidence"]}}},"required":["candidates"]}`
+
 // MemoryCandidate is one recurring instruction the miner suggests promoting to
 // CLAUDE.md or persistent memory.
 type MemoryCandidate struct {
@@ -30,12 +33,11 @@ type ProjectMined struct {
 func minePrompt(project string, prompts []string) string {
 	payload, _ := json.MarshalIndent(prompts, "", " ")
 	var b strings.Builder
-	b.WriteString("Below are user prompts collected across many Claude Code sessions in ONE project.\n")
+	b.WriteString("Below are user prompts collected across many Claude Code sessions in a single project.\n")
 	b.WriteString("Find recurring instructions, preferences, or corrections the user repeats across sessions — ")
 	b.WriteString("the kind of thing that should live in CLAUDE.md or persistent memory so they never have to repeat it.\n")
 	b.WriteString("Ignore one-off task requests. Only surface patterns that recur or read as standing preferences.\n\n")
-	b.WriteString("Respond with ONLY a JSON object: {\"candidates\": [{\"suggestion\": string, \"evidence\": string}]}. ")
-	b.WriteString("suggestion = the CLAUDE.md line to add; evidence = why (which repeated ask). Empty array if none.\n\n")
+	b.WriteString("For each candidate, suggestion = the CLAUDE.md line to add; evidence = why (which repeated ask). Return no candidates if none recur.\n\n")
 	fmt.Fprintf(&b, "PROJECT: %s\nPROMPTS:\n", project)
 	b.Write(payload)
 	return b.String()
@@ -67,19 +69,14 @@ func MineProject(ctx context.Context, j Judge, project string, digests []Digest)
 		return res
 	}
 
-	text, cost, err := j.Ask(ctx, minePrompt(project, prompts))
+	text, cost, err := j.Ask(ctx, minePrompt(project, prompts), mineSchema)
 	res.CostUSD = cost
 	if err != nil {
 		res.Err = err.Error()
 		return res
 	}
-	obj, ok := extractJSON(text)
-	if !ok {
-		res.Err = "no JSON object in reply"
-		return res
-	}
 	var rm rawMined
-	if err := json.Unmarshal(obj, &rm); err != nil {
+	if err := json.Unmarshal([]byte(text), &rm); err != nil {
 		res.Err = fmt.Sprintf("decode reply: %v", err)
 		return res
 	}

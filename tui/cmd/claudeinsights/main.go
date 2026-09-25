@@ -57,7 +57,7 @@ func main() {
 	topN := flag.Int("top", 15, "how many worst sessions to list in corpus mode")
 	noCache := flag.Bool("no-cache", false, "ignore and do not write the on-disk cache")
 	refresh := flag.Bool("refresh", false, "recompute and overwrite cache entries")
-	llm := flag.Bool("llm", false, "run the local claude -p coaching pass on flagged sessions (costs ~$0.10/session)")
+	llm := flag.Bool("llm", false, "coach flagged sessions: local Laya scores for all, claude -p (Opus 5.5) text judgments for rough ones (~$0.20 each; Laya needs uv)")
 	llmMax := flag.Int("llm-max", 10, "max sessions to send to the LLM judge")
 	apply := flag.Bool("apply", false, "merge mined CLAUDE.md candidates into each project's CLAUDE.md (implies --llm; dry-run unless --write)")
 	write := flag.Bool("write", false, "with --apply: actually write the merged CLAUDE.md files (default is dry-run diff)")
@@ -101,7 +101,7 @@ func main() {
 		if *llm {
 			judge := insights.NewCLIJudge()
 			one := insights.CorpusReport{Sessions: []insights.SessionReport{r}}
-			mined := runLLM(os.Stdout, *root, table, th, one, cache, *refresh, *llmMax, judge)
+			mined := runLLM(os.Stdout, *root, table, th, one, cache, *refresh, *llmMax, insights.NewLayaScorer(), judge)
 			if *apply {
 				writeApply(os.Stdout, applyClaudeMd(one, mined, judge, *write), *write)
 			}
@@ -130,7 +130,7 @@ func main() {
 	}
 	if *llm {
 		judge := insights.NewCLIJudge()
-		mined := runLLM(os.Stdout, *root, table, th, c, cache, *refresh, *llmMax, judge)
+		mined := runLLM(os.Stdout, *root, table, th, c, cache, *refresh, *llmMax, insights.NewLayaScorer(), judge)
 		if *apply {
 			writeApply(os.Stdout, applyClaudeMd(c, mined, judge, *write), *write)
 		}

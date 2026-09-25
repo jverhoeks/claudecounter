@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,14 @@ type stubJudge struct {
 	err   error
 }
 
-func (s stubJudge) Ask(ctx context.Context, prompt string) (string, float64, error) {
+func (s stubJudge) Ask(ctx context.Context, prompt, schema string) (string, float64, error) {
 	return s.reply, 0.1, s.err
+}
+
+// mergeReply wraps file text in the merge schema's {"content": ...} shape.
+func mergeReply(content string) string {
+	b, _ := json.Marshal(map[string]string{"content": content})
+	return string(b)
 }
 
 func TestWriteActions(t *testing.T) {
@@ -47,7 +54,7 @@ func TestApplyClaudeMd_DryRunWritesNothing(t *testing.T) {
 	c := corpusWithProject(dir)
 	mined := []insights.ProjectMined{{Project: "proj", Available: true,
 		Candidates: []insights.MemoryCandidate{{Suggestion: "run make test"}}}}
-	j := stubJudge{reply: "# CLAUDE.md\n\n## Insights (auto-suggested)\n- run make test\n"}
+	j := stubJudge{reply: mergeReply("# CLAUDE.md\n\n## Insights (auto-suggested)\n- run make test\n")}
 
 	res := applyClaudeMd(c, mined, j, false) // dry-run
 	if len(res) != 1 || res[0].Wrote || res[0].Diff == "" {
@@ -68,7 +75,7 @@ func TestApplyClaudeMd_WriteApplies(t *testing.T) {
 	mined := []insights.ProjectMined{{Project: "proj", Available: true,
 		Candidates: []insights.MemoryCandidate{{Suggestion: "run make test"}}}}
 
-	res := applyClaudeMd(c, mined, stubJudge{reply: merged}, true) // write
+	res := applyClaudeMd(c, mined, stubJudge{reply: mergeReply(merged)}, true) // write
 	if len(res) != 1 || !res[0].Wrote {
 		t.Fatalf("write result: %+v", res)
 	}
@@ -82,7 +89,7 @@ func TestApplyClaudeMd_MissingDirSkipped(t *testing.T) {
 	c := corpusWithProject("/no/such/dir/anywhere")
 	mined := []insights.ProjectMined{{Project: "proj", Available: true,
 		Candidates: []insights.MemoryCandidate{{Suggestion: "x"}}}}
-	res := applyClaudeMd(c, mined, stubJudge{reply: "merged"}, true)
+	res := applyClaudeMd(c, mined, stubJudge{reply: mergeReply("merged")}, true)
 	if len(res) != 1 || !res[0].Skipped {
 		t.Fatalf("expected skip: %+v", res)
 	}

@@ -39,15 +39,14 @@ func gitDelivery(cwd string, start, end time.Time) (int, bool) {
 	return n, true
 }
 
-// runLLM judges the worst flagged sessions and mines their projects, honoring
-// the cache and the llmMax cap. It re-parses each flagged session to build its
-// digest. Progress + cost go to stderr; results are rendered to w.
-// runLLM judges flagged sessions, mines per-project CLAUDE.md candidates, and
-// synthesizes a consolidated action list. It returns the mined results (with
-// candidates) and the judge so the caller can optionally run --apply.
+// runLLM scores the worst flagged sessions locally with Laya, sends only the
+// rough ones to the text judge, mines CLAUDE.md candidates for those sessions'
+// projects, and synthesizes a consolidated action list, honoring the cache and
+// the llmMax cap. It returns the mined results so the caller can run --apply.
+// Progress goes to stderr; results are rendered to w.
 func runLLM(w io.Writer, root string, table pricing.Table, th insights.Thresholds,
 	c insights.CorpusReport, cache *insights.Cache, refresh bool, llmMax int,
-	judge insights.Judge) []insights.ProjectMined {
+	scorer insights.Scorer, judge insights.Judge) []insights.ProjectMined {
 
 	ctx := context.Background()
 
@@ -69,29 +68,49 @@ func runLLM(w io.Writer, root string, table pricing.Table, th insights.Threshold
 
 	var totalCost float64
 	var judgments []insights.Judgment
-	projectsToMine := map[string]struct{}{}
+	var projects []string // parallel to judgments
+	var misses []insights.Digest
+	var missAt []int // index into judgments for each miss
 
-	for i, sr := range flagged {
-		fmt.Fprintf(os.Stderr, "  llm judge %d/%d  %s …\n", i+1, len(flagged), shortID(sr.ID))
-		path := filepath.Join(root, sr.Project, sr.ID+".jsonl")
-		s, err := session.Parse(path)
+	for _, sr := range flagged {
+		s, err := session.Parse(filepath.Join(root, sr.Project, sr.ID+".jsonl"))
 		if err != nil {
 			continue
 		}
 		d := insights.BuildDigest(s, sr, digestMaxPrompts, digestMaxTools, digestMaxRunes)
-		projectsToMine[sr.Project] = struct{}{}
-
-		hash := insights.DigestHash(d)
 		j, hit := insights.Judgment{}, false
 		if !refresh {
-			j, hit = cache.GetJudgment(hash)
+			j, hit = cache.GetJudgment(insights.DigestHash(d))
 		}
 		if !hit {
-			j = insights.JudgeSession(ctx, judge, d)
-			cache.PutJudgment(hash, j)
-			totalCost += j.CostUSD
+			misses = append(misses, d)
+			missAt = append(missAt, len(judgments))
 		}
 		judgments = append(judgments, j)
+		projects = append(projects, sr.Project)
+	}
+
+	// One Laya batch for every uncached session, so the model loads once.
+	if len(misses) > 0 {
+		fmt.Fprintf(os.Stderr, "  laya scoring %d session(s) …\n", len(misses))
+		fresh, layaErr := insights.JudgeHybrid(ctx, scorer, judge, misses)
+		if layaErr != nil {
+			fmt.Fprintf(os.Stderr, "  laya unavailable, judged every session with claude -p: %v\n", layaErr)
+		}
+		for k, j := range fresh {
+			cache.PutJudgment(insights.DigestHash(misses[k]), j)
+			totalCost += j.CostUSD
+			judgments[missAt[k]] = j
+		}
+	}
+
+	// Mine only projects where a session got the full text judgment: those
+	// are the rough ones, and mining is a claude -p call per project.
+	projectsToMine := map[string]struct{}{}
+	for i, j := range judgments {
+		if j.Advice != "" {
+			projectsToMine[projects[i]] = struct{}{}
+		}
 	}
 
 	// Mine CLAUDE.md candidates once per flagged project, but feed the miner
@@ -188,15 +207,22 @@ func collectProjectPrompts(root, project string, c insights.CorpusReport) []stri
 
 // writeLLM renders the Tier-2 coaching section. Pure (takes io.Writer).
 func writeLLM(w io.Writer, judgments []insights.Judgment, mined []insights.ProjectMined, costUSD float64) {
-	fmt.Fprintf(w, "\n══ LLM coaching (local claude -p · $%.2f this run) ══\n", costUSD)
+	fmt.Fprintf(w, "\n══ LLM coaching (Laya local scores + claude -p on rough sessions · $%.2f this run) ══\n", costUSD)
 
 	for _, j := range judgments {
 		if !j.Available {
 			fmt.Fprintf(w, "\n%s — unavailable (%s)\n", shortID(j.SessionID), j.Err)
 			continue
 		}
-		fmt.Fprintf(w, "\n%s — friction %d/10 · first-prompt clarity %d/10\n",
+		fmt.Fprintf(w, "\n%s — friction %d/10 · first-prompt clarity %d/10",
 			shortID(j.SessionID), j.Friction, j.PromptSpecificity)
+		if j.Laya != nil {
+			fmt.Fprintf(w, " · p(correction) %.2f · p(loop) %.2f", j.Laya.PCorrection, j.Laya.PLoop)
+		}
+		fmt.Fprintln(w)
+		if j.Laya != nil && j.Advice == "" {
+			fmt.Fprintln(w, "  (scored locally; below the threshold for a text judgment)")
+		}
 		if j.RootCause != "" {
 			fmt.Fprintf(w, "  root cause: %s\n", j.RootCause)
 		}

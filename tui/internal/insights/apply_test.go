@@ -30,7 +30,7 @@ func TestSynthesizeActions_NoJudgments(t *testing.T) {
 
 func TestSynthesizeActions_Error(t *testing.T) {
 	j := fakeJudge{err: errors.New("timeout")}
-	got := SynthesizeActions(context.Background(), j, []Judgment{{Available: true}})
+	got := SynthesizeActions(context.Background(), j, []Judgment{{Available: true, Advice: "x"}})
 	if got.Available || got.Err == "" {
 		t.Errorf("expected unavailable: %+v", got)
 	}
@@ -44,18 +44,14 @@ func TestMergeClaudeMd_NoCandidates(t *testing.T) {
 	}
 }
 
-func TestMergeClaudeMd_StripsFence(t *testing.T) {
-	merged := "```markdown\n# CLAUDE.md\n\n## Insights (auto-suggested)\n- run make test\n```"
-	j := fakeJudge{reply: merged, cost: 0.1}
+func TestMergeClaudeMd_DecodesContent(t *testing.T) {
+	j := fakeJudge{reply: `{"content":"# CLAUDE.md\n\n## Insights (auto-suggested)\n- run make test\n"}`, cost: 0.1}
 	out, _, err := MergeClaudeMd(context.Background(), j, "# CLAUDE.md\n",
 		[]MemoryCandidate{{Suggestion: "run make test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "```") {
-		t.Errorf("fence not stripped: %q", out)
-	}
-	if !strings.Contains(out, "run make test") {
+	if !strings.HasPrefix(out, "# CLAUDE.md\n") || !strings.Contains(out, "run make test") {
 		t.Errorf("missing merged content: %q", out)
 	}
 }
