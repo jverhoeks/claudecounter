@@ -64,7 +64,10 @@ func (p ModelPrice) cacheCreation1hRate() float64 {
 // 3: LiteLLM gained claude-opus-5 and claude-sonnet-5. Every cache fetched
 // before they landed prices what are now the two most-used models at $0,
 // and is otherwise indistinguishable from a current one.
-const TableSchema = 3
+//
+// 4: LiteLLM gained claude-opus-5-5. A schema-3 cache has claude-fable-5-1
+// but prices every Opus 5.5 turn at $0.
+const TableSchema = 4
 
 type Table struct {
 	// Schema is 0 for any cache written before this field existed (no

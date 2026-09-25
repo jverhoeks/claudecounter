@@ -58,14 +58,15 @@ final class PricingFetchAndTOMLTests: XCTestCase {
 
     // MARK: - schema marker (mirrors pricing.TableSchema / SaveTOML in Go)
 
-    func test_currentSchema_isThree() {
-        // Both surfaces must agree value for value — Go's TableSchema is 3
+    func test_currentSchema_isFour() {
+        // Both surfaces must agree value for value — Go's TableSchema is 4
         // (2 admitted openai when parseLiteLLM's provider filter widened;
         // 3 forces one refetch for caches predating claude-opus-5 and
-        // claude-sonnet-5 in LiteLLM), and the shared cache at
+        // claude-sonnet-5 in LiteLLM; 4 for caches predating
+        // claude-opus-5-5), and the shared cache at
         // ~/.config/claudecounter/pricing.toml is written by whichever side
         // fetches first.
-        XCTAssertEqual(PricingTable.currentSchema, 3)
+        XCTAssertEqual(PricingTable.currentSchema, 4)
     }
 
     func test_toml_decode_noSchemaLine_defaultsToZero() {

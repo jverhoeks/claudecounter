@@ -96,8 +96,11 @@ public struct PricingTable: Equatable, Sendable {
     /// fetched before they landed prices what are now the two most-used
     /// models at $0, and is otherwise indistinguishable from a current one.
     ///
+    /// 4: LiteLLM gained claude-opus-5-5. A schema-3 cache has
+    /// claude-fable-5-1 but prices every Opus 5.5 turn at $0.
+    ///
     /// Mirrors `pricing.TableSchema` in Go — keep in sync.
-    public static let currentSchema = 3
+    public static let currentSchema = 4
 
     public init(models: [String: ModelPrice] = [:], schema: Int = 0) {
         self.models = models
@@ -269,6 +272,21 @@ extension PricingTable {
             cacheCreationPerMTok: 12.50,
             cacheReadPerMTok: 1.00
         )
+        // Opus 5.5 is cheaper than the Opus tier above, with a deeper
+        // cache-read discount (0.05× input); Fable 5.1 keeps Fable's rates
+        // but reads cache at $0.25. Both straight from LiteLLM.
+        let opus55 = ModelPrice(
+            inputPerMTok: 4.00,
+            outputPerMTok: 20.00,
+            cacheCreationPerMTok: 5.00,
+            cacheReadPerMTok: 0.20
+        )
+        let fable51 = ModelPrice(
+            inputPerMTok: 10.00,
+            outputPerMTok: 50.00,
+            cacheCreationPerMTok: 12.50,
+            cacheReadPerMTok: 0.25
+        )
         // Codex/OpenAI models, from the same LiteLLM table as the Claude
         // rows above. These matter more than their spend share suggests:
         // Grok events arrive pre-costed from the vendor's own logs
@@ -302,6 +320,8 @@ extension PricingTable {
             cacheReadPerMTok: 0.02
         )
         return PricingTable(models: [
+            "claude-fable-5-1":          fable51,
+            "claude-opus-5-5":           opus55,
             "claude-fable-5":            fable,
             "claude-mythos-5":           fable,
             "claude-opus-5":             opus,

@@ -258,7 +258,7 @@ func TestDefaults_CoversClaude5Family(t *testing.T) {
 	d := Defaults()
 	for _, m := range []string{
 		"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
-		"fable",
+		"claude-opus-5-5", "claude-fable-5-1", "fable",
 	} {
 		if !d.Has(m) {
 			t.Errorf("Defaults() missing price for %q", m)
@@ -267,6 +267,10 @@ func TestDefaults_CoversClaude5Family(t *testing.T) {
 	// Opus 5 sits in the same $5/$25 tier as Opus 4.5 through 4.8.
 	if p := d.Models["claude-opus-5"]; p.InputPerMTok != 5.00 || p.OutputPerMTok != 25.00 {
 		t.Errorf("opus-5 price = $%v/$%v, want $5/$25", p.InputPerMTok, p.OutputPerMTok)
+	}
+	// Opus 5.5 is cheaper than Opus 5, not the same tier.
+	if p := d.Models["claude-opus-5-5"]; p.InputPerMTok != 4.00 || p.OutputPerMTok != 20.00 || p.CacheReadPerMTok != 0.20 {
+		t.Errorf("opus-5-5 price = $%v/$%v read $%v, want $4/$20 read $0.20", p.InputPerMTok, p.OutputPerMTok, p.CacheReadPerMTok)
 	}
 	// Mythos 5 bills at the Fable tier, above Opus.
 	if p := d.Models["claude-mythos-5"]; p.InputPerMTok != 10.00 || p.OutputPerMTok != 50.00 {

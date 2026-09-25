@@ -2,7 +2,7 @@ package pricing
 
 // DefaultsDate is the ISO date the baked-in prices were captured.
 // Update when bumping prices.
-const DefaultsDate = "2026-08-19"
+const DefaultsDate = "2026-09-25"
 
 // Defaults returns a best-effort price table used when no pricing.toml
 // is available and live fetch also fails.
@@ -35,6 +35,17 @@ func Defaults() Table {
 		InputPerMTok: 10.00, OutputPerMTok: 50.00,
 		CacheCreationPerMTok: 12.50, CacheReadPerMTok: 1.00,
 	}
+	// Opus 5.5 is cheaper than the Opus tier above, with a deeper
+	// cache-read discount (0.05× input); Fable 5.1 keeps Fable's rates but
+	// reads cache at $0.25. Both straight from LiteLLM.
+	opus55 := ModelPrice{
+		InputPerMTok: 4.00, OutputPerMTok: 20.00,
+		CacheCreationPerMTok: 5.00, CacheReadPerMTok: 0.20,
+	}
+	fable51 := ModelPrice{
+		InputPerMTok: 10.00, OutputPerMTok: 50.00,
+		CacheCreationPerMTok: 12.50, CacheReadPerMTok: 0.25,
+	}
 	// Codex/OpenAI models, from the same LiteLLM table as the Claude rows
 	// above. These matter more than their spend share suggests: Grok
 	// events arrive pre-costed from the vendor's own logs
@@ -63,6 +74,8 @@ func Defaults() Table {
 	}
 	return Table{
 		Models: map[string]ModelPrice{
+			"claude-fable-5-1":          fable51,
+			"claude-opus-5-5":           opus55,
 			"claude-fable-5":            fable,
 			"claude-mythos-5":           fable,
 			"claude-opus-5":             opus,

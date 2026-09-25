@@ -152,12 +152,18 @@ final class PricingTests: XCTestCase {
     // Mirrors Go's TestDefaults_CoversClaude5Family.
     func test_defaults_coversClaude5Family() {
         let table = PricingTable.defaults
-        for model in ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"] {
+        for model in ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+                      "claude-opus-5-5", "claude-fable-5-1"] {
             XCTAssertTrue(table.has(model: model), "defaults missing price for \(model)")
         }
         let opus5 = table.models["claude-opus-5"]
         XCTAssertEqual(opus5?.inputPerMTok, 5.00)
         XCTAssertEqual(opus5?.outputPerMTok, 25.00)
+        // Opus 5.5 is cheaper than Opus 5, not the same tier.
+        let opus55 = table.models["claude-opus-5-5"]
+        XCTAssertEqual(opus55?.inputPerMTok, 4.00)
+        XCTAssertEqual(opus55?.outputPerMTok, 20.00)
+        XCTAssertEqual(opus55?.cacheReadPerMTok, 0.20)
         // Mythos 5 bills at the Fable tier, above Opus.
         let mythos = table.models["claude-mythos-5"]
         XCTAssertEqual(mythos?.inputPerMTok, 10.00)
