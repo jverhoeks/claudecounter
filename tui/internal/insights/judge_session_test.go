@@ -21,11 +21,11 @@ func TestJudgeSession_Canned(t *testing.T) {
 	}
 }
 
-func TestJudgeSession_ProseWrapped(t *testing.T) {
-	j := fakeJudge{reply: "Sure! Here:\n```json\n{\"friction\":2,\"advice\":\"ok\"}\n```"}
+func TestJudgeSession_BadJSON(t *testing.T) {
+	j := fakeJudge{reply: "not json"}
 	got := JudgeSession(context.Background(), j, Digest{ID: "s1"})
-	if !got.Available || got.Friction != 2 || got.Advice != "ok" {
-		t.Errorf("expected parse from fenced JSON: %+v", got)
+	if got.Available || got.Err == "" {
+		t.Errorf("expected unavailable on undecodable reply: %+v", got)
 	}
 }
 

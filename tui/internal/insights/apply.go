@@ -34,7 +34,7 @@ func actionsPrompt(js []Judgment) string {
 	}
 	var entries []entry
 	for _, j := range js {
-		if !j.Available {
+		if !j.Available || j.Advice == "" { // Laya-only judgments carry no text
 			continue
 		}
 		entries = append(entries, entry{j.SessionID, j.Advice, j.RootCause, j.Corrections, j.Loops})
@@ -44,13 +44,18 @@ func actionsPrompt(js []Judgment) string {
 	var b strings.Builder
 	b.WriteString("You are coaching a developer based on several reviewed Claude Code sessions.\n")
 	b.WriteString("Below is per-session advice, root causes, corrections, and loops.\n")
-	b.WriteString("Roll them up into a SHORT, deduped, prioritized list of concrete actions the developer should take to work better — merge similar advice, rank by recurrence and impact.\n\n")
-	b.WriteString("Respond with ONLY a JSON object: {\"actions\":[{\"action\":string,\"why\":string,\"sessions\":int}]}. ")
-	b.WriteString("action = the concrete thing to do; why = the payoff/evidence; sessions = how many sessions show this pattern. Order most important first.\n\n")
+	b.WriteString("Roll them up into a short, deduped, prioritized list of concrete actions the developer should take to work better — merge similar advice, rank by recurrence and impact.\n\n")
+	b.WriteString("For each action: action = the concrete thing to do; why = the payoff/evidence; sessions = how many sessions show this pattern. Order most important first.\n\n")
 	b.WriteString("SESSIONS:\n")
 	b.Write(payload)
 	return b.String()
 }
+
+// actionsSchema constrains the roll-up reply to rawActions' shape.
+const actionsSchema = `{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"why":{"type":"string"},"sessions":{"type":"integer"}},"required":["action","why","sessions"]}}},"required":["actions"]}`
+
+// mergeSchema wraps the merged file in a single string field.
+const mergeSchema = `{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}`
 
 type rawActions struct {
 	Actions []ActionItem `json:"actions"`
@@ -62,7 +67,7 @@ type rawActions struct {
 func SynthesizeActions(ctx context.Context, j Judge, js []Judgment) ActionList {
 	any := false
 	for _, x := range js {
-		if x.Available {
+		if x.Available && x.Advice != "" {
 			any = true
 			break
 		}
@@ -71,19 +76,14 @@ func SynthesizeActions(ctx context.Context, j Judge, js []Judgment) ActionList {
 		return ActionList{Available: true}
 	}
 
-	text, cost, err := j.Ask(ctx, actionsPrompt(js))
+	text, cost, err := j.Ask(ctx, actionsPrompt(js), actionsSchema)
 	res := ActionList{CostUSD: cost}
 	if err != nil {
 		res.Err = err.Error()
 		return res
 	}
-	obj, ok := extractJSON(text)
-	if !ok {
-		res.Err = "no JSON object in reply"
-		return res
-	}
 	var ra rawActions
-	if err := json.Unmarshal(obj, &ra); err != nil {
+	if err := json.Unmarshal([]byte(text), &ra); err != nil {
 		res.Err = fmt.Sprintf("decode reply: %v", err)
 		return res
 	}
@@ -98,11 +98,9 @@ func mergePrompt(existing string, cands []MemoryCandidate) string {
 	payload, _ := json.MarshalIndent(cands, "", " ")
 	var b strings.Builder
 	b.WriteString("You are updating a project's CLAUDE.md file (instructions Claude Code reads every session).\n")
-	b.WriteString("RULES:\n")
-	b.WriteString("- Preserve ALL existing content verbatim. Never delete or reword existing lines.\n")
-	b.WriteString("- Add the new suggested instructions below, but SKIP any that are already covered by existing content.\n")
-	b.WriteString("- Put genuinely-new additions under a section titled '## Insights (auto-suggested)' (create it if absent, append to it if present).\n")
-	b.WriteString("- Return ONLY the complete updated file content. No code fences, no commentary.\n\n")
+	b.WriteString("Keep every existing line exactly as written: this file is hand-maintained, and the user only reviews what you add.\n")
+	b.WriteString("Add the suggested instructions below that existing content doesn't already cover, under a '## Insights (auto-suggested)' section (create it if absent, append to it if present).\n")
+	b.WriteString("Return the complete updated file as content.\n\n")
 	b.WriteString("EXISTING CLAUDE.md (may be empty):\n")
 	b.WriteString("<<<EXISTING\n")
 	b.WriteString(existing)
@@ -112,31 +110,23 @@ func mergePrompt(existing string, cands []MemoryCandidate) string {
 	return b.String()
 }
 
-// stripFence removes a single leading/trailing ``` fence if the model wrapped
-// the file in one despite instructions.
-func stripFence(s string) string {
-	t := strings.TrimSpace(s)
-	if !strings.HasPrefix(t, "```") {
-		return s
-	}
-	if i := strings.IndexByte(t, '\n'); i >= 0 {
-		t = t[i+1:]
-	}
-	t = strings.TrimSuffix(strings.TrimRight(t, "\n"), "```")
-	return strings.TrimRight(t, "\n")
-}
-
 // MergeClaudeMd asks the judge to fold candidates into existing CLAUDE.md text,
 // returning the full merged file. No candidates → existing unchanged, no call.
 func MergeClaudeMd(ctx context.Context, j Judge, existing string, cands []MemoryCandidate) (string, float64, error) {
 	if len(cands) == 0 {
 		return existing, 0, nil
 	}
-	text, cost, err := j.Ask(ctx, mergePrompt(existing, cands))
+	text, cost, err := j.Ask(ctx, mergePrompt(existing, cands), mergeSchema)
 	if err != nil {
 		return "", cost, err
 	}
-	return stripFence(text), cost, nil
+	var out struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		return "", cost, fmt.Errorf("decode merge: %w", err)
+	}
+	return out.Content, cost, nil
 }
 
 // UnifiedDiff renders a minimal line-based diff for human preview (not a
