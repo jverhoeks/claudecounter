@@ -36,6 +36,17 @@
     <key>LSUIElement</key>
     <true/>
 
+    <!-- claudecounter://dashboard opens the dashboard window. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.jverhoeks.claudecounter-bar</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>claudecounter</string></array>
+        </dict>
+    </array>
+
     <key>NSHighResolutionCapable</key>
     <true/>
 

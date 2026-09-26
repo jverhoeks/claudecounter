@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,10 @@ type Source struct {
 	Vendor string
 	Label  string
 	Root   string
+	// MonthlyFeeUSD is what the subscription costs per month (0 = unset).
+	// Read by the macapp dashboard; parsed here so both loaders accept
+	// and reject the same files.
+	MonthlyFeeUSD float64
 }
 
 // ID is the series identity: vendor and label together. Two sources may
@@ -47,9 +52,10 @@ type Config struct {
 
 type tomlFile struct {
 	Source []struct {
-		Vendor string `toml:"vendor"`
-		Label  string `toml:"label"`
-		Root   string `toml:"root"`
+		Vendor string  `toml:"vendor"`
+		Label  string  `toml:"label"`
+		Root   string  `toml:"root"`
+		Fee    float64 `toml:"monthly_fee_usd"`
 	} `toml:"source"`
 }
 
@@ -154,7 +160,10 @@ func Load(path, home string) (Config, error) {
 		if s.Root == "" {
 			return Config{}, fmt.Errorf("source %d: root must not be empty", i)
 		}
-		src := Source{Vendor: s.Vendor, Label: s.Label, Root: expand(s.Root, home)}
+		if s.Fee < 0 || math.IsInf(s.Fee, 0) || math.IsNaN(s.Fee) {
+			return Config{}, fmt.Errorf("source %d: monthly_fee_usd %v must be a non-negative number", i, s.Fee)
+		}
+		src := Source{Vendor: s.Vendor, Label: s.Label, Root: expand(s.Root, home), MonthlyFeeUSD: s.Fee}
 		if !filepath.IsAbs(src.Root) {
 			return Config{}, fmt.Errorf("source %d: root %q must be absolute or start with ~", i, s.Root)
 		}

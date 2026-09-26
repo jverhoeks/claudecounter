@@ -1056,13 +1056,7 @@ struct ByProjectTable: View {
     }
 
     private func shortProject(_ encoded: String) -> String {
-        // Drop the leading parts that come from /Users/<u>/.... and show
-        // the tail. Mirrors the Go TUI's shortProject helper.
-        if encoded.isEmpty { return "(unknown)" }
-        let trimmed = encoded.hasPrefix("-") ? String(encoded.dropFirst()) : encoded
-        let parts = trimmed.split(separator: "-")
-        if parts.count <= 4 { return trimmed }
-        return parts.dropFirst(4).joined(separator: "-")
+        Analytics.shortProjectName(encoded)
     }
 }
 
@@ -1266,6 +1260,7 @@ struct FooterRow: View {
                     set: { newValue in state.setNotificationsEnabled(newValue) }
                 ))
                 Divider()
+                Button("Dashboard…") { DashboardWindow.show(state: state) }
                 Button("Edit sources…") { showSettings = true }
                 Button("Device display…") { showDevice = true }
                 Divider()

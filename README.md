@@ -116,6 +116,7 @@ root   = "~/.claude/projects"
 vendor = "claude"
 label  = "work"
 root   = "~/work-claude/projects"
+monthly_fee_usd = 200   # optional: the macapp dashboard compares it to API-price spend
 ```
 
 - **No file → today's behaviour, unchanged.** With no `sources.toml`, both
@@ -535,6 +536,19 @@ which now produces both binaries).
 
 The popover shows hero today/month numbers, an hourly chart, by-model
 and by-project tables, and a live tail of recent events.
+
+### 📊 Dashboard window (⚙ → Dashboard…, or `open claudecounter://dashboard`)
+
+- Daily line chart over 7d / 30d / 90d / 1y, grouped by model, vendor,
+  source, project, main vs subagent, or total — in $ or tokens.
+- KPIs: spend, tokens, tokens per $, average per day, cache hit rate,
+  projected month-end. Click a table row to scope them to that series
+  and highlight its line; click a header to sort.
+- Weekday × hour heatmap of the last 30 days.
+- Subscription value: API-equivalent spend today / this week / this
+  month against `monthly_fee_usd` (set it in ⚙ → Edit sources).
+
+Ranges past ~35 days show only what the app has cached since install.
 
 → Full menu bar app docs: **[`macapp/README.md`](./macapp/README.md)**
 

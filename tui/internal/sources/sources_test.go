@@ -360,3 +360,28 @@ root   = "relative/only"
 		t.Fatal("a single relative root, with nothing to overlap against, must still be rejected")
 	}
 }
+
+func TestLoadMonthlyFee(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "sources.toml")
+	// An integer fee must load: a hand-written file says 200, not 200.0.
+	body := "[[source]]\nvendor = \"claude\"\nlabel = \"max\"\nroot = \"/a\"\nmonthly_fee_usd = 200\n" +
+		"[[source]]\nvendor = \"codex\"\nlabel = \"plus\"\nroot = \"/b\"\nmonthly_fee_usd = 20.5\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources[0].MonthlyFeeUSD != 200 || cfg.Sources[1].MonthlyFeeUSD != 20.5 {
+		t.Fatalf("fees = %v, %v", cfg.Sources[0].MonthlyFeeUSD, cfg.Sources[1].MonthlyFeeUSD)
+	}
+	neg := "[[source]]\nvendor = \"claude\"\nlabel = \"x\"\nroot = \"/a\"\nmonthly_fee_usd = -1\n"
+	if err := os.WriteFile(path, []byte(neg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, home); err == nil {
+		t.Fatal("negative fee accepted")
+	}
+}

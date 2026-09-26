@@ -52,7 +52,7 @@ struct SourcesEditorView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
             }
-            Text("Each source is a separate Claude subscription or install. Root is the folder holding that source's project transcripts.")
+            Text("Each source is a separate Claude subscription or install. Root is the folder holding that source's project transcripts. $/mo is the subscription fee, for the dashboard's value view.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -153,6 +153,7 @@ private struct EditableSource: Identifiable {
     var vendor: String
     var label: String
     var root: String
+    var monthlyFeeUSD: Double = 0
 
     init(vendor: String, label: String, root: String) {
         self.vendor = vendor
@@ -164,10 +165,11 @@ private struct EditableSource: Identifiable {
         self.vendor = entry.vendor
         self.label = entry.label
         self.root = entry.root
+        self.monthlyFeeUSD = entry.monthlyFeeUSD
     }
 
     func toSourceEntry() -> SourceEntry {
-        SourceEntry(vendor: vendor, label: label, root: root)
+        SourceEntry(vendor: vendor, label: label, root: root, monthlyFeeUSD: monthlyFeeUSD)
     }
 }
 
@@ -200,6 +202,12 @@ private struct SourceRowView: View {
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1)
                 .truncationMode(.middle)
+
+            TextField("$/mo", value: $row.monthlyFeeUSD, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 48)
+                .help("Subscription fee per month in USD (0 = none). Used by the dashboard.")
 
             Button(action: onPickRoot) {
                 Image(systemName: "folder")
