@@ -34,6 +34,14 @@ page. Tags shaped `vX.Y.Z` mean "version X.Y.Z of the project as a whole" —
 each release contains all 6 cross-platform TUI binaries plus the
 macOS menu bar app `.zip`.
 
+**Homebrew** (updated on every release):
+
+```bash
+brew tap jverhoeks/tap
+brew install claudecounter              # Go TUI (macOS + Linux)
+brew install --cask claudecounter-bar   # menu bar app (macOS 13+, Apple Silicon)
+```
+
 **Go TUI** — pick your platform:
 
 ```bash
