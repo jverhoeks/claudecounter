@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # All untrusted inputs (workflow_dispatch input, ref_name from the
       # pushed tag) are routed via env: vars and validated below before
@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload artifacts (workflow_dispatch only)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ClaudeCounterBar-${{ steps.version.outputs.version }}-macos-arm64
           path: |
