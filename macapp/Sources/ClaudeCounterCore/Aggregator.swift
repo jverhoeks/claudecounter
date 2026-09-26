@@ -194,6 +194,14 @@ public struct Totals: Equatable, Sendable {
     /// How much of each vendor's activity carried usable usage data,
     /// scoped to the displayed month (same scope as `month`).
     public var coverage: [String: Coverage] = [:]
+    /// Every day with activity (YYYY-MM-DD) → per-series totals. Unlike
+    /// `daily` this is not windowed: cells are kept forever, and the
+    /// dashboard picks its own range.
+    public var history: [String: [SeriesKey: ModelDay]] = [:]
+    /// Same days, per project with the main/subagent split.
+    public var projectHistory: [String: [String: ProjectDay]] = [:]
+    /// Same days, per-vendor coverage tallies.
+    public var coverageHistory: [String: [String: Coverage]] = [:]
     /// The same tally scoped to `day` / `week`. Kept per period rather
     /// than reusing the month figure: a vendor that only started
     /// reporting usage mid-month is complete today and partial for the
@@ -513,6 +521,10 @@ public actor Aggregator {
         // Per-day-per-model for the daily window.
         struct DayModel: Hashable { let day: CivilDay; let model: String }
         var byDM: [DayModel: CellValue] = [:]
+        struct DaySeries: Hashable { let day: CivilDay; let key: SeriesKey }
+        var byDS: [DaySeries: CellValue] = [:]
+        struct DayProj: Hashable { let day: CivilDay; let project: String; let isSub: Bool; let model: String }
+        var byDP: [DayProj: CellValue] = [:]
 
         for (k, v) in cells {
             let sk = SeriesKey(source: k.source, vendor: k.vendor, model: k.model)
@@ -540,6 +552,27 @@ public actor Aggregator {
             // are shown — the slice below filters).
             byDM[DayModel(day: k.day, model: k.model), default: .zero] =
                 (byDM[DayModel(day: k.day, model: k.model)] ?? .zero).adding(v)
+            byDS[DaySeries(day: k.day, key: sk), default: .zero] =
+                byDS[DaySeries(day: k.day, key: sk), default: .zero].adding(v)
+            let dp = DayProj(day: k.day, project: k.project, isSub: k.isSub, model: k.model)
+            byDP[dp, default: .zero] = byDP[dp, default: .zero].adding(v)
+        }
+        for (k, v) in byDP {
+            var usd = v.costedUSD
+            if pricing.has(model: k.model) {
+                usd += pricing.cost(model: k.model, usage: v.pricedTokens.toUsage())
+            }
+            var pd = out.projectHistory[civilDayString(k.day), default: [:]][k.project] ?? ProjectDay()
+            if k.isSub { pd.sub = pd.sub.adding(v.tokens); pd.subUSD += usd }
+            else       { pd.main = pd.main.adding(v.tokens); pd.mainUSD += usd }
+            out.projectHistory[civilDayString(k.day), default: [:]][k.project] = pd
+        }
+        for (k, v) in byDS {
+            var usd = v.costedUSD
+            if pricing.has(model: k.key.model) {
+                usd += pricing.cost(model: k.key.model, usage: v.pricedTokens.toUsage())
+            }
+            out.history[civilDayString(k.day), default: [:]][k.key] = ModelDay(usd: usd, tokens: v.tokens)
         }
 
         // Apply pricing per (scope, series). `costedUSD` is summed as
@@ -663,6 +696,7 @@ public actor Aggregator {
         }
         for (k, c) in coverage {
             if k.day == today { addCoverage(&out.dayCoverage, k.vendor, c) }
+            addCoverage(&out.coverageHistory[civilDayString(k.day), default: [:]], k.vendor, c)
             if k.day >= weekStart && k.day < weekEnd { addCoverage(&out.weekCoverage, k.vendor, c) }
             if k.day.year == nowYear && k.day.month == nowMonth {
                 addCoverage(&out.coverage, k.vendor, c)

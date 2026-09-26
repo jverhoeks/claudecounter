@@ -84,6 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await appState.refreshPricingIfStale() }
     }
 
+    /// `open claudecounter://dashboard` — scriptable entry point, e.g.
+    /// from Raycast or Shortcuts.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.contains(where: { $0.host == "dashboard" }) {
+            DashboardWindow.show(state: appState)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Kick off the async cache flush. macOS gives the app a few
         // seconds to wind down before SIGKILL, which is enough for the

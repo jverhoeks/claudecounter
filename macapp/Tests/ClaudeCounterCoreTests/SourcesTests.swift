@@ -15,6 +15,26 @@ final class SourcesTests: XCTestCase {
         XCTAssertEqual(cfg.sources, Sources.defaults(home: "/home/u"))
     }
 
+    func test_monthlyFee_roundTripsAndRejectsBadValues() throws {
+        let path = NSTemporaryDirectory() + "/fee-\(UUID().uuidString).toml"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let src = [SourceEntry(vendor: "claude", label: "max", root: "/a", monthlyFeeUSD: 200),
+                   SourceEntry(vendor: "codex", label: "plus", root: "/b")]
+        try Sources.write(src, to: path, home: "/home/u")
+        XCTAssertEqual(try Sources.load(path: path, home: "/home/u").sources, src)
+
+        // Hand-written integer fee loads, like Go's decoder.
+        try "[[source]]\nvendor = \"claude\"\nlabel = \"x\"\nroot = \"/a\"\nmonthly_fee_usd = 100\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try Sources.load(path: path, home: "/home/u").sources[0].monthlyFeeUSD, 100)
+
+        for bad in ["-1", "\"100\"", "abc"] {
+            try "[[source]]\nvendor = \"claude\"\nlabel = \"x\"\nroot = \"/a\"\nmonthly_fee_usd = \(bad)\n"
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertThrowsError(try Sources.load(path: path, home: "/home/u"), bad)
+        }
+    }
+
     func test_defaults_isClaudeProjectsUnderHome() {
         let d = Sources.defaults(home: "/home/u")
         XCTAssertEqual(d.count, 1)

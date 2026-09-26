@@ -544,6 +544,79 @@ final class AggregatorTests: XCTestCase {
     /// 2026-04-26 14:00:00 in the user's local TZ. Late enough into the
     /// day that we can derive yesterday/last-month dates without rolling
     /// the day under feet.
+    // MARK: - dashboard history / analytics
+
+    func test_history_keepsEveryDay_andFeedsAnalyticsSeries() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        let old = Calendar.current.date(byAdding: .day, value: -60, to: Self.fixedNow)!
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              project: "p1", isSub: false, ts: old, msgID: "m1", reqID: "r1"))
+        await agg.apply(event(model: "claude-opus-4-7", input: 1_000_000, output: 0,
+                              cacheRead: 3_000_000,
+                              project: "p1", isSub: false, ts: Self.fixedNow, msgID: "m2", reqID: "r2"))
+        let s = await agg.snapshot()
+        // 60 days back is outside `daily` but must stay in `history`.
+        XCTAssertEqual(s.history.count, 2)
+
+        let days = Analytics.days(ending: Self.fixedNow, count: 7)
+        XCTAssertEqual(days.count, 7)
+        XCTAssertEqual(days.last, "2026-04-26")
+        let series = Analytics.series(Analytics.grouped(s, by: .vendor), days: days)
+        XCTAssertEqual(series.first?.name, "claude")
+        XCTAssertEqual(series.first?.values.count, 7, "idle days are gap-filled")
+        XCTAssertEqual(series.first?.values.last?.tokens.input, 1_000_000)
+        XCTAssertEqual(series.first?.values.first?.usd, 0)
+
+        let today = Analytics.sum(Analytics.grouped(s, by: .model), days: [days.last!])["claude-opus-4-7"]!
+        XCTAssertEqual(today.tokens.cacheHitRate, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(today.tokensPerUSD ?? 0, 4_000_000 / today.usd, accuracy: 1e-6)
+    }
+
+    func test_analytics_everyDimensionSumsToSameTotal_andTopFoldsIntoOther() async {
+        let agg = Aggregator(pricing: .defaults, now: { Self.fixedNow })
+        for (i, p) in ["-Users-a-src-x-one", "-Users-a-src-x-two", "-Users-a-src-x-three"].enumerated() {
+            await agg.apply(event(model: "claude-opus-4-7", input: UInt64(i + 1) * 1_000_000, output: 0,
+                                  project: p, isSub: i == 2, ts: Self.fixedNow,
+                                  msgID: "m\(i)", reqID: "r\(i)"))
+        }
+        let s = await agg.snapshot()
+        let days = Analytics.days(ending: Self.fixedNow, count: 1)
+        let totals = Analytics.Dimension.allCases.map { dim in
+            Analytics.sum(Analytics.grouped(s, by: dim), days: days).values.reduce(0) { $0 + $1.usd }
+        }
+        for t in totals { XCTAssertEqual(t, totals[0], accuracy: 1e-9) }
+
+        let agent = Analytics.sum(Analytics.grouped(s, by: .agent), days: days)
+        XCTAssertEqual(agent["subagent"]?.tokens.input, 3_000_000)
+        XCTAssertEqual(agent["main"]?.tokens.input, 3_000_000)
+
+        let top2 = Analytics.series(Analytics.grouped(s, by: .project), days: days, top: 2)
+        XCTAssertEqual(top2.map(\.name), ["three", "two", "other"])
+        XCTAssertEqual(top2.last?.values[0].tokens.input, 1_000_000)
+    }
+
+    func test_analytics_heatmap_isMondayFirst() {
+        var hours = Array(repeating: [String: Double](), count: 24)
+        hours[9] = ["m": 2]
+        // 2026-04-26 is a Sunday, 2026-04-27 a Monday.
+        let grid = Analytics.heatmap([DailyTotal(day: "2026-04-26", usd: 2, hourlyUSDByModel: hours),
+                                      DailyTotal(day: "2026-04-27", usd: 2, hourlyUSDByModel: hours)])
+        XCTAssertEqual(grid[6][9], 2)
+        XCTAssertEqual(grid[0][9], 2)
+        XCTAssertEqual(grid.flatMap { $0 }.reduce(0, +), 4)
+        XCTAssertEqual(Analytics.heatmap([DailyTotal(day: "2026-04-27", usd: 2, hourlyUSDByModel: hours)],
+                                         model: "other")[0][9], 0)
+    }
+
+    func test_analytics_proratedFee_andProjection() {
+        XCTAssertEqual(Analytics.proratedFee(monthly: 200, period: .month), 200)
+        XCTAssertEqual(Analytics.proratedFee(monthly: 200, period: .day) * 365, 2400, accuracy: 1e-9)
+        XCTAssertEqual(Analytics.proratedFee(monthly: 200, period: .week) * 365 / 7, 2400, accuracy: 1e-9)
+        // 2026-04-26: 26 of 30 days elapsed.
+        XCTAssertEqual(Analytics.projectedMonth(monthToDate: 260, now: Self.fixedNow), 300, accuracy: 1e-9)
+        XCTAssertNil(ModelDay(usd: 0, tokens: TokenCounts(input: 5)).tokensPerUSD)
+    }
+
     static let fixedNow: Date = {
         var c = DateComponents()
         c.year = 2026; c.month = 4; c.day = 26; c.hour = 14

@@ -12,11 +12,15 @@ public struct SourceEntry: Equatable, Sendable {
     public var vendor: String
     public var label: String
     public var root: String
+    /// What this subscription costs per month, in USD (`monthly_fee_usd`).
+    /// 0 = not set. Only the dashboard's value-for-money view reads it.
+    public var monthlyFeeUSD: Double
 
-    public init(vendor: String, label: String, root: String) {
+    public init(vendor: String, label: String, root: String, monthlyFeeUSD: Double = 0) {
         self.vendor = vendor
         self.label = label
         self.root = root
+        self.monthlyFeeUSD = monthlyFeeUSD
     }
 
     /// The series identity: vendor and label together. Two sources may
@@ -38,6 +42,7 @@ public enum SourcesError: Error, LocalizedError, Equatable {
     case unknownVendor(index: Int, vendor: String)
     case emptyLabel(index: Int)
     case emptyRoot(index: Int)
+    case badFee(index: Int, value: String)
     case duplicateSource(id: String)
     case unsafeCharacter(index: Int, field: String)
     case relativeRoot(index: Int, root: String)
@@ -56,6 +61,8 @@ public enum SourcesError: Error, LocalizedError, Equatable {
             return "source \(index): label must not be empty"
         case .emptyRoot(let index):
             return "source \(index): root must not be empty"
+        case .badFee(let index, let value):
+            return "source \(index): monthly_fee_usd \"\(value)\" must be a non-negative number"
         case .unsafeCharacter(let index, let field):
             return "source \(index): \(field) must not contain '#', '\"', '\\', or a newline — the shared TOML writer/parser can't round-trip those characters"
         case .relativeRoot(let index, let root):
@@ -171,7 +178,8 @@ public enum Sources {
     /// stored file should read back as what the user/editor actually
     /// entered, not a silently rewritten absolute path.
     public static func write(_ sources: [SourceEntry], to path: String, home: String = NSHomeDirectory()) throws {
-        let raw = sources.map { RawEntry(vendor: $0.vendor, label: $0.label, root: $0.root) }
+        let raw = sources.map { RawEntry(vendor: $0.vendor, label: $0.label, root: $0.root,
+                                         fee: $0.monthlyFeeUSD == 0 ? "" : String($0.monthlyFeeUSD)) }
         _ = try validate(raw, home: home)
 
         var body = ""
@@ -179,7 +187,9 @@ public enum Sources {
             body += "[[source]]\n"
             body += "vendor = \"\(s.vendor)\"\n"
             body += "label = \"\(s.label)\"\n"
-            body += "root = \"\(s.root)\"\n\n"
+            body += "root = \"\(s.root)\"\n"
+            if s.monthlyFeeUSD > 0 { body += "monthly_fee_usd = \(s.monthlyFeeUSD)\n" }
+            body += "\n"
         }
 
         let url = URL(fileURLWithPath: path)
@@ -192,6 +202,7 @@ public enum Sources {
         var vendor = ""
         var label = ""
         var root = ""
+        var fee = ""
     }
 
     /// The rules shared by `load` (parsed-from-disk entries) and `write`
@@ -236,7 +247,15 @@ public enum Sources {
             guard !containsUnsafeCharacter(raw.root) else {
                 throw SourcesError.unsafeCharacter(index: index, field: "root")
             }
-            let entry = SourceEntry(vendor: raw.vendor, label: raw.label, root: expand(raw.root, home: home))
+            var fee = 0.0
+            if !raw.fee.isEmpty {
+                guard let f = Double(raw.fee), f.isFinite, f >= 0 else {
+                    throw SourcesError.badFee(index: index, value: raw.fee)
+                }
+                fee = f
+            }
+            let entry = SourceEntry(vendor: raw.vendor, label: raw.label, root: expand(raw.root, home: home),
+                                    monthlyFeeUSD: fee)
             // A bare relative root resolves against whatever the
             // process's CWD happens to be, AND lets it defeat
             // checkOverlap's textual comparison against an absolute
@@ -306,6 +325,9 @@ public enum Sources {
             case "vendor": current!.vendor = value
             case "label":  current!.label = value
             case "root":   current!.root = value
+            // Raw, not unquoted: a quoted fee is a TOML string, which
+            // Go's decoder rejects, so this side must too.
+            case "monthly_fee_usd": current!.fee = parts[1]
             default: continue
             }
         }
