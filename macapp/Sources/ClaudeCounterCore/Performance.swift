@@ -550,14 +550,29 @@ public enum PerformanceStats {
             }
             guard let m = invert3(xtx) else { return nil }
             inv = m
-            beta = (0..<3).map { i in m[i * 3] * xty[0] + m[i * 3 + 1] * xty[1] + m[i * 3 + 2] * xty[2] }
+            // Spelled out with explicit types: as one-line closures these
+            // exceeded CI's type-checker time limit.
+            for i in 0..<3 {
+                let a: Double = m[i * 3] * xty[0]
+                let b: Double = m[i * 3 + 1] * xty[1]
+                let c: Double = m[i * 3 + 2] * xty[2]
+                beta[i] = a + b + c
+            }
             if round == 3 { break }
-            let res = rows.map { abs($0.2 - beta[0] - beta[1] * $0.0 - beta[2] * $0.1) }
+            let (b0, b1, b2) = (beta[0], beta[1], beta[2])
+            let res: [Double] = rows.map { (r: (Double, Double, Double)) -> Double in
+                let predicted: Double = b0 + b1 * r.0 + b2 * r.1
+                return abs(r.2 - predicted)
+            }
             let lim = quantile(res, 0.8) ?? .infinity
             rows = zip(rows, res).filter { $0.1 <= lim }.map(\.0)
         }
         guard beta[1] > 0, rows.count > 3 else { return nil }
-        let ssr = rows.reduce(0) { $0 + pow($1.2 - beta[0] - beta[1] * $1.0 - beta[2] * $1.1, 2) }
+        var ssr = 0.0
+        for r in rows {
+            let e: Double = r.2 - (beta[0] + beta[1] * r.0 + beta[2] * r.1)
+            ssr += e * e
+        }
         let s2 = ssr / Double(rows.count - 3)
         let cov = inv.map { $0 * s2 }
         let k = referenceContextK

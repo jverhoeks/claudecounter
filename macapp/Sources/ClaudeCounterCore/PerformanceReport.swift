@@ -182,14 +182,49 @@ public struct PerformanceReport: Sendable {
         let (a, b) = thirds(xs)
         let fa = PerformanceStats.fit(a), fb = PerformanceStats.fit(b)
 
+        // Every per-bucket series is built as a typed local first: as one
+        // initializer full of inline closures this exceeded CI's
+        // type-checker limit.
+        func share(_ g: [RequestSample], _ include: (RequestSample) -> Bool) -> Double? {
+            g.isEmpty ? nil : Double(g.filter(include).count) / Double(g.count)
+        }
+        func contextQuantile(_ g: [RequestSample], _ q: Double) -> Double? {
+            g.count >= 20 ? PerformanceStats.quantile(g.map { Double($0.context) }, q) : nil
+        }
+        let peakInFlight: [Int?] = conc.indices.map { groups[$0].isEmpty ? nil : conc[$0].peak }
+        let meanInFlight: [Double?] = conc.indices.map { groups[$0].isEmpty ? nil : conc[$0].mean }
+        let outputPerMinute: [Double?] = groups.indices.map { (i: Int) -> Double? in
+            guard !groups[i].isEmpty else { return nil }
+            let out: UInt64 = groups[i].reduce(UInt64(0)) { $0 &+ $1.output }
+            return Double(out) / (lengths[i] / 60)
+        }
+        let rebuildCount: [Int] = groups.map { $0.filter { $0.rebuild != .none }.count }
+        let misuseRate: [Double?] = groups.map { rate($0) { $0.toolErrors.misuse } }
+        let exitRate: [Double?] = groups.map { rate($0) { $0.toolErrors.exit } }
+        let outputP50: [Double?] = groups.map { median($0) { Double($0.output) } }
+        let thinkingP50: [Double?] = groups.map { median($0) { s -> Double? in s.thinkingTokens.map { Double($0) } } }
+        let contextP50: [Double?] = groups.map { contextQuantile($0, 0.5) }
+        let contextP90: [Double?] = groups.map { contextQuantile($0, 0.9) }
+        var effortShare: [String: [Double?]] = [:]
+        for e in efforts { effortShare[e] = groups.map { g in share(g) { effortKey($0) == e } } }
+        let subagentShareByBucket: [Double?] = groups.map { share($0) { $0.isSubagent } }
+        let hourE2E: [Double?] = hours.map { $0.count >= 20 ? PerformanceStats.quantile($0.map(\.duration), 0.5) : nil }
+        let hourFirstBlock: [Double?] = hours.map { $0.count >= 20 ? PerformanceStats.quantile($0.map(\.firstBlock), 0.5) : nil }
+        let misuseByContext: [Double?] = contextBins.map { bin in
+            rate(xs.filter { $0.context >= bin.lo && $0.context < bin.hi }) { $0.toolErrors.misuse }
+        }
+        let subagentShare: Double = share(xs) { $0.isSubagent } ?? 0
+        let durations: [Double] = xs.map(\.duration)
+        let firstBlocks: [Double] = xs.map(\.firstBlock)
+
         return PerformanceReport(
             filters: filters, model: model, effortMatrix: matrix, models: rows,
             requests: xs.count,
-            subagentShare: xs.isEmpty ? 0 : Double(xs.filter(\.isSubagent).count) / Double(xs.count),
-            e2eP50: PerformanceStats.quantile(xs.map(\.duration), 0.5),
-            e2eP90: PerformanceStats.quantile(xs.map(\.duration), 0.9),
-            firstBlockP50: PerformanceStats.quantile(xs.map(\.firstBlock), 0.5),
-            firstBlockP90: PerformanceStats.quantile(xs.map(\.firstBlock), 0.9),
+            subagentShare: subagentShare,
+            e2eP50: PerformanceStats.quantile(durations, 0.5),
+            e2eP90: PerformanceStats.quantile(durations, 0.9),
+            firstBlockP50: PerformanceStats.quantile(firstBlocks, 0.5),
+            firstBlockP90: PerformanceStats.quantile(firstBlocks, 0.9),
             fit: PerformanceStats.fit(xs),
             cacheHit: PerformanceStats.cacheHitRate(xs),
             rebuilds: xs.filter { $0.rebuild != .none }.count,
@@ -205,26 +240,22 @@ public struct PerformanceReport: Sendable {
             e2e: pct(\.duration),
             firstBlock: pct(\.firstBlock),
             fits: groups.map(PerformanceStats.fit),
-            peakInFlight: conc.enumerated().map { groups[$0.offset].isEmpty ? nil : $0.element.peak },
-            meanInFlight: conc.enumerated().map { groups[$0.offset].isEmpty ? nil : $0.element.mean },
-            outputPerMinute: groups.indices.map { i in
-                groups[i].isEmpty ? nil : Double(groups[i].reduce(UInt64(0)) { $0 &+ $1.output }) / (lengths[i] / 60)
-            },
+            peakInFlight: peakInFlight,
+            meanInFlight: meanInFlight,
+            outputPerMinute: outputPerMinute,
             cacheHitRate: groups.map(PerformanceStats.cacheHitRate),
-            rebuildCount: groups.map { $0.filter { $0.rebuild != .none }.count },
-            misuseRate: groups.map { rate($0) { $0.toolErrors.misuse } },
-            exitRate: groups.map { rate($0) { $0.toolErrors.exit } },
-            outputP50: groups.map { median($0) { Double($0.output) } },
-            thinkingP50: groups.map { median($0) { $0.thinkingTokens.map { Double($0) } } },
-            contextP50: groups.map { g in g.count >= 20 ? PerformanceStats.quantile(g.map { Double($0.context) }, 0.5) : nil },
-            contextP90: groups.map { g in g.count >= 20 ? PerformanceStats.quantile(g.map { Double($0.context) }, 0.9) : nil },
-            effortShare: Dictionary(uniqueKeysWithValues: efforts.map { e in
-                (e, groups.map { g in g.isEmpty ? nil : Double(g.filter { effortKey($0) == e }.count) / Double(g.count) })
-            }),
-            subagentShareByBucket: groups.map { g in g.isEmpty ? nil : Double(g.filter(\.isSubagent).count) / Double(g.count) },
-            hourE2E: hours.map { $0.count >= 20 ? PerformanceStats.quantile($0.map(\.duration), 0.5) : nil },
-            hourFirstBlock: hours.map { $0.count >= 20 ? PerformanceStats.quantile($0.map(\.firstBlock), 0.5) : nil },
-            misuseByContext: contextBins.map { bin in rate(xs.filter { $0.context >= bin.lo && $0.context < bin.hi }) { $0.toolErrors.misuse } }
+            rebuildCount: rebuildCount,
+            misuseRate: misuseRate,
+            exitRate: exitRate,
+            outputP50: outputP50,
+            thinkingP50: thinkingP50,
+            contextP50: contextP50,
+            contextP90: contextP90,
+            effortShare: effortShare,
+            subagentShareByBucket: subagentShareByBucket,
+            hourE2E: hourE2E,
+            hourFirstBlock: hourFirstBlock,
+            misuseByContext: misuseByContext
         )
     }
 
