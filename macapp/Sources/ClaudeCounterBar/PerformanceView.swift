@@ -99,6 +99,7 @@ struct PerformanceView: View {
                 if let r = model.report, !r.models.isEmpty {
                     explainer
                     GroupBox("All models · last \(r.filters.rangeDays) days · click a row to inspect it") { modelTable(r) }
+                    GroupBox("Effort level by model · share of each model's requests · click a cell to filter") { effortMatrix(r) }
                     kpis(r)
                     section("Speed")
                     grid {
@@ -153,7 +154,13 @@ struct PerformanceView: View {
                         }
                     }
                 } else if model.progress == nil && model.lastScan != nil {
-                    Text("No Claude Code requests in the last \(PerformanceModel.scanDays) days.").foregroundStyle(.secondary)
+                    // Between the backfill finishing and the first report
+                    // landing, `report` is still nil — that's not "empty".
+                    if model.report == nil {
+                        HStack { ProgressView().controlSize(.small); Text("Building report…").foregroundStyle(.secondary) }
+                    } else {
+                        Text("No Claude Code requests in the last \(PerformanceModel.scanDays) days.").foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(16)
@@ -244,6 +251,60 @@ struct PerformanceView: View {
         }
         .font(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Effort matrix
+
+    /// Rows are models (busiest first), columns effort levels. Shade =
+    /// share of that model's requests, one hue, so the mix reads at a
+    /// glance; the numbers show what each level produced.
+    private func effortMatrix(_ r: PerformanceReport) -> some View {
+        let cells = Dictionary(uniqueKeysWithValues: r.effortMatrix.map { ("\($0.model)|\($0.effort)", $0) })
+        let used = PerformanceReport.efforts.filter { e in r.effortMatrix.contains { $0.effort == e } }
+        return Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 6) {
+            GridRow {
+                Text("Model")
+                ForEach(used, id: \.self) { Text($0).frame(maxWidth: .infinity) }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            ForEach(r.models) { row in
+                GridRow {
+                    Text(shortModel(row.model)).font(.callout).lineLimit(1)
+                        .fontWeight(row.model == r.model ? .semibold : nil)
+                    ForEach(used, id: \.self) { e in
+                        effortCell(cells["\(row.model)|\(e)"], selected: row.model == r.model && r.filters.effort == e)
+                            .onTapGesture {
+                                let same = model.filters.effort == e && r.model == row.model
+                                model.filters.model = row.model
+                                model.filters.effort = same ? nil : e
+                            }
+                    }
+                }
+            }
+            Text("Each cell: share of that model's requests · count · median output tokens · median E2E latency. Higher effort means more thinking, longer replies and a bigger bill per turn. Click again to clear the effort filter.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .gridCellColumns(used.count + 1)
+        }
+    }
+
+    @ViewBuilder
+    private func effortCell(_ c: PerformanceReport.EffortCell?, selected: Bool) -> some View {
+        if let c {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(percent(c.share)).font(.system(.body, design: .rounded).weight(.semibold)).monospacedDigit()
+                Text("\(c.count.formatted()) · \(c.outputP50.map { tokenString($0) } ?? "—") tok · \(seconds(c.e2eP50))")
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.08 + 0.55 * c.share), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.accentColor : .clear, lineWidth: 2))
+            .contentShape(Rectangle())
+            .help("\(c.effort): \(c.count) requests, output p50 \(c.outputP50.map { String(format: "%.0f", $0) } ?? "—"), thinking p50 \(c.thinkingP50.map { String(format: "%.0f", $0) } ?? "—"), E2E p50 \(seconds(c.e2eP50))")
+        } else {
+            Text("—").foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+        }
     }
 
     // MARK: KPIs

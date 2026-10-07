@@ -117,6 +117,13 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(r.thinkingP50.compactMap { $0 }.first, 70)
         XCTAssertNil(r.ttftDrift)      // 100 per third, under the 500 floor
         XCTAssertNil(r.misuseDrift)
+        // Matrix: half "high", half no effort recorded; unaffected by the effort filter.
+        let shares = Dictionary(uniqueKeysWithValues: r.effortMatrix.map { ($0.effort, $0.share) })
+        XCTAssertEqual(shares["high"] ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(shares["none"] ?? 0, 0.5, accuracy: 1e-9)
+        let filtered = PerformanceReport.build(samples, filters: .init(rangeDays: 30, effort: "high"), now: now)
+        XCTAssertEqual(filtered.requests, 150)
+        XCTAssertEqual(filtered.effortMatrix.count, 2)
         let main = PerformanceReport.build(samples, filters: .init(rangeDays: 30, agent: .main), now: now)
         XCTAssertEqual(main.requests, 200)
     }

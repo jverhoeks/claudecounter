@@ -44,8 +44,21 @@ public struct PerformanceReport: Sendable {
         public var misuseDrift: PerformanceStats.Drift?
     }
 
+    /// One model × effort cell: how often that model ran at that effort
+    /// and what it produced there.
+    public struct EffortCell: Sendable {
+        public var model: String, effort: String
+        public var count: Int
+        /// Share of the model's requests in range.
+        public var share: Double
+        public var e2eP50: Double?, outputP50: Double?, thinkingP50: Double?
+    }
+
     public var filters: Filters
     public var model: String
+    /// Every model × effort level in range. Ignores the effort filter —
+    /// comparing efforts is the point.
+    public var effortMatrix: [EffortCell]
     public var models: [ModelRow]
     public var requests: Int
     public var subagentShare: Double
@@ -102,6 +115,17 @@ public struct PerformanceReport: Sendable {
                 && (filters.effort == nil || effortKey(s) == filters.effort)
         }
         let byModel = Dictionary(grouping: inScope, by: \.model)
+        let anyEffort = all.filter { s in
+            s.time >= start && (filters.agent == .all || s.isSubagent == (filters.agent == .subagent))
+        }
+        let matrix: [EffortCell] = Dictionary(grouping: anyEffort, by: \.model).flatMap { m, xs in
+            Dictionary(grouping: xs, by: effortKey).map { e, g in
+                EffortCell(model: m, effort: e, count: g.count, share: Double(g.count) / Double(xs.count),
+                           e2eP50: PerformanceStats.quantile(g.map(\.duration), 0.5),
+                           outputP50: PerformanceStats.quantile(g.map { Double($0.output) }, 0.5),
+                           thinkingP50: PerformanceStats.quantile(g.compactMap(\.thinkingTokens).map { Double($0) }, 0.5))
+            }
+        }
 
         let rows: [ModelRow] = byModel.map { m, xs in
             let (a, b) = thirds(xs)
@@ -159,7 +183,7 @@ public struct PerformanceReport: Sendable {
         let fa = PerformanceStats.fit(a), fb = PerformanceStats.fit(b)
 
         return PerformanceReport(
-            filters: filters, model: model, models: rows,
+            filters: filters, model: model, effortMatrix: matrix, models: rows,
             requests: xs.count,
             subagentShare: xs.isEmpty ? 0 : Double(xs.filter(\.isSubagent).count) / Double(xs.count),
             e2eP50: PerformanceStats.quantile(xs.map(\.duration), 0.5),
