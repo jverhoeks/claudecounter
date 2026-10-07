@@ -181,6 +181,20 @@ final class PerformanceTests: XCTestCase {
         XCTAssertFalse(walkOrder("/p/x/abc.jsonl", "/p/x/abc/subagents/agent-1.jsonl"))
     }
 
+    /// Prints the hints for the real last N days (read-only, opt-in).
+    func test_hints_realLogs() async throws {
+        guard ProcessInfo.processInfo.environment["PERF_PARITY"] == "1" else { throw XCTSkip("set PERF_PARITY=1") }
+        let scanner = PerformanceScanner()
+        await scanner.backfill(roots: [NSHomeDirectory() + "/.claude/projects"], notBefore: Date().addingTimeInterval(-8 * 86400))
+        let s = await scanner.snapshot()
+        let days = Int(ProcessInfo.processInfo.environment["HINT_DAYS"] ?? "6") ?? 6
+        let spend = s.filter { $0.time > Date().addingTimeInterval(-Double(days) * 86400) }.reduce(0) { $0 + $1.cost(.defaults) }
+        print("HINTS spend \(days)d $\(Int(spend))")
+        for h in Hints.build(s, pricing: .defaults, settings: ClaudeSettingsSnapshot.load(), days: days) {
+            print("HINTS", h.id, "$\(Int(h.savingUSD))", h.applied ?? "-", "|", h.finding)
+        }
+    }
+
     /// Read-only check against the real logs, compared by hand with the
     /// Python extract. Opt in: PERF_PARITY=1 swift test --filter Performance
     func test_parity_realLogs() async throws {

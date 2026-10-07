@@ -26,17 +26,21 @@ final class PerformanceModel: ObservableObject {
 
     private var building: Task<Void, Never>?
     private var listening: Task<Void, Never>?
-    private var visible = false
+    /// Tabs on screen that use the samples. A count, not a flag: switching
+    /// Performance → Hints can deliver the old tab's disappear after the
+    /// new tab's appear.
+    private var viewers = 0
+    private var visible: Bool { viewers > 0 }
     private var stale = false
 
     func appeared(_ state: AppState, roots: [String]) async {
-        visible = true
+        viewers += 1
         listen(state.performance)
         if lastScan == nil { await backfill(state.performance, roots: roots) }
         else if stale { await refresh(state.performance) }
     }
 
-    func disappeared() { visible = false }
+    func disappeared() { viewers = max(0, viewers - 1) }
 
     func backfill(_ scanner: PerformanceScanner, roots: [String]) async {
         guard progress == nil else { return }

@@ -49,6 +49,19 @@ public struct RequestSample: Equatable, Sendable {
     public var toolErrors: ToolErrorCounts
     public var interrupted: Bool
     public var rebuild: CacheRebuild
+    // Pricing inputs for Hints. Defaulted so existing callers stay valid.
+    public var input: UInt64 = 0
+    public var cacheWrite: UInt64 = 0
+    /// Part of `cacheWrite` written with the 1-hour TTL (billed 2× input).
+    public var cacheWrite1h: UInt64 = 0
+    /// Session file the request came from.
+    public var session: String = ""
+
+    /// What the request cost at `pricing`'s rates (flat; no long-context premium).
+    public func cost(_ pricing: PricingTable) -> Double {
+        pricing.cost(model: model, usage: Usage(input: input, output: output, cacheCreate: cacheWrite,
+                                                 cacheRead: cacheRead, cacheCreate1h: cacheWrite1h))
+    }
 
     /// Request start, derived. Used for concurrency.
     public var start: Date { time.addingTimeInterval(-firstBlock) }
@@ -114,7 +127,9 @@ private struct PerfLine: Decodable {
         let cache_creation_input_tokens: UInt64?
         let cache_read_input_tokens: UInt64?
         let output_tokens_details: Details?
+        let cache_creation: CacheCreation?
         struct Details: Decodable { let thinking_tokens: UInt64? }
+        struct CacheCreation: Decodable { let ephemeral_1h_input_tokens: UInt64? }
     }
     /// `message.content` is either a bare string (typed prompt) or an
     /// array of blocks. Anything else decodes as empty rather than failing
@@ -176,7 +191,7 @@ public final class PerformanceFileParser {
     private struct Node { let isUser: Bool; let parent: String?; let time: Date }
     private struct Block {
         let parent: String?, time: Date, model: String?
-        let input: UInt64, output: UInt64, cacheRead: UInt64, cacheWrite: UInt64
+        let input: UInt64, output: UInt64, cacheRead: UInt64, cacheWrite: UInt64, cacheWrite1h: UInt64
         let thinking: UInt64?, sidechain: Bool, effort: String?
     }
     private struct Outcome { var tools = 0; var errors = ToolErrorCounts(); var interrupted = false }
@@ -248,6 +263,7 @@ public final class PerformanceFileParser {
                 parent: line.parentUuid, time: t, model: line.message?.model,
                 input: u?.input_tokens ?? 0, output: u?.output_tokens ?? 0,
                 cacheRead: u?.cache_read_input_tokens ?? 0, cacheWrite: u?.cache_creation_input_tokens ?? 0,
+                cacheWrite1h: u?.cache_creation?.ephemeral_1h_input_tokens ?? 0,
                 thinking: u?.output_tokens_details?.thinking_tokens,
                 sidechain: line.isSidechain ?? false, effort: line.perTurnEffort ?? line.effort))
             return rid
@@ -303,7 +319,8 @@ public final class PerformanceFileParser {
             output: last.output, context: last.input &+ last.cacheRead &+ last.cacheWrite,
             cacheRead: last.cacheRead,
             thinkingTokens: bl.reversed().lazy.compactMap(\.thinking).first,
-            toolCalls: o.tools, toolErrors: o.errors, interrupted: o.interrupted, rebuild: .none)
+            toolCalls: o.tools, toolErrors: o.errors, interrupted: o.interrupted, rebuild: .none,
+            input: last.input, cacheWrite: last.cacheWrite, cacheWrite1h: last.cacheWrite1h, session: path)
     }
 }
 

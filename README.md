@@ -577,6 +577,13 @@ seconds of its last block. It shows, per model:
   misuse vs context size — next to the confounders (context size,
   effort mix, subagent share) that move them too.
 
+The **Hints** tab turns the same data into a few priced suggestions —
+compact earlier, don't resume big sessions after a break, cache TTL,
+subagent model, default model, effort level — each with the finding, an
+estimated saving for the period, the trade-off, and a copyable
+`~/.claude/settings.json` fragment. It reads that file (never writes it)
+to mark fixes you've already applied. Savings overlap; don't add them up.
+
 → Full menu bar app docs: **[`macapp/README.md`](./macapp/README.md)**
 
 ## 🖥️ Desk display (M5Stack Core2)

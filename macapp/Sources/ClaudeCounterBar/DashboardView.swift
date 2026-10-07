@@ -33,7 +33,7 @@ enum DashboardWindow {
 struct DashboardView: View {
     @ObservedObject var state: AppState
 
-    private enum Tab: String, CaseIterable { case spend = "Spend", performance = "Performance" }
+    private enum Tab: String, CaseIterable { case spend = "Spend", performance = "Performance", hints = "Hints" }
     @State private var tab: Tab = .spend
     /// Lives as long as the window (which is never released), so the
     /// Performance scan survives switching tabs and closing the window.
@@ -82,11 +82,12 @@ struct DashboardView: View {
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            .pickerStyle(.segmented).labelsHidden().frame(width: 360)
             .padding(.top, 12)
             switch tab {
             case .spend: spend
             case .performance: PerformanceView(state: state, model: performance)
+            case .hints: HintsView(state: state, model: performance)
             }
         }
         .frame(minWidth: 720, minHeight: 560)
