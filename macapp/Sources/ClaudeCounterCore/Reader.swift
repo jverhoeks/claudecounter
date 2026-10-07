@@ -547,7 +547,9 @@ public actor Reader {
     /// `<uuid>.jsonl` (because `.` > nothing lexically), so subagent
     /// files are read first → sub wins the dedupe. We mirror that
     /// exactly.
-    private static func candidateFiles(under root: String, notBefore: Date,
+    // Internal, not private: Performance.swift's scanner walks the same
+    // files in the same order, so its requestId dedupe agrees with ours.
+    static func candidateFiles(under root: String, notBefore: Date,
                                         walkable: (String) -> Bool) -> [String] {
         var paths: [String] = []
         walkDirLikeGo(URL(fileURLWithPath: root, isDirectory: true),
@@ -583,8 +585,9 @@ public actor Reader {
 
 // MARK: - Internal helpers
 
+// Internal, not private: shared with Performance.swift's line walk.
 @inline(__always)
-private func nextNewline(in data: Data, from start: Int) -> Int? {
+func nextNewline(in data: Data, from start: Int) -> Int? {
     var i = start
     while i < data.count {
         if data[i] == 0x0A { return i }
@@ -594,7 +597,7 @@ private func nextNewline(in data: Data, from start: Int) -> Int? {
 }
 
 @inline(__always)
-private func isWhitespaceOnly(_ slice: Data) -> Bool {
+func isWhitespaceOnly(_ slice: Data) -> Bool {
     for byte in slice {
         switch byte {
         case 0x20, 0x09, 0x0A, 0x0D: continue

@@ -558,6 +558,25 @@ and by-project tables, and a live tail of recent events.
 
 Ranges past ~35 days show only what the app has cached since install.
 
+The **Performance** tab reads the last 90 days of Claude Code session
+logs when you first open it (seconds; nothing is written to disk), then
+follows the app's file watcher live — a request shows up within a few
+seconds of its last block. It shows, per model:
+
+- E2E latency and time to first block, p50 / p90 / p95 / p99.
+- Estimated time to first token (at a 50k-token context) and
+  inter-token latency, with ±2σ error bars. The logs stamp each content
+  block when it *completes*, not each token, so these come from fitting
+  duration = TTFT + output × ITL + context × c per bucket.
+- Drift: first vs last third of the range, flagged only past 2σ — the
+  "has this model got slower / worse?" question.
+- Concurrency, your output tokens per minute, cache hit rate and
+  rebuilds, latency by hour of day.
+- Quality proxies: the model's own tool-call errors (stale Edit string,
+  unread file, bad path), output and thinking tokens per request,
+  misuse vs context size — next to the confounders (context size,
+  effort mix, subagent share) that move them too.
+
 → Full menu bar app docs: **[`macapp/README.md`](./macapp/README.md)**
 
 ## 🖥️ Desk display (M5Stack Core2)

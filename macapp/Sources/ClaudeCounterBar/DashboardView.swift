@@ -33,6 +33,12 @@ enum DashboardWindow {
 struct DashboardView: View {
     @ObservedObject var state: AppState
 
+    private enum Tab: String, CaseIterable { case spend = "Spend", performance = "Performance" }
+    @State private var tab: Tab = .spend
+    /// Lives as long as the window (which is never released), so the
+    /// Performance scan survives switching tabs and closing the window.
+    @StateObject private var performance = PerformanceModel()
+
     @State private var rangeDays = 30
     @State private var mode: Analytics.Dimension = .model
     @State private var showTokens = false
@@ -72,6 +78,21 @@ struct DashboardView: View {
     private var days: [String] { Analytics.days(ending: state.totals.asOf, count: rangeDays) }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            .padding(.top, 12)
+            switch tab {
+            case .spend: spend
+            case .performance: PerformanceView(state: state, model: performance)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 560)
+    }
+
+    @ViewBuilder private var spend: some View {
         let days = self.days
         let grouped = Analytics.grouped(state.totals, by: mode)
         let series = Analytics.series(grouped, days: days)
@@ -102,7 +123,6 @@ struct DashboardView: View {
             }
             .padding(16)
         }
-        .frame(minWidth: 720, minHeight: 560)
     }
 
     // MARK: Controls
@@ -180,13 +200,19 @@ struct DashboardView: View {
                       value: showTokens ? Double(v.tokens.total) : v.usd)
             }
         }
+        // Straight segments with a dot per day: a smoothed curve invents
+        // values between days and overshoots around spikes.
         return Chart(points) {
             LineMark(x: .value("Day", $0.date, unit: .day),
                      y: .value(showTokens ? "Tokens" : "USD", $0.value))
                 .foregroundStyle(by: .value("Series", $0.series))
-                .interpolationMethod(.monotone)
                 .opacity(focus == nil || $0.series == focus ? 1 : 0.15)
                 .lineStyle(StrokeStyle(lineWidth: $0.series == focus ? 3 : 1.5))
+            PointMark(x: .value("Day", $0.date, unit: .day),
+                      y: .value(showTokens ? "Tokens" : "USD", $0.value))
+                .foregroundStyle(by: .value("Series", $0.series))
+                .opacity(focus == nil || $0.series == focus ? 1 : 0.15)
+                .symbolSize($0.series == focus ? 24 : 12)
         }
         // Explicit so "other" is grey rather than a reused series hue.
         .chartForegroundStyleScale(domain: series.map(\.name), range: series.enumerated().map { i, s in
