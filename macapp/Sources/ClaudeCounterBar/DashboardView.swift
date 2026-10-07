@@ -33,6 +33,12 @@ enum DashboardWindow {
 struct DashboardView: View {
     @ObservedObject var state: AppState
 
+    private enum Tab: String, CaseIterable { case spend = "Spend", performance = "Performance", hints = "Hints" }
+    @State private var tab: Tab = .spend
+    /// Lives as long as the window (which is never released), so the
+    /// Performance scan survives switching tabs and closing the window.
+    @StateObject private var performance = PerformanceModel()
+
     @State private var rangeDays = 30
     @State private var mode: Analytics.Dimension = .model
     @State private var showTokens = false
@@ -72,6 +78,22 @@ struct DashboardView: View {
     private var days: [String] { Analytics.days(ending: state.totals.asOf, count: rangeDays) }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 360)
+            .padding(.top, 12)
+            switch tab {
+            case .spend: spend
+            case .performance: PerformanceView(state: state, model: performance)
+            case .hints: HintsView(state: state, model: performance)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 560)
+    }
+
+    @ViewBuilder private var spend: some View {
         let days = self.days
         let grouped = Analytics.grouped(state.totals, by: mode)
         let series = Analytics.series(grouped, days: days)
@@ -102,7 +124,6 @@ struct DashboardView: View {
             }
             .padding(16)
         }
-        .frame(minWidth: 720, minHeight: 560)
     }
 
     // MARK: Controls
@@ -180,13 +201,19 @@ struct DashboardView: View {
                       value: showTokens ? Double(v.tokens.total) : v.usd)
             }
         }
+        // Straight segments with a dot per day: a smoothed curve invents
+        // values between days and overshoots around spikes.
         return Chart(points) {
             LineMark(x: .value("Day", $0.date, unit: .day),
                      y: .value(showTokens ? "Tokens" : "USD", $0.value))
                 .foregroundStyle(by: .value("Series", $0.series))
-                .interpolationMethod(.monotone)
                 .opacity(focus == nil || $0.series == focus ? 1 : 0.15)
                 .lineStyle(StrokeStyle(lineWidth: $0.series == focus ? 3 : 1.5))
+            PointMark(x: .value("Day", $0.date, unit: .day),
+                      y: .value(showTokens ? "Tokens" : "USD", $0.value))
+                .foregroundStyle(by: .value("Series", $0.series))
+                .opacity(focus == nil || $0.series == focus ? 1 : 0.15)
+                .symbolSize($0.series == focus ? 24 : 12)
         }
         // Explicit so "other" is grey rather than a reused series hue.
         .chartForegroundStyleScale(domain: series.map(\.name), range: series.enumerated().map { i, s in
@@ -272,48 +299,10 @@ struct DashboardView: View {
 
     // MARK: Heatmap
 
-    private struct Cell: Identifiable {
-        let row: Int; let hour: Int; let usd: Double
-        var id: Int { row * 24 + hour }
-    }
-
     private func heatmap(model: String?) -> some View {
-        let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        let grid = Analytics.heatmap(state.totals.daily, model: model)
-        // Row 6 = Monday: the y axis grows upward and Monday reads first.
-        let cells = grid.enumerated().flatMap { wd, hours in
-            hours.enumerated().map { Cell(row: 6 - wd, hour: $0, usd: $1) }
-        }
-        // Colour tops out at the 90th percentile of active hours, so one
-        // outlier hour doesn't leave everything else cold blue.
-        let active = cells.map(\.usd).filter { $0 > 0 }.sorted()
-        let cap = max(active.isEmpty ? 1 : active[Int(Double(active.count - 1) * 0.9)], 0.01)
-        // Explicit cell edges: category axes rendered these as thin strips.
-        return Chart(cells) {
-            RectangleMark(xStart: .value("Hour", Double($0.hour) + 0.05),
-                          xEnd: .value("Hour", Double($0.hour) + 0.95),
-                          yStart: .value("Day", Double($0.row) + 0.06),
-                          yEnd: .value("Day", Double($0.row) + 0.94))
-                .foregroundStyle(by: .value("Spend", min($0.usd, cap)))
-                .cornerRadius(3)
-        }
-        // Classic heat ramp, cold → hot; idle hours stay near-background.
-        .chartForegroundStyleScale(domain: 0...cap,
-                                   range: Gradient(colors: [.gray.opacity(0.12), .blue, .cyan, .yellow, .orange, .red]))
-        .chartXScale(domain: 0...24)
-        .chartXAxis {
-            AxisMarks(values: Array(stride(from: 0.5, to: 24, by: 3))) { v in
-                AxisValueLabel { Text(String(format: "%02d", Int(v.as(Double.self) ?? 0))) }
-            }
-        }
-        .chartYScale(domain: 0...7)
-        .chartYAxis {
-            AxisMarks(position: .leading, values: (0..<7).map { Double($0) + 0.5 }) { v in
-                AxisValueLabel { Text(names[6 - Int(v.as(Double.self) ?? 0)]) }
-            }
-        }
-        .chartLegend(position: .trailing, alignment: .center)
-        .frame(height: 200)
+        HeatField(grid: Analytics.heatmap(state.totals.daily, model: model),
+                  rowLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                  format: { usdString($0) })
     }
 
     // MARK: Subscriptions

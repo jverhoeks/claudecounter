@@ -89,6 +89,11 @@ public final class AppState: ObservableObject {
     /// user adds/removes one at runtime via the editor.
     private var readers: [String: Reader] = [:]
     private var watcher: Watcher?
+    /// Latency/cache analytics for the dashboard's Performance tab. Fed
+    /// the same watcher events as the spend readers (Claude sources
+    /// only) but parses on its own — see `PerformanceScanner`. Inert
+    /// until the tab first asks for a backfill.
+    public let performance = PerformanceScanner()
     private let cacheStore: CacheStore
     /// Where `refreshPricingIfStale` persists a freshly-fetched table.
     /// `nil` (the default) means "use the real app-override path" —
@@ -183,7 +188,7 @@ public final class AppState: ObservableObject {
         self.now = now
         self.calendar = calendar
         self.deviceSession = deviceSession
-        self.deviceSecret = deviceSecret ?? KeychainDeviceSecretStore()
+        self.deviceSecret = deviceSecret ?? CachedDeviceSecretStore(KeychainDeviceSecretStore())
     }
 
     // MARK: Lifecycle
@@ -828,6 +833,12 @@ public final class AppState: ObservableObject {
             self.lastError = "watcher: \(change.path) does not match any configured source; ignoring"
             return
         }
+        if source.vendor == "claude" {
+            // Detached from the spend path: performance parsing must never
+            // delay or fail a spend update.
+            let perf = performance
+            Task.detached(priority: .utility) { await perf.fileChanged(change) }
+        }
         switch change.kind {
         case .create, .modify:
             do {
@@ -918,8 +929,9 @@ public final class AppState: ObservableObject {
 
     // MARK: Device publishing
 
-    /// The Worker write token, read from the secret store each time so
-    /// the popover reflects what is actually stored.
+    /// The Worker write token. The production store reads the Keychain
+    /// once per launch (see `CachedDeviceSecretStore`); saves go through
+    /// it, so this still reflects what is stored.
     public var deviceToken: String? { deviceSecret.readWriteToken() }
 
     public func setDeviceURL(_ url: String) {

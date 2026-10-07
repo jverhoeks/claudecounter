@@ -161,7 +161,22 @@ is close.)
 
 ## 📦 Install (release build)
 
-The menu bar app is published on each
+**Homebrew (recommended):**
+
+```bash
+brew tap jverhoeks/tap
+brew install --cask claudecounter-bar
+open -a ClaudeCounterBar
+```
+
+Upgrade with `brew upgrade --cask claudecounter-bar`. The build is ad-hoc
+signed, not notarized: if macOS refuses to open it, run
+`xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app` once.
+Then click the menu bar item → ⚙ → **Dashboard…** (or
+`open claudecounter://dashboard`) for the Spend, Performance and Hints
+tabs.
+
+**Manual download:** the menu bar app is published on each
 [joint release](https://github.com/jverhoeks/claudecounter/releases)
 (tags shaped `vX.Y.Z`). Out-of-cycle macapp-only patches also appear
 under `macapp-vX.Y.Z` tags — both work.
@@ -188,7 +203,7 @@ ditto -xk "${ZIP}" /Applications/
 #    developer" dialog.
 xattr -dr com.apple.quarantine /Applications/ClaudeCounterBar.app
 
-# 5. Launch
+# 6. Launch
 open /Applications/ClaudeCounterBar.app
 ```
 
@@ -574,9 +589,9 @@ Considered and deferred:
   membership; the `release-macapp.yml` workflow is structured so the
   notarization steps can be added when that's available without
   reshaping anything.
-- **Homebrew Cask** (`brew install --cask claudecounter-bar`) — most
-  cask reviewers expect notarized bundles, so this naturally pairs
-  with the previous bullet.
+- **Homebrew core cask** — the cask ships from the `jverhoeks/tap` tap;
+  getting it into homebrew/cask proper needs a notarized bundle, so it
+  pairs with the previous bullet.
 - **Universal binary** (Intel + Apple Silicon) — currently arm64-only.
   Open an issue if you want Intel and we'll add a second job to the
   release workflow.
