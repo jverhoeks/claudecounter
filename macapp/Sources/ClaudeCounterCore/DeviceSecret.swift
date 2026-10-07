@@ -57,6 +57,43 @@ public final class KeychainDeviceSecretStore: DeviceSecretStore {
     }
 }
 
+/// Reads the underlying store once and answers from memory after that.
+///
+/// The Keychain item's access list trusts one code signature, and an
+/// ad-hoc signed build gets a new one every time it is rebuilt, so each
+/// read can raise an approval prompt. `publishDevice` used to read on
+/// every publish — one prompt per publish for anyone who clicked "Allow"
+/// rather than "Always Allow". Now it's at most one per launch. Whatever
+/// the first read returns is kept, a denied read included, so a refusal
+/// isn't re-asked on every tick; saving or deleting updates the copy.
+public final class CachedDeviceSecretStore: DeviceSecretStore, @unchecked Sendable {
+    private let base: DeviceSecretStore
+    private let lock = NSLock()
+    private var cached: String??
+
+    public init(_ base: DeviceSecretStore) { self.base = base }
+
+    public func readWriteToken() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        if let cached { return cached }
+        let token = base.readWriteToken()
+        cached = .some(token)
+        return token
+    }
+
+    public func saveWriteToken(_ token: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        try base.saveWriteToken(token)
+        cached = .some(token)
+    }
+
+    public func deleteWriteToken() throws {
+        lock.lock(); defer { lock.unlock() }
+        try base.deleteWriteToken()
+        cached = .some(nil)
+    }
+}
+
 /// Test double.
 public final class InMemoryDeviceSecretStore: DeviceSecretStore, @unchecked Sendable {
     private var token: String?
