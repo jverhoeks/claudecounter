@@ -1,0 +1,1086 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claudecounter · dashboards</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --page: #f3f2ee; --surface: #fcfcfb; --raised: #f7f6f3; --line: #e6e5df;
+  --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --base: #c3c2b7; --dimline: #d8d7d0;
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100;
+  --c5: #e87ba4; --c6: #008300; --c7: #4a3aa7; --c8: #e34948; --other: #898781;
+  --q1: #86b6ef; --q2: #3987e5; --q3: #1c5cab; --q4: #0d366b;
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+  --accent: #2a78d6;
+  --tip-bg: #0b0b0b; --tip-ink: #fcfcfb; --tip-ink2: #c3c2b7;
+  --serif: "Iowan Old Style", "New York", ui-serif, "Palatino Linotype", Charter, Georgia, serif;
+  --sans: "Avenir Next", Avenir, "Segoe UI Variable Text", "Helvetica Neue", sans-serif;
+  --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --grain-opacity: .05;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #121211; --surface: #1a1a19; --raised: #222220; --line: #2c2c2a;
+    --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --base: #383835; --dimline: #3a3a37;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
+    --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+    --q1: #184f95; --q2: #2a78d6; --q3: #6da7ec; --q4: #b7d3f6;
+    --accent: #3987e5;
+    --tip-bg: #fcfcfb; --tip-ink: #0b0b0b; --tip-ink2: #52514e;
+    --grain-opacity: .07;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #121211; --surface: #1a1a19; --raised: #222220; --line: #2c2c2a;
+  --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --base: #383835; --dimline: #3a3a37;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
+  --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+  --q1: #184f95; --q2: #2a78d6; --q3: #6da7ec; --q4: #b7d3f6;
+  --accent: #3987e5;
+  --tip-bg: #fcfcfb; --tip-ink: #0b0b0b; --tip-ink2: #52514e;
+  --grain-opacity: .07;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page); color: var(--ink);
+  font: 14px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+button { font: inherit; color: inherit; }
+.num, td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ── Masthead ─────────────────────────────────────────────── */
+header.top {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--page) 86%, transparent);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.top-inner {
+  max-width: 1480px; margin: 0 auto; padding: 14px 28px 0;
+  display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 28px;
+}
+.mark { padding-bottom: 12px; }
+.mark h1 {
+  margin: 0; font: italic 600 26px/1 var(--serif); letter-spacing: -.01em;
+}
+.mark h1 span { font-style: normal; font-weight: 400; color: var(--muted); }
+.mark .spectrum {
+  height: 3px; width: 100%; margin-top: 7px; border-radius: 2px;
+  background: linear-gradient(90deg, #0d1330, #153b8f 15%, #1f8fd6 35%, #3fd1c7 55%, #f2d14b 72%, #f08a24 86%, #e8412c);
+}
+nav.tabs { display: flex; gap: 4px; align-self: end; }
+nav.tabs button {
+  background: none; border: 0; cursor: pointer;
+  padding: 10px 14px 13px; position: relative;
+  font: 500 15px var(--sans); color: var(--ink2);
+}
+nav.tabs button:hover { color: var(--ink); }
+nav.tabs button[aria-selected="true"] { color: var(--ink); }
+nav.tabs button[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 2px;
+  background: var(--ink); border-radius: 2px;
+}
+nav.tabs kbd { font: 11px var(--mono); color: var(--muted); margin-right: 6px; }
+.status { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; color: var(--ink2); font-size: 13px; }
+.status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); display: inline-block; margin-right: 6px; }
+.status .dot.busy { background: var(--warn); animation: pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity: .3; } }
+.btn {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
+  padding: 5px 11px; cursor: pointer; font-size: 13px;
+}
+.btn:hover { border-color: var(--base); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* ── Layout ───────────────────────────────────────────────── */
+main { position: relative; z-index: 1; max-width: 1480px; margin: 0 auto; padding: 22px 28px 60px; }
+.warnings { margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface)); font-size: 13px; }
+.warnings::before { content: "⚠ "; }
+.filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
+  margin-bottom: 18px;
+}
+.seg { display: flex; align-items: center; gap: 8px; }
+.seg > label { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+.seg .opts { display: inline-flex; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg .opts button {
+  border: 0; background: none; cursor: pointer; padding: 4px 10px; border-radius: 6px;
+  font-size: 13px; color: var(--ink2);
+}
+.seg .opts button:hover { color: var(--ink); }
+.seg .opts button[aria-pressed="true"] {
+  background: var(--surface); color: var(--ink); font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .12), 0 0 0 1px var(--line);
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px;
+  border-radius: 999px; border: 1px solid var(--accent); font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.chip button { border: 0; background: none; cursor: pointer; padding: 0 6px; font-size: 15px; line-height: 1; color: var(--ink2); }
+.chip button:hover { color: var(--ink); }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px 11px; min-width: 0;
+}
+.kpi .t { font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi .v { font: 600 22px/1.25 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.kpi.hero { grid-column: span 2; background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.kpi.hero .t, .kpi.hero .s { color: color-mix(in srgb, var(--surface) 70%, var(--ink)); }
+.kpi.hero .v { font: 500 38px/1.1 var(--serif); letter-spacing: -.02em; font-variant-numeric: lining-nums tabular-nums; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 18px 14px; min-width: 0; margin-bottom: 14px;
+}
+.card > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.card h2 { margin: 0; font: 600 16.5px/1.3 var(--serif); letter-spacing: -.005em; }
+.card h2 small { font: 400 12.5px var(--sans); color: var(--muted); margin-left: 8px; letter-spacing: 0; }
+.card .aside { font-size: 12px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 14px; }
+.cols > .card { margin-bottom: 0; }
+.cols + .card, .cols + .cols, .cols + h3, .card + .cols { margin-top: 14px; }
+h3.section {
+  font: 600 11.5px var(--sans); text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
+  margin: 28px 0 10px; display: flex; align-items: center; gap: 12px;
+}
+h3.section::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.note { font-size: 12.5px; color: var(--ink2); max-width: 95ch; margin: 6px 0 0; }
+.muted { color: var(--muted); }
+
+.fresh .card, .fresh .kpi, .fresh .filters { animation: rise .45s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 35ms); }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .fresh .card, .fresh .kpi, .fresh .filters { animation: none; } }
+
+/* ── Charts ───────────────────────────────────────────────── */
+figure.chart { margin: 0; }
+.plot { position: relative; width: 100%; }
+.plot svg { display: block; overflow: visible; }
+.plot text { font: 11px var(--sans); fill: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12.5px; color: var(--ink2); }
+.legend .it { display: inline-flex; align-items: center; gap: 6px; }
+.legend button.it { border: 0; background: none; padding: 0; cursor: pointer; }
+.legend button.it:hover { color: var(--ink); }
+.legend .it.off { opacity: .45; }
+.sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; flex: none; }
+.sw.box { width: 10px; height: 10px; border-radius: 3px; }
+.tip {
+  position: absolute; top: 4px; z-index: 5; pointer-events: none;
+  background: var(--tip-bg); color: var(--tip-ink); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; min-width: 150px; max-width: 280px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / .22);
+}
+.tip .h { font-weight: 600; margin-bottom: 4px; color: var(--tip-ink); }
+.tip .r { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; line-height: 1.6; }
+.tip .r .k { color: var(--tip-ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tip .r .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--tip-ink); }
+.empty { color: var(--muted); padding: 30px 0; text-align: center; }
+
+/* ── Tables ───────────────────────────────────────────────── */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { font: 500 12px var(--sans); color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--base); white-space: nowrap; }
+th.n, td.n { text-align: right; }
+th button { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; color: inherit; }
+th button:hover, th button.on { color: var(--ink); }
+td { padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--raised); }
+tr.sel td { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+td .name { display: inline-flex; align-items: center; gap: 8px; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; }
+.floor { color: var(--muted); font-size: 11px; margin-right: 4px; }
+
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px; border: 1px solid currentColor; line-height: 1.5; font-family: var(--sans); }
+.badge.good { color: var(--good); }
+.badge.bad { color: var(--crit); }
+.badge.noise { color: var(--muted); }
+.badge.warn { color: color-mix(in srgb, var(--warn) 75%, var(--ink)); }
+
+/* ── Heat field ───────────────────────────────────────────── */
+.heat { display: grid; grid-template-columns: 34px 1fr 64px; gap: 8px; }
+.heat .rows { display: grid; grid-template-rows: repeat(7, 1fr); font-size: 12px; color: var(--ink2); text-align: right; }
+.heat .rows span { display: flex; align-items: center; justify-content: flex-end; }
+.heat .field { position: relative; height: 230px; border-radius: 8px; overflow: hidden; background: #0d1330; cursor: crosshair; }
+.heat canvas { width: 100%; height: 100%; display: block; }
+.heat .xh { position: absolute; pointer-events: none; border: 0 dashed rgb(255 255 255 / .55); }
+.heat .xh.v { top: 0; bottom: 0; border-left-width: 1px; }
+.heat .xh.h { left: 0; right: 0; border-top-width: 1px; }
+.heat .ht {
+  position: absolute; pointer-events: none; background: rgb(0 0 0 / .78); color: #fff;
+  font: 12px var(--mono); padding: 3px 7px; border-radius: 5px; white-space: nowrap;
+}
+.heat .hours { grid-column: 2; position: relative; height: 16px; font-size: 11px; color: var(--muted); }
+.heat .hours span { position: absolute; transform: translateX(-50%); }
+.heat .scale { display: grid; grid-template-columns: 10px 1fr; grid-template-rows: auto 1fr auto; gap: 4px 6px; font-size: 11px; color: var(--ink2); height: 230px; }
+.heat .scale .bar { grid-row: 1 / 4; border-radius: 3px; }
+.heat .scale .top { grid-column: 2; }
+.heat .scale .bot { grid-column: 2; grid-row: 3; }
+.busiest { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 12.5px; color: var(--ink2); }
+.busiest b { font: 600 12.5px var(--mono); color: var(--ink); }
+details.raw { margin-top: 10px; font-size: 12.5px; color: var(--ink2); }
+details.raw summary { cursor: pointer; }
+details.raw table { font-size: 11px; margin-top: 8px; }
+details.raw td, details.raw th { padding: 3px 5px; }
+
+/* ── Effort matrix ────────────────────────────────────────── */
+.matrix { display: grid; gap: 4px; font-size: 12.5px; }
+.matrix .hd { color: var(--muted); font-size: 12px; padding: 0 8px; }
+.matrix .m { display: flex; align-items: center; padding-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.matrix .cell {
+  border: 0; text-align: left; cursor: pointer; border-radius: 7px; padding: 6px 9px;
+  background: color-mix(in oklab, var(--accent) var(--a), var(--surface)); color: var(--ink);
+  outline: 2px solid transparent; outline-offset: -2px; min-width: 0;
+}
+.matrix .cell:hover { outline-color: var(--base); }
+.matrix .cell.sel { outline-color: var(--ink); }
+.matrix .cell .p { font: 600 14px var(--mono); }
+.matrix .cell .d { font: 11px var(--mono); color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.matrix .none { color: var(--muted); text-align: center; align-self: center; }
+
+/* ── Hints ────────────────────────────────────────────────── */
+.lead { font: 400 22px/1.35 var(--serif); margin: 4px 0 6px; max-width: 60ch; }
+.lead b { font-weight: 600; }
+.hints { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 14px; margin-top: 18px; }
+.hint { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: 20px 22px 18px; margin: 0; position: relative; overflow: hidden; }
+.hint::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--hue, var(--accent)); }
+.hint .rank { font: 11px var(--mono); color: var(--muted); letter-spacing: .08em; }
+.hint h2 { font-size: 21px; line-height: 1.2; }
+.hint .save { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hint .save .amt { font: 500 34px/1 var(--serif); letter-spacing: -.02em; }
+.hint .save .per { font-size: 13px; color: var(--ink2); }
+.hint p { margin: 0; color: var(--ink2); }
+.hint .fix { color: var(--ink); }
+.hint .fix b { font-weight: 600; }
+.snippet { position: relative; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 70px 10px 12px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; margin: 0; }
+.snippet button { position: absolute; top: 6px; right: 6px; }
+.verdict { font-size: 13px; display: flex; gap: 8px; align-items: baseline; color: var(--ink2); }
+.verdict .badge { flex: none; }
+
+/* ── Loading ──────────────────────────────────────────────── */
+.loading { min-height: 60vh; display: grid; place-content: center; text-align: center; gap: 14px; }
+.loading h2 { font: italic 400 34px var(--serif); margin: 0; }
+.loading .bar { width: min(420px, 70vw); height: 4px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 0 auto; }
+.loading .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #153b8f, #1f8fd6, #3fd1c7, #f2d14b, #f08a24); transition: width .3s; }
+.loading p { margin: 0; color: var(--ink2); font-family: var(--mono); font-size: 13px; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="mark">
+      <h1>claudecounter <span>dashboards</span></h1>
+      <div class="spectrum" aria-hidden="true"></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Dashboards">
+      <button role="tab" data-tab="spend"><kbd>1</kbd>Spend</button>
+      <button role="tab" data-tab="perf"><kbd>2</kbd>Performance</button>
+      <button role="tab" data-tab="hints"><kbd>3</kbd>Hints</button>
+    </nav>
+    <div class="status">
+      <span id="status-text"></span>
+      <button class="btn" id="rescan" title="Read the session logs again (r)">Rescan</button>
+      <button class="btn" id="theme" title="Theme"></button>
+    </div>
+  </div>
+</header>
+<main id="main"></main>
+
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────
+const S = {
+  tab: 'spend',
+  spend: { range: 30, dim: 'model', focus: '', metric: 'usd', sort: 'usd', asc: false },
+  perf: { range: 7, bucket: '', agent: 'all', effort: '', model: '' },
+  hints: { days: 7 },
+};
+try { Object.assign(S, JSON.parse(localStorage.getItem('cc.dash') || '{}')); } catch {}
+if (['spend', 'perf', 'hints'].includes(location.hash.slice(1))) S.tab = location.hash.slice(1);
+const save = () => localStorage.setItem('cc.dash', JSON.stringify(S));
+
+let status = null;   // last /api/status
+let renderSeq = 0;   // drops superseded renders
+let observers = [];  // ResizeObservers of the current view
+let freshTab = true; // animate the next render in
+
+// ── DOM helpers (text always via textContent) ─────────────────
+const $ = (s, r = document) => r.querySelector(s);
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k === 'style') e.style.cssText = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c);
+  return e;
+}
+const NS = 'http://www.w3.org/2000/svg';
+function sv(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// ── Formatting (the macapp's rules) ───────────────────────────
+const arr = x => Array.isArray(x) ? x : [];
+function usd(v) {
+  if (v == null || !isFinite(v)) return '—';
+  const a = Math.abs(v), sign = v < 0 ? '−' : '';
+  return sign + '$' + (a >= 1000
+    ? Math.round(a).toLocaleString('en-US')
+    : a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+}
+function tok(v) {
+  if (v == null || !isFinite(v)) return '—';
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return String(Math.round(v));
+}
+const pct = (v, d = 0) => v == null || !isFinite(v) ? '—' : (v * 100).toFixed(d) + '%';
+const secs = v => v == null ? '—' : v.toFixed(v < 10 ? 1 : 0) + ' s';
+const ints = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
+const shortModel = m => (m || '').replace(/^claude-/, '');
+const parseDay = d => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); };
+const fmtDate = (ms, o) => new Intl.DateTimeFormat('en-US', o).format(new Date(ms));
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const pad2 = n => String(n).padStart(2, '0');
+
+// ── API ───────────────────────────────────────────────────────
+class Scanning extends Error {}
+async function api(path, params) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) if (v !== '' && v != null) q.set(k, v);
+  const r = await fetch(path + (q.size ? '?' + q : ''), { cache: 'no-store' });
+  if (r.status === 503) throw new Scanning();
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function poll() {
+  for (;;) {
+    try {
+      status = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    } catch { status = null; }
+    renderStatus();
+    if (status && status.ready && !status.loading) return;
+    if (status && !status.ready) renderLoading();
+    await sleep(400);
+  }
+}
+
+function renderStatus() {
+  const t = $('#status-text');
+  t.textContent = '';
+  const dot = h('span', { class: 'dot' });
+  if (!status) { t.append(dot, 'server stopped'); dot.classList.add('busy'); return; }
+  if (status.loading) {
+    dot.classList.add('busy');
+    t.append(dot, !status.total ? 'finding logs …'
+      : status.done >= status.total ? 'pricing spend …'
+      : `reading ${ints(status.done)} / ${ints(status.total)} files`);
+  } else {
+    t.append(dot, 'as of ' + fmtDate(Date.parse(status.asOf), { hour: '2-digit', minute: '2-digit', hour12: false }));
+  }
+  $('#rescan').disabled = !!status.loading;
+}
+
+function renderLoading() {
+  const main = $('#main');
+  let box = $('.loading', main);
+  if (!box) {
+    main.replaceChildren(box = h('div', { class: 'loading' },
+      h('h2', { text: 'Reading your session logs' }),
+      h('div', { class: 'bar' }, h('i')),
+      h('p'),
+    ));
+  }
+  const f = status.total ? status.done / status.total : 0;
+  $('.bar i', box).style.width = (f * 100).toFixed(1) + '%';
+  $('p', box).textContent = status.total && status.done >= status.total
+    ? 'requests read · pricing a year of spend …'
+    : status.total
+    ? `${ints(status.done)} of ${ints(status.total)} files · a year of spend, 90 days of requests`
+    : 'finding session logs …';
+}
+
+// ── Colour by entity, not rank ────────────────────────────────
+// A name keeps its slot while it stays on screen; a newcomer takes the
+// lowest slot no visible series holds.
+const SLOTS = 8;
+const slotMaps = {};
+function assignColours(dim, names) {
+  const m = slotMaps[dim] || (slotMaps[dim] = new Map());
+  const live = names.filter(n => n !== 'other');
+  m.live = new Set(live);
+  const used = new Set(live.filter(n => m.has(n)).map(n => m.get(n)));
+  for (const n of live) {
+    if (m.has(n)) continue;
+    let s = 0;
+    while (used.has(s) && s < SLOTS) s++;
+    m.set(n, s % SLOTS); used.add(s % SLOTS);
+  }
+}
+function colourFor(dim, name) {
+  if (name === 'other') return 'var(--other)';
+  const s = slotMaps[dim]?.get(name);
+  return s == null || !slotMaps[dim].live?.has(name) ? 'var(--other)' : `var(--c${s + 1})`;
+}
+
+// ── Controls ──────────────────────────────────────────────────
+function seg(label, options, current, pick) {
+  return h('div', { class: 'seg' },
+    h('label', { text: label }),
+    h('div', { class: 'opts', role: 'group', 'aria-label': label },
+      options.map(o => h('button', {
+        'aria-pressed': String(o.v === current), text: o.l,
+        onclick: () => { if (o.v !== current) pick(o.v); },
+      }))));
+}
+function chip(text, clear) {
+  return h('span', { class: 'chip' }, text, h('button', { 'aria-label': 'Clear ' + text, text: '×', onclick: clear }));
+}
+function kpi(t, v, s, hero) {
+  return h('div', { class: 'kpi' + (hero ? ' hero' : '') },
+    h('div', { class: 't', text: t }), h('div', { class: 'v', text: v, title: v }), h('div', { class: 's', text: s || ' ' }));
+}
+function card(title, sub, ...body) {
+  return h('section', { class: 'card' },
+    h('header', null, h('h2', null, title, sub ? h('small', { text: sub }) : null)),
+    ...body);
+}
+
+// ── Line chart ────────────────────────────────────────────────
+// x: ms timestamps (kind 'time'), hours 0-23 ('hour') or labels ('cat').
+// series: [{name, values, colour, dim}]; errors: [[lo, hi] | null] for
+// the first series. One y axis, always.
+function niceTicks(lo, hi, count = 4) {
+  const span = hi - lo || 1;
+  const raw = span / count, mag = 10 ** Math.floor(Math.log10(raw)), r = raw / mag;
+  const step = (r <= 1 ? 1 : r <= 2 ? 2 : r <= 2.5 ? 2.5 : r <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.floor(lo / step) * step; v <= Math.ceil(hi / step) * step + step / 2; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+// Calendar-aligned ticks: local midnights over longer spans, whole hours
+// (dated at midnight) over the first few days.
+function timeTicks(t0, t1, want) {
+  const out = [], DAY = 864e5, span = t1 - t0;
+  if (span >= 4 * DAY) {
+    const step = [1, 2, 7, 14, 30, 61, 91, 182].find(d => span / DAY / d <= want) || 365;
+    const d = new Date(t0); d.setHours(0, 0, 0, 0);
+    if (+d < t0) d.setDate(d.getDate() + 1);
+    for (; +d <= t1; d.setDate(d.getDate() + step)) out.push([+d, fmtDate(+d, { month: 'short', day: 'numeric' })]);
+  } else {
+    const step = [1, 2, 3, 6, 12, 24].find(hr => span / 36e5 / hr <= want) || 24;
+    const d = new Date(t0); d.setMinutes(0, 0, 0);
+    if (+d < t0) d.setHours(d.getHours() + 1);
+    while (d.getHours() % step) d.setHours(d.getHours() + 1);
+    for (; +d <= t1; d.setHours(d.getHours() + step)) out.push([+d, d.getHours() ? pad2(d.getHours()) + ':00' : fmtDate(+d, { month: 'short', day: 'numeric' })]);
+  }
+  return out;
+}
+
+function lineChart(o) {
+  const { x, kind = 'time', series, fmt, tickFmt = fmt, yDomain, errors, height = 210, xTick, xLong, legendPick } = o;
+  const fig = h('figure', { class: 'chart' });
+  const plot = h('div', { class: 'plot', style: `height:${height}px` });
+  const tip = h('div', { class: 'tip', hidden: true });
+  fig.append(plot);
+  if (series.length >= 2) {
+    fig.append(h('div', { class: 'legend' }, series.filter(s => !s.hideLegend).map(s => {
+      const it = legendPick
+        ? h('button', { class: 'it' + (s.dim ? ' off' : ''), onclick: () => legendPick(s.name), title: 'Focus ' + s.name })
+        : h('span', { class: 'it' });
+      it.append(h('span', { class: 'sw', style: `background:${s.colour}` }), s.name);
+      return it;
+    })));
+  }
+  const has = series.some(s => arr(s.values).some(v => v != null));
+  if (!has || !x.length) { plot.replaceChildren(h('div', { class: 'empty', text: 'No data in this range.' })); return fig; }
+
+  let lastW = 0;
+  const ro = new ResizeObserver(([e]) => {
+    const w = Math.round(e.contentRect.width);
+    if (w && w !== lastW) { lastW = w; draw(w); }
+  });
+  ro.observe(plot);
+  observers.push(ro);
+
+  function draw(W) {
+    const H = height, n = x.length;
+    let lo = Infinity, hi = -Infinity;
+    for (const s of series) for (const v of arr(s.values)) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    for (const e of arr(errors)) if (e) { lo = Math.min(lo, e[0]); hi = Math.max(hi, e[1]); }
+    lo = Math.min(lo, 0);
+    if (yDomain) [lo, hi] = yDomain;
+    if (!(hi > lo)) hi = lo + 1;
+    const ticks = niceTicks(lo, hi);
+    lo = ticks[0]; hi = ticks[ticks.length - 1];
+    const labels = ticks.map(tickFmt);
+    const m = { l: Math.max(...labels.map(l => l.length)) * 6.6 + 14, r: 14, t: 8, b: 24 };
+    const iw = Math.max(W - m.l - m.r, 10), ih = H - m.t - m.b;
+    const X = kind === 'cat'
+      ? i => m.l + (i + .5) / n * iw
+      : kind === 'hour'
+        ? i => m.l + x[i] / 23 * iw
+        : i => m.l + (n === 1 ? iw / 2 : (x[i] - x[0]) / (x[n - 1] - x[0]) * iw);
+    const Y = v => m.t + ih - (v - lo) / (hi - lo) * ih;
+
+    const svg = sv('svg', { width: W, height: H, role: 'img', 'aria-label': o.label || '' });
+    ticks.forEach((t, i) => {
+      svg.append(sv('line', { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), style: `stroke:${i === 0 ? 'var(--base)' : 'var(--grid)'}`, 'stroke-width': 1, 'shape-rendering': 'crispEdges' }));
+      svg.append(sv('text', { x: m.l - 8, y: Y(t) + 3.5, 'text-anchor': 'end' }, labels[i]));
+    });
+    // x ticks
+    let idx;
+    if (kind === 'hour') idx = x.map((_, i) => i).filter(i => x[i] % 3 === 0);
+    else if (kind === 'cat') idx = x.map((_, i) => i);
+    if (idx) for (const i of idx) svg.append(sv('text', { x: X(i), y: H - 6, 'text-anchor': 'middle' }, xTick(x[i])));
+    else for (const [t, label] of timeTicks(x[0], x[n - 1], Math.max(2, Math.floor(iw / 80)))) {
+      const px = n === 1 ? m.l + iw / 2 : m.l + (t - x[0]) / (x[n - 1] - x[0]) * iw;
+      svg.append(sv('text', { x: px, y: H - 6, 'text-anchor': 'middle' }, label));
+    }
+
+    // error bars
+    if (errors) {
+      const c = series[0].colour;
+      errors.forEach((e, i) => { if (e) svg.append(sv('line', { x1: X(i), x2: X(i), y1: Y(e[0]), y2: Y(e[1]), style: `stroke:${c}`, 'stroke-opacity': .35, 'stroke-width': 3, 'stroke-linecap': 'round' })); });
+    }
+    // lines: dimmed first, then the rest in order
+    const order = [...series.filter(s => s.dim), ...series.filter(s => !s.dim)];
+    const markers = n <= 45;
+    for (const s of order) {
+      const vals = arr(s.values);
+      const col = s.dim ? 'var(--dimline)' : s.colour;
+      let d = '', run = [];
+      const flush = () => {
+        if (run.length === 1 && !markers) svg.append(sv('circle', { cx: X(run[0]), cy: Y(vals[run[0]]), r: 2.5, style: `fill:${col}` }));
+        run = [];
+      };
+      vals.forEach((v, i) => {
+        if (v == null) { flush(); return; }
+        d += (run.length ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
+        run.push(i);
+      });
+      flush();
+      svg.append(sv('path', { d, fill: 'none', style: `stroke:${col}`, 'stroke-width': s.dim ? 1.5 : 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      if (markers && !s.dim) vals.forEach((v, i) => {
+        if (v != null) svg.append(sv('circle', { cx: X(i), cy: Y(v), r: 3.5, style: `fill:${col};stroke:var(--surface)`, 'stroke-width': 2 }));
+      });
+    }
+    // crosshair
+    const cross = sv('g', { visibility: 'hidden' });
+    const vline = sv('line', { y1: m.t, y2: m.t + ih, style: 'stroke:var(--ink2)', 'stroke-width': 1, 'stroke-dasharray': '3 3' });
+    cross.append(vline);
+    const dots = series.map(s => { const c = sv('circle', { r: 4.5, style: `fill:${s.dim ? 'var(--dimline)' : s.colour};stroke:var(--surface)`, 'stroke-width': 2 }); cross.append(c); return c; });
+    svg.append(cross);
+    const hit = sv('rect', { x: m.l - 6, y: 0, width: iw + 12, height: H, fill: 'transparent' });
+    svg.append(hit);
+    const xs = x.map((_, i) => X(i));
+    const nearest = px => { let b = 0; for (let i = 1; i < n; i++) if (Math.abs(xs[i] - px) < Math.abs(xs[b] - px)) b = i; return b; };
+    hit.addEventListener('pointermove', ev => {
+      const r = svg.getBoundingClientRect();
+      const i = nearest(ev.clientX - r.left);
+      vline.setAttribute('x1', xs[i]); vline.setAttribute('x2', xs[i]);
+      series.forEach((s, j) => {
+        const v = arr(s.values)[i];
+        dots[j].setAttribute('visibility', v == null ? 'hidden' : 'visible');
+        if (v != null) { dots[j].setAttribute('cx', xs[i]); dots[j].setAttribute('cy', Y(v)); }
+      });
+      cross.setAttribute('visibility', 'visible');
+      let rows = series.map((s, j) => ({ s, v: arr(s.values)[i], e: j === 0 && errors ? errors[i] : null })).filter(r => r.v != null);
+      if (rows.length > 5) rows = rows.filter(r => r.v !== 0).sort((a, b) => b.v - a.v);
+      tip.replaceChildren(h('div', { class: 'h', text: xLong(x[i]) }),
+        ...(rows.length ? rows.map(r => h('div', { class: 'r' },
+          h('span', { class: 'sw', style: `background:${r.s.colour}` }),
+          h('span', { class: 'k', text: r.s.name }),
+          h('span', { class: 'v', text: fmt(r.v) + (r.e ? ` ±${fmt((r.e[1] - r.e[0]) / 2)}` : '') })))
+          : [h('div', { class: 'r' }, h('span'), h('span', { class: 'k', text: 'no data' }), h('span'))]));
+      tip.hidden = false;
+      const tw = tip.offsetWidth;
+      tip.style.left = (xs[i] + 14 + tw > W ? xs[i] - 14 - tw : xs[i] + 14) + 'px';
+    });
+    hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+    plot.replaceChildren(svg, tip);
+  }
+  return fig;
+}
+
+// ── Heat field (the macapp's HeatField) ───────────────────────
+// Values are smoothed with a Gaussian (σ 0.6 cells) before colouring;
+// the readout always shows the raw cell, so the blur never invents a number.
+function heatField(grid, cap, stops, fmt) {
+  const cols = 24, rows = 7, scale = 16, sigma = .6, reach = Math.ceil(3 * sigma);
+  const rgb = stops.map(s => [s.T, (s.RGB >> 16) & 255, (s.RGB >> 8) & 255, s.RGB & 255]);
+  const colour = t => {
+    t = Math.min(Math.max(t, 0), 1);
+    let lo = rgb[0], hi = rgb[rgb.length - 1];
+    for (let i = 1; i < rgb.length; i++) if (t <= rgb[i][0]) { lo = rgb[i - 1]; hi = rgb[i]; break; }
+    const f = hi[0] === lo[0] ? 0 : (t - lo[0]) / (hi[0] - lo[0]);
+    return [1, 2, 3].map(k => lo[k] + (hi[k] - lo[k]) * f);
+  };
+  const W = cols * scale, H = rows * scale;
+  const canvas = h('canvas', { width: W, height: H, role: 'img', 'aria-label': 'Spend by weekday and hour' });
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const cy = (y + .5) / scale - .5;
+    for (let x = 0; x < W; x++) {
+      const cx = (x + .5) / scale - .5;
+      let num = 0, den = 0;
+      for (let r = Math.max(0, Math.trunc(cy) - reach); r <= Math.min(rows - 1, Math.trunc(cy) + reach + 1); r++)
+        for (let c = Math.max(0, Math.trunc(cx) - reach); c <= Math.min(cols - 1, Math.trunc(cx) + reach + 1); c++) {
+          const d2 = (r - cy) ** 2 + (c - cx) ** 2, k = Math.exp(-d2 / (2 * sigma * sigma));
+          num += k * grid[r][c]; den += k;
+        }
+      const [R, G, B] = colour(den > 0 ? num / den / cap : 0);
+      const i = (y * W + x) * 4;
+      img.data[i] = R; img.data[i + 1] = G; img.data[i + 2] = B; img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  const field = h('div', { class: 'field' }, canvas);
+  const vx = h('div', { class: 'xh v', hidden: true }), hx = h('div', { class: 'xh h', hidden: true });
+  const tt = h('div', { class: 'ht', hidden: true });
+  field.append(vx, hx, tt);
+  field.addEventListener('pointermove', ev => {
+    const b = field.getBoundingClientRect();
+    const c = Math.min(cols - 1, Math.max(0, Math.floor((ev.clientX - b.left) / b.width * cols)));
+    const r = Math.min(rows - 1, Math.max(0, Math.floor((ev.clientY - b.top) / b.height * rows)));
+    const px = (c + .5) / cols * b.width, py = (r + .5) / rows * b.height;
+    vx.style.left = px + 'px'; hx.style.top = py + 'px';
+    tt.textContent = `${WEEKDAYS[r]} ${pad2(c)}:00 · ${fmt(grid[r][c])}`;
+    tt.hidden = vx.hidden = hx.hidden = false;
+    tt.style.left = Math.min(px + 8, b.width - tt.offsetWidth - 4) + 'px';
+    tt.style.top = (py > b.height - 30 ? py - 26 : py + 6) + 'px';
+  });
+  field.addEventListener('pointerleave', () => { tt.hidden = vx.hidden = hx.hidden = true; });
+
+  const gradient = 'linear-gradient(to top, ' + stops.map(s => `#${s.RGB.toString(16).padStart(6, '0')} ${(s.T * 100).toFixed(0)}%`).join(', ') + ')';
+  return h('div', { class: 'heat' },
+    h('div', { class: 'rows' }, WEEKDAYS.map(d => h('span', { text: d }))),
+    field,
+    h('div', { class: 'scale' },
+      h('div', { class: 'bar', style: `background:${gradient}` }),
+      h('span', { class: 'top', text: fmt(cap) + '+' }),
+      h('span', { class: 'bot', text: fmt(0) })),
+    h('div', { class: 'hours' }, Array.from({ length: 8 }, (_, k) => h('span', { style: `left:${((k * 3 + .5) / 24 * 100).toFixed(2)}%`, text: pad2(k * 3) }))),
+  );
+}
+
+// ── Spend tab ─────────────────────────────────────────────────
+const DIMS = [
+  { v: 'model', l: 'Model' }, { v: 'vendor', l: 'Vendor' }, { v: 'source', l: 'Source' },
+  { v: 'project', l: 'Project' }, { v: 'agent', l: 'Main / sub' }, { v: 'total', l: 'Total' },
+];
+const COLS = [
+  { k: 'name', l: 'Name' }, { k: 'usd', l: 'Spend', n: 1 }, { k: 'share', l: 'Share', n: 1 },
+  { k: 'tokens', l: 'Tokens', n: 1 }, { k: 'tokensPerUSD', l: 'Tokens / $', n: 1 },
+  { k: 'output', l: 'Output', n: 1 }, { k: 'cacheHit', l: 'Cache hit', n: 1 },
+];
+const PARTIAL = 0.95; // agg.PartialCoverageThreshold
+
+async function renderSpend(root) {
+  const q = S.spend;
+  const v = await api('/api/spend', { range: q.range, dim: q.dim, focus: q.focus });
+  if (q.focus && !v.focus) q.focus = '';
+  const series = arr(v.series), rows = arr(v.rows);
+  assignColours(q.dim, series.map(s => s.name)); // rows beyond the top series fold into 'other'
+  const dimLabel = DIMS.find(d => d.v === q.dim)?.l.toLowerCase() || q.dim;
+  const focus = name => { q.focus = q.focus === name ? '' : name; render(); };
+
+  root.append(h('div', { class: 'filters' },
+    seg('Range', [7, 30, 90, 365].map(d => ({ v: d, l: d === 365 ? '1y' : d + 'd' })), q.range, x => { q.range = x; render(); }),
+    seg('Group by', DIMS, q.dim, x => { q.dim = x; q.focus = ''; render(); }),
+    seg('Show', [{ v: 'usd', l: 'Spend' }, { v: 'tokens', l: 'Tokens' }], q.metric, x => { q.metric = x; render(); }),
+    v.focus ? chip('Focus: ' + v.focus, () => { q.focus = ''; render(); }) : null,
+  ));
+
+  const k = v.kpis, scope = v.focus ? ' · ' + v.focus : '';
+  root.append(h('div', { class: 'kpis' },
+    kpi('Spend at API prices', usd(k.usd), `last ${q.range} days${scope}`, true),
+    kpi('Tokens', tok(k.tokens), 'in + out + cache'),
+    kpi('Tokens per $', k.tokensPerUSD == null ? '—' : tok(k.tokensPerUSD), 'higher is cheaper'),
+    kpi('Average per day', usd(k.avgPerDay), `over ${q.range} days`),
+    kpi('Cache hit', pct(k.cacheHit, 1), 'cache reads ÷ all input'),
+    kpi('Month projected', usd(k.monthProjected), 'month to date, extrapolated'),
+  ));
+
+  // Chart: focus drawn on top, everything else recedes.
+  const days = arr(v.days).map(parseDay);
+  const usdMode = q.metric === 'usd';
+  const chartSeries = series.map(s => ({
+    name: s.name, colour: colourFor(q.dim, s.name),
+    values: usdMode ? arr(s.usd) : arr(s.tokens),
+    dim: !!v.focus && s.name !== v.focus,
+  }));
+  const chart = lineChart({
+    x: days, series: chartSeries, fmt: usdMode ? usd : tok, height: 260,
+    tickFmt: usdMode ? v => '$' + v.toLocaleString('en-US', { maximumFractionDigits: v < 10 ? 2 : 0 }) : tok,
+    label: `${usdMode ? 'Spend' : 'Tokens'} per day by ${dimLabel}`,
+    xTick: ms => fmtDate(ms, { month: 'short', day: 'numeric' }),
+    xLong: ms => fmtDate(ms, { weekday: 'short', month: 'short', day: 'numeric' }),
+    legendPick: q.dim === 'total' ? null : focus,
+  });
+  root.append(card(`${usdMode ? 'Spend' : 'Tokens'} per day`, `by ${dimLabel} · top ${8} and other · click a legend entry to focus`,
+    chart,
+    v.historyStart ? h('p', { class: 'note', text: `No data before ${fmtDate(parseDay(v.historyStart), { month: 'long', day: 'numeric', year: 'numeric' })}: the scan reaches about a year back.` }) : null));
+
+  // Table + heatmap side by side.
+  const sorted = [...rows].sort((a, b) => {
+    const x = a[q.sort], y = b[q.sort];
+    let c = q.sort === 'name' ? String(x).localeCompare(String(y)) : (x ?? -1) - (y ?? -1);
+    return q.asc ? c : -c;
+  });
+  const th = c => h('th', { class: c.n ? 'n' : '' }, h('button', {
+    class: q.sort === c.k ? 'on' : '', 'aria-sort': q.sort === c.k ? (q.asc ? 'ascending' : 'descending') : null,
+    onclick: () => { if (q.sort === c.k) q.asc = !q.asc; else { q.sort = c.k; q.asc = c.k === 'name'; } render(); },
+  }, c.l + (q.sort === c.k ? (q.asc ? ' ▴' : ' ▾') : '')));
+  const table = h('div', { class: 'tablewrap' }, h('table', null,
+    h('thead', null, h('tr', null, COLS.map(th))),
+    h('tbody', null, sorted.map(r => h('tr', {
+      class: 'click' + (r.name === v.focus ? ' sel' : ''), tabindex: 0,
+      onclick: () => focus(r.name), onkeydown: e => { if (e.key === 'Enter') focus(r.name); },
+    },
+      h('td', null, h('span', { class: 'name', title: r.name }, h('span', { class: 'sw box', style: `background:${colourFor(q.dim, r.name)}` }), r.name)),
+      h('td', { class: 'n' },
+        r.coverage < PARTIAL ? h('span', { class: 'floor', title: `Only ${pct(r.coverage)} of turns carried usage: this is a floor`, text: `≥ · ${pct(r.coverage)}` }) : null,
+        usd(r.usd)),
+      h('td', { class: 'n', text: pct(r.share) }),
+      h('td', { class: 'n', text: tok(r.tokens) }),
+      h('td', { class: 'n', text: r.tokensPerUSD == null ? '—' : tok(r.tokensPerUSD) }),
+      h('td', { class: 'n', text: tok(r.output) }),
+      h('td', { class: 'n', text: pct(r.cacheHit) }),
+    )))));
+  const tableCard = card(`By ${dimLabel}`, `last ${q.range} days · click a row to focus`,
+    rows.length ? table : h('div', { class: 'empty', text: 'No spend in this range.' }));
+
+  const grid = v.heatmap;
+  const busy = [];
+  grid.forEach((row, d) => row.forEach((x, hr) => { if (x > 0) busy.push({ d, hr, x }); }));
+  busy.sort((a, b) => b.x - a.x);
+  const total = busy.reduce((s, b) => s + b.x, 0);
+  const heatCard = card('When you spend', `weekday × hour · last 30 days${v.heatmapFocus ? ' · ' + v.heatmapFocus : q.dim === 'model' ? '' : ' · all models'}`,
+    heatField(grid, v.heatCap, arr(v.heatStops), usd),
+    h('div', { class: 'busiest' },
+      h('span', null, 'Total ', h('b', { text: usd(total) })),
+      busy.slice(0, 5).map(b => h('span', null, `${WEEKDAYS[b.d]} ${pad2(b.hr)}:00 `, h('b', { text: usd(b.x) })))),
+    h('details', { class: 'raw' }, h('summary', { text: 'Show as table' }),
+      h('div', { class: 'tablewrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th'), Array.from({ length: 24 }, (_, i) => h('th', { class: 'n', text: pad2(i) })))),
+        h('tbody', null, grid.map((row, d) => h('tr', null, h('th', { text: WEEKDAYS[d] }),
+          row.map(x => h('td', { class: 'n', text: x > 0 ? usd(x) : '·' })))))))),
+  );
+  root.append(h('div', { class: 'cols' }, tableCard, heatCard));
+
+  // Subscriptions
+  const subs = arr(v.subs);
+  if (subs.length) {
+    const cell = p => {
+      const parts = [usd(p.apiUSD)];
+      if (p.feeUSD > 0) {
+        const x = p.apiUSD / p.feeUSD, ok = x >= 1;
+        return h('td', { class: 'n' }, usd(p.apiUSD), ' ',
+          h('span', { class: 'badge ' + (ok ? 'good' : 'warn'), title: `prorated fee ${usd(p.feeUSD)}` }, (ok ? '▲ ' : '▼ ') + x.toFixed(1) + '× fee'));
+      }
+      return h('td', { class: 'n', text: parts[0] });
+    };
+    root.append(card('Subscriptions', 'API-equivalent spend against the fee',
+      h('div', { class: 'tablewrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', { text: 'Source' }), h('th', { class: 'n', text: 'Fee / month' }),
+          ['day', 'week', 'month'].map(p => h('th', { class: 'n', text: 'This ' + p })))),
+        h('tbody', null, subs.map(s => h('tr', null,
+          h('td', { text: s.source }), h('td', { class: 'n', text: s.feeUSD > 0 ? usd(s.feeUSD) : '—' }),
+          arr(s.periods).map(cell)))))),
+      h('p', { class: 'note', text: 'Spend is what the same usage would cost at API prices; set monthly_fee_usd per source in sources.toml. The fee is prorated (a week is 7/365 of a year’s fees).' })));
+  }
+}
+
+// ── Performance tab ───────────────────────────────────────────
+function drift(d, points) {
+  if (!d) return h('span', { class: 'muted', text: '—' });
+  const change = points ? (d.after - d.before) * 100 : (d.before ? (d.after - d.before) / d.before * 100 : 0);
+  const sig = Math.abs(d.after - d.before) > d.twoSigma;
+  const worse = d.after > d.before;
+  const tag = !sig ? 'noise' : worse ? 'worse' : 'better';
+  const sign = change >= 0 ? '+' : '−';
+  return h('span', { class: 'num' },
+    sign + (points ? Math.abs(change).toFixed(2) + ' pp' : Math.abs(change).toFixed(0) + '%') + ' ',
+    h('span', { class: 'badge ' + (!sig ? 'noise' : worse ? 'bad' : 'good') }, (!sig ? '· ' : worse ? '▲ ' : '▼ ') + tag));
+}
+
+async function renderPerf(root) {
+  const q = S.perf;
+  const r = await api('/api/perf', q);
+  const efforts = arr(r.efforts);
+  root.append(h('div', { class: 'filters' },
+    seg('Range', [3, 7, 30, 90].map(d => ({ v: d, l: d + 'd' })), q.range, x => { q.range = x; render(); }),
+    seg('Bucket', [{ v: '', l: 'Auto' }, { v: 'hour', l: 'Hour' }, { v: 'day', l: 'Day' }, { v: 'week', l: 'Week' }], q.bucket, x => { q.bucket = x; render(); }),
+    seg('Agent', [{ v: 'all', l: 'All' }, { v: 'main', l: 'Main' }, { v: 'subagent', l: 'Subagents' }], q.agent, x => { q.agent = x; render(); }),
+    seg('Effort', [{ v: '', l: 'All' }, ...efforts.map(e => ({ v: e, l: e }))], q.effort, x => { q.effort = x; render(); }),
+    q.model ? chip('Model: ' + shortModel(q.model), () => { q.model = ''; render(); }) : null,
+  ));
+  const models = arr(r.models);
+  if (!models.length) {
+    root.append(card('No requests', null, h('div', { class: 'empty', text: `No Claude Code requests in the last ${q.range} days with these filters.` })));
+    return;
+  }
+  root.append(h('p', { class: 'note', style: 'margin:0 0 14px', text: 'Session logs record when each content block completes, not each token. End-to-end latency and time to first block are measured; TTFT and inter-token latency are estimated per bucket by fitting duration = TTFT + output × ITL + context × c (trimmed least squares, error bars ±2σ). Drift compares the first and last third of the period; it only says "worse" or "better" past 2σ.' }));
+
+  // Models table
+  const pick = m => { q.model = q.model === m ? '' : m; render(); };
+  root.append(card('All models', `last ${q.range} days · click a row to inspect it`, h('div', { class: 'tablewrap' }, h('table', null,
+    h('thead', null, h('tr', null, ['Model', 'Requests', 'E2E p50', 'First block p50', 'Est. TTFT', 'Est. tok/s', 'Misuse', 'TTFT drift', 'ITL drift', 'Misuse drift']
+      .map((l, i) => h('th', { class: i && i < 7 ? 'n' : '', text: l })))),
+    h('tbody', null, models.map(m => h('tr', {
+      class: 'click' + (m.model === q.model ? ' sel' : ''), tabindex: 0,
+      onclick: () => pick(m.model), onkeydown: e => { if (e.key === 'Enter') pick(m.model); },
+    },
+      h('td', { text: shortModel(m.model) }),
+      h('td', { class: 'n', text: ints(m.requests) }),
+      h('td', { class: 'n', text: secs(m.e2eP50) }),
+      h('td', { class: 'n', text: secs(m.firstBlockP50) }),
+      h('td', { class: 'n', text: m.fit ? m.fit.ttft.toFixed(2) + ' s' : '—' }),
+      h('td', { class: 'n', text: m.fit && m.fit.itlMs > 0 ? (1000 / m.fit.itlMs).toFixed(0) : '—' }),
+      h('td', { class: 'n', text: pct(m.misuse, 1) }),
+      h('td', null, drift(m.ttftDrift)), h('td', null, drift(m.itlDrift)), h('td', null, drift(m.misuseDrift, true)),
+    )))))));
+
+  // Effort matrix
+  const cells = arr(r.effortMatrix);
+  const mm = [...new Set(cells.map(c => c.model))];
+  const at = new Map(cells.map(c => [c.model + '|' + c.effort, c]));
+  const matrix = h('div', { class: 'matrix', style: `grid-template-columns: minmax(130px, 200px) repeat(${efforts.length}, minmax(110px, 1fr))` },
+    h('span'), efforts.map(e => h('span', { class: 'hd', text: e })),
+    mm.map(model => [
+      h('span', { class: 'm', title: model, text: shortModel(model) }),
+      efforts.map(e => {
+        const c = at.get(model + '|' + e);
+        if (!c || !c.count) return h('span', { class: 'none', text: '—' });
+        const sel = q.model === model && q.effort === e;
+        return h('button', {
+          class: 'cell' + (sel ? ' sel' : ''), style: `--a:${(8 + 55 * c.share).toFixed(0)}%`,
+          title: `${e}: ${ints(c.count)} requests, output p50 ${c.outputP50 == null ? '—' : ints(c.outputP50)}, thinking p50 ${c.thinkingP50 == null ? '—' : ints(c.thinkingP50)}, E2E p50 ${secs(c.e2eP50)}`,
+          onclick: () => { if (sel) { q.effort = ''; } else { q.model = model; q.effort = e; } render(); },
+        }, h('div', { class: 'p', text: pct(c.share) }),
+          h('div', { class: 'd', text: `${ints(c.count)} · ${c.outputP50 == null ? '—' : tok(c.outputP50)} tok · ${secs(c.e2eP50)}` }));
+      }),
+    ]));
+  root.append(card('Effort level by model', 'share of each model’s requests · click a cell to filter, again to clear', matrix,
+    h('p', { class: 'note', text: 'Each cell: share of that model’s requests · count · median output tokens · median E2E latency. Higher effort means more thinking, longer replies and a bigger bill per turn.' })));
+
+  // KPIs
+  const f = r.fit;
+  root.append(h('h3', { class: 'section', text: (r.model ? shortModel(r.model) : 'All models') + (q.effort ? ' · effort ' + q.effort : '') }));
+  root.append(h('div', { class: 'kpis' },
+    kpi('Requests', ints(r.requests), `${pct(r.subagentShare)} subagent`),
+    kpi('E2E p50', secs(r.e2eP50), `p90 ${secs(r.e2eP90)}`),
+    kpi('First block p50', secs(r.firstBlockP50), `p90 ${secs(r.firstBlockP90)}`),
+    kpi('Est. TTFT @ 50k', f ? f.ttft.toFixed(2) + ' s' : '—', f ? `${f.contextCostPer100k >= 0 ? '+' : '−'}${Math.abs(f.contextCostPer100k).toFixed(2)} s / 100k ctx` : ''),
+    kpi('Est. decode', f && f.itlMs > 0 ? (1000 / f.itlMs).toFixed(0) + ' tok/s' : '—', f ? `ITL ${f.itlMs.toFixed(1)} ms/token` : ''),
+    kpi('Cache hit', pct(r.cacheHit, 1), `${ints(r.rebuilds)} rebuilds`),
+    kpi('Tool misuse', pct(r.misuse, 2), `of ${ints(r.toolCalls)} calls`),
+  ));
+  const dTile = (t, d, unit, digits, points, extra) => {
+    const fv = x => points ? pct(x, digits) : x.toFixed(digits) + ' ' + unit;
+    return h('div', { class: 'kpi' }, h('div', { class: 't', text: t + ' · first → last third' }),
+      h('div', { class: 'v', style: 'font-size:18px' }, drift(d, points)),
+      h('div', { class: 's', text: d ? `${fv(d.before)} → ${fv(d.after)} · ±${fv(d.twoSigma)}${extra ? ' · ' + extra : ''}` : 'not enough data' }));
+  };
+  const ctx = r.contextBefore != null && r.contextAfter != null ? `median ctx ${(r.contextBefore / 1000).toFixed(0)}k → ${(r.contextAfter / 1000).toFixed(0)}k` : '';
+  root.append(h('div', { class: 'kpis' },
+    dTile('TTFT drift', r.ttftDrift, 's', 2), dTile('Inter-token latency drift', r.itlDrift, 'ms', 1),
+    dTile('Tool misuse drift', r.misuseDrift, '', 2, true, ctx)));
+
+  // Charts
+  const bucket = q.bucket || (q.range <= 7 ? 'hour' : 'day');
+  const x = arr(r.buckets);
+  const xTick = bucket === 'hour'
+    ? ms => { const d = new Date(ms); return d.getHours() === 0 || x.length < 30 ? fmtDate(ms, { month: 'short', day: 'numeric' }) + (d.getHours() ? ' ' + pad2(d.getHours()) + 'h' : '') : pad2(d.getHours()) + ':00'; }
+    : ms => fmtDate(ms, { month: 'short', day: 'numeric' });
+  const xLong = bucket === 'hour'
+    ? ms => fmtDate(ms, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+    : bucket === 'week' ? ms => 'Week of ' + fmtDate(ms, { month: 'short', day: 'numeric' })
+      : ms => fmtDate(ms, { weekday: 'short', month: 'short', day: 'numeric' });
+  const T = (title, opts) => card(title, null, lineChart({ x, xTick, xLong, ...opts }));
+  const pctl = data => {
+    const labels = [...arr(r.percentiles)].reverse();
+    const qs = ['var(--q4)', 'var(--q3)', 'var(--q2)', 'var(--q1)'];
+    return [...labels.map((l, i) => ({ name: l, values: arr((data || {})[l]), colour: qs[i] })),
+      { name: 'mean', values: arr((data || {}).mean), colour: 'var(--c2)' }];
+  };
+  const sFmt = v => v.toFixed(v < 10 && v !== 0 ? 1 : 0) + ' s';
+  const est = (key, sdKey) => ({
+    series: [{ name: 'estimate', colour: 'var(--c1)', values: arr(r.fits).map(f => f ? f[key] : null) }],
+    errors: arr(r.fits).map(f => f ? [Math.max(0, f[key] - 2 * f[sdKey]), f[key] + 2 * f[sdKey]] : null),
+  });
+  const k1 = v => (v / 1000).toFixed(0) + 'k';
+  const div1k = a => arr(a).map(v => v == null ? null : v / 1000);
+  const effortCols = { none: 'var(--other)', low: 'var(--q1)', medium: 'var(--q2)', high: 'var(--q3)', xhigh: 'var(--q4)' };
+  const usedEfforts = efforts.filter(e => arr((r.effortShare || {})[e]).some(v => (v || 0) > 0));
+
+  root.append(h('h3', { class: 'section', text: 'Speed' }), h('div', { class: 'cols' },
+    T('E2E request latency', { series: pctl(r.e2e), fmt: sFmt }),
+    T('Time to first block', { series: pctl(r.firstBlock), fmt: sFmt }),
+    T('Est. time to first token @ 50k context', { ...est('ttft', 'ttftSD'), fmt: v => v.toFixed(1) + ' s' }),
+    T('Est. inter-token latency (ms / token)', { ...est('itlMs', 'itlSD'), fmt: v => v.toFixed(1) + ' ms' }),
+  ));
+  root.append(h('h3', { class: 'section', text: 'Load & cache' }), h('div', { class: 'cols' },
+    T('Concurrency (requests in flight)', { series: [{ name: 'peak', values: arr(r.peakInFlight), colour: 'var(--q3)' }, { name: 'mean', values: arr(r.meanInFlight), colour: 'var(--q1)' }], fmt: v => v.toFixed(1) }),
+    T('Your output tokens per minute (load, not speed)', { series: [{ name: 'output tok/min', values: arr(r.outputPerMinute), colour: 'var(--c1)' }], fmt: tok }),
+    T(`Cache hit rate · ${ints(r.rebuilds)} rebuilds`, { series: [{ name: 'hit rate', values: arr(r.cacheHitRate), colour: 'var(--c1)' }], fmt: v => pct(v), yDomain: [0, 1] }),
+    card('By hour of day (local), median', null, lineChart({
+      x: Array.from({ length: 24 }, (_, i) => i), kind: 'hour', fmt: sFmt,
+      xTick: v => pad2(v), xLong: v => pad2(v) + ':00',
+      series: [{ name: 'E2E', values: arr(r.hourE2E), colour: 'var(--q3)' }, { name: 'first block', values: arr(r.hourFirstBlock), colour: 'var(--q1)' }],
+    })),
+  ));
+  root.append(h('h3', { class: 'section', text: 'Quality proxies — they move with task mix too' }), h('div', { class: 'cols' },
+    T('Tool-call errors (share of tool calls)', { series: [{ name: 'misuse', values: arr(r.misuseRate), colour: 'var(--c2)' }, { name: 'nonzero exit', values: arr(r.exitRate), colour: 'var(--other)' }], fmt: v => pct(v, 1) }),
+    T('Output per request, median tokens', { series: [{ name: 'output', values: arr(r.outputP50), colour: 'var(--c1)' }, { name: 'thinking', values: arr(r.thinkingP50), colour: 'var(--c3)' }], fmt: tok }),
+    card('Tool misuse vs context size', null, lineChart({
+      x: arr(r.contextBins), kind: 'cat', fmt: v => pct(v, 1), xTick: v => v, xLong: v => 'context ' + v,
+      series: [{ name: 'misuse', values: arr(r.misuseByContext), colour: 'var(--c2)' }],
+    })),
+  ), h('p', { class: 'note', text: 'Misuse = the model’s own tool error: stale Edit string, unread file, bad path, invalid input. Nonzero exit is often grep finding nothing; permission blocks and network errors are left out.' }));
+  root.append(h('h3', { class: 'section', text: 'What else changed' }), h('div', { class: 'cols' },
+    T('Context size (k tokens)', { series: [{ name: 'p90', values: div1k(r.contextP90), colour: 'var(--q3)' }, { name: 'p50', values: div1k(r.contextP50), colour: 'var(--q1)' }], fmt: v => v.toFixed(0) + 'k' }),
+    T('Effort mix', { series: usedEfforts.map(e => ({ name: e, values: arr(r.effortShare[e]), colour: effortCols[e] || 'var(--other)' })), fmt: v => pct(v), yDomain: [0, 1] }),
+    T('Subagent share', { series: [{ name: 'subagent', values: arr(r.subagentShareByBucket), colour: 'var(--c2)' }], fmt: v => pct(v), yDomain: [0, 1] }),
+  ));
+}
+
+// ── Hints tab ─────────────────────────────────────────────────
+async function renderHints(root) {
+  const q = S.hints;
+  const v = await api('/api/hints', { days: q.days });
+  root.append(h('div', { class: 'filters' },
+    seg('Period', arr(v.periods).map(d => ({ v: d, l: `last ${d} days` })), q.days, x => { q.days = x; render(); })));
+  const hs = arr(v.hints);
+  const lead = h('p', { class: 'lead' }, h('b', { text: usd(v.spendUSD) }), ` spent in the last ${v.days} days at API prices. `);
+  lead.append(hs.length ? `${hs.length} change${hs.length > 1 ? 's' : ''} would have saved money.` : 'Nothing worth changing in this period.');
+  root.append(lead, h('p', { class: 'note', text: v.disclaimer }));
+  const hues = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c7)'];
+  root.append(h('div', { class: 'hints' }, hs.map((x, i) => {
+    const copy = h('button', { class: 'btn', text: 'Copy' });
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(x.snippet); copy.textContent = 'Copied'; } catch { copy.textContent = 'Select it'; }
+      setTimeout(() => { copy.textContent = 'Copy'; }, 1400);
+    });
+    return h('article', { class: 'card hint', style: `--hue:${hues[i % hues.length]}` },
+      h('div', null,
+        h('div', { class: 'rank', text: `HINT ${String(i + 1).padStart(2, '0')}` }),
+        h('h2', { text: x.title })),
+      h('div', { class: 'save' },
+        h('span', { class: 'amt', text: '≈ ' + usd(x.savingUSD) }),
+        h('span', { class: 'per', text: v.days === 30 ? 'in 30 days' : `in ${v.days} days · ≈ ${usd(x.savingUSD * 30 / Math.max(v.days, 1))}/month` })),
+      h('div', { style: 'display:grid;gap:10px;align-content:start' },
+        h('p', { text: x.finding }),
+        h('p', { class: 'fix' }, h('b', { text: 'Fix ' }), x.fix),
+        x.snippet ? h('pre', { class: 'snippet' }, h('code', { text: x.snippet }), copy) : null),
+      x.applied
+        ? h('div', { class: 'verdict' }, h('span', { class: 'badge good', text: '✓ Applied' }), x.applied)
+        : h('div', { class: 'verdict' }, h('span', { class: 'badge warn', text: '⚠ Trade-off' }), x.caveat));
+  })));
+}
+
+// ── Shell ─────────────────────────────────────────────────────
+async function render() {
+  save();
+  const seq = ++renderSeq;
+  document.querySelectorAll('nav.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
+  if (location.hash.slice(1) !== S.tab) history.replaceState(null, '', '#' + S.tab);
+  const root = h('div', { class: freshTab ? 'fresh' : '' });
+  const old = observers;
+  observers = [];
+  try {
+    if (S.tab === 'spend') await renderSpend(root);
+    else if (S.tab === 'perf') await renderPerf(root);
+    else await renderHints(root);
+  } catch (e) {
+    if (seq !== renderSeq) return;
+    if (e instanceof Scanning) { await poll(); return render(); }
+    root.replaceChildren(card('Something went wrong', null, h('pre', { class: 'note', text: String(e.message || e) })));
+  }
+  if (seq !== renderSeq) { observers.forEach(o => o.disconnect()); observers = old; return; }
+  old.forEach(o => o.disconnect());
+  root.querySelectorAll('.card, .kpi, .filters').forEach((e, i) => e.style.setProperty('--i', Math.min(i, 16)));
+  const warns = arr(status && status.warnings);
+  const main = $('#main');
+  const y = scrollY;
+  main.replaceChildren(...(warns.length ? [h('div', { class: 'warnings', text: warns.join('  ·  ') })] : []), root);
+  if (!freshTab) scrollTo(0, y);
+  freshTab = false;
+}
+
+function setTab(t) { if (t !== S.tab) { S.tab = t; freshTab = true; scrollTo(0, 0); render(); } }
+document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
+
+async function rescan() {
+  if (status && status.loading) return;
+  await fetch('/api/refresh', { method: 'POST' });
+  await poll();
+  render();
+}
+$('#rescan').addEventListener('click', rescan);
+
+const THEMES = ['auto', 'light', 'dark'];
+function applyTheme(t) {
+  if (t === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  $('#theme').textContent = { auto: '◐ Auto', light: '○ Light', dark: '● Dark' }[t];
+  localStorage.setItem('cc.theme', t);
+}
+let theme = localStorage.getItem('cc.theme') || 'auto';
+applyTheme(theme);
+$('#theme').addEventListener('click', () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % 3]; applyTheme(theme); });
+
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey || /input|textarea/i.test(e.target.tagName)) return;
+  if (e.key === '1') setTab('spend');
+  else if (e.key === '2') setTab('perf');
+  else if (e.key === '3') setTab('hints');
+  else if (e.key === 'r') rescan();
+  else if (e.key === 'Escape' && S.tab === 'spend' && S.spend.focus) { S.spend.focus = ''; render(); }
+});
+
+(async () => { await poll(); render(); })();
+</script>
+</body>
+</html>

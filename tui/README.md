@@ -38,6 +38,11 @@ and pricing source see the [root README](../README.md).
 - 📈 **30-day twin charts**: daily cost (green) and daily token volume
   (blue) stacked, so you can see at a glance whether spend tracked
   usage or whether a model price was driving the bill
+- 🗺️ **Analytics dashboards**: `--dashboards` (full-screen terminal
+  tabs: spend, heatmap, effort map, tables, hints) and
+  `--web-dashboards` (the Mac app's Spend / Performance / Hints tabs in
+  your browser, served from 127.0.0.1); `--hints` prints the priced
+  improvement hints
 - 🪶 **Single binary** — no Node, no Python, no daemon
 - 🌍 **Cross-platform**: macOS · Linux · Windows (testers welcome 🪟 — see below)
 - 💾 **Zero-config**: defaults work; pricing falls back to a baked-in
@@ -142,6 +147,10 @@ and a per-project breakdown with main/subagent split — then exits.
 | `--session` | most recent | Session id prefix for `--scorecard`/`--timeline` |
 | `--limits` | off | Scan once, print budget and plan-limit gauges, and exit |
 | `--limits-config` | `~/.config/claudecounter/limits.toml` | Path to `limits.toml` |
+| `--hints` | off | Print priced improvement hints (compact earlier, resume after a break, subagent model, …) and exit. Window: last 7 days, or `--days 30`/`90` |
+| `--dashboards` | off | Full-screen analytics dashboards in the terminal: spend chart, weekday × hour heatmap, effort map, tables, hints — one tab each |
+| `--web-dashboards` | off | Serve the Mac app's dashboards (Spend, Performance, Hints) on a random five-digit `127.0.0.1` port and open the default browser there. Runs until ctrl+c |
+| `--no-open` | off | With `--web-dashboards`: print the URL but don't open a browser |
 
 The same gauge block also renders live inside views `1` (minimal) and
 `2` (split, default), refreshed every 30s — not in view `3` (full
@@ -210,6 +219,11 @@ internal/gitstat/         git repo-root mapping + commit collection
 internal/safety/          permission-mode aggregation + container heuristic
 internal/session/         per-session transcript parser (tools, modes, tokens)
 internal/ui/              bubbletea model + five views
+internal/perf/            per-request latency/throughput samples + report
+internal/dashboard/       spend history, heatmap, dashboard data loader
+internal/hints/           priced improvement hints
+internal/dashtui/         --dashboards full-screen tabs
+internal/webdash/         --web-dashboards server + embedded page
 go.mod                    module: github.com/jverhoeks/claudecounter/tui
 ```
 
