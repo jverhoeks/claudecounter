@@ -18,7 +18,8 @@ from the figure xAI reports per turn, not from a pricing table (see
 | **Best for** | Power users, SSH sessions, scripting | "Glance and go" — always-on indicator |
 | **Languages** | Go (single static binary) | Swift / SwiftUI (`.app` bundle) |
 | **Platforms** | macOS · Linux · Windows | macOS 13+ on Apple Silicon |
-| **One-shot mode** | `claudecounter --once` · `--phases` · `--report` | (use the TUI) |
+| **One-shot mode** | `claudecounter --once` · `--phases` · `--report` · `--hints` | (use the TUI) |
+| **Analytics dashboards** | `--dashboards` (terminal) · `--web-dashboards` (browser) | ⚙ → Dashboard… |
 | **Persists between runs?** | No | Yes (`~/Library/Application Support/...`) |
 | **Live updates** | fsnotify-driven | FSEventStream-driven |
 | **Vendors counted** | Claude + Codex (both priced from LiteLLM) + Grok (vendor-reported \$) | Claude + Codex (both priced from LiteLLM) + Grok (vendor-reported \$) |
@@ -583,6 +584,18 @@ subagent model, default model, effort level — each with the finding, an
 estimated saving for the period, the trade-off, and a copyable
 `~/.claude/settings.json` fragment. It reads that file (never writes it)
 to mark fixes you've already applied. Savings overlap; don't add them up.
+
+The Go binary has the same dashboards without a Mac:
+
+```sh
+claudecounter --web-dashboards   # Spend / Performance / Hints in your browser (127.0.0.1, random port)
+claudecounter --dashboards       # full-screen terminal tabs: spend, heatmap, effort map, tables, hints
+claudecounter --hints --days 30  # just the hints, printed
+```
+
+The first load scans a year of logs for spend and 90 days for
+performance (tens of seconds on a large history); the web page shows
+progress and has a Rescan button.
 
 → Full menu bar app docs: **[`macapp/README.md`](./macapp/README.md)**
 

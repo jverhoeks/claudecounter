@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jverhoeks/claudecounter/tui/internal/agg"
+	"github.com/jverhoeks/claudecounter/tui/internal/dashboard"
+	"github.com/jverhoeks/claudecounter/tui/internal/hints"
 	"github.com/jverhoeks/claudecounter/tui/internal/limits"
 	"github.com/jverhoeks/claudecounter/tui/internal/pricing"
 	"github.com/jverhoeks/claudecounter/tui/internal/reader"
@@ -59,6 +62,10 @@ func main() {
 	phasesFlag := flag.Bool("phases", false, "print subagent spend by phase/language/model for this month and exit")
 	limitsFlag := flag.Bool("limits", false, "scan once, print budget and plan-limit gauges, and exit")
 	limitsPath := flag.String("limits-config", limits.DefaultConfigPath(), "path to limits.toml")
+	hintsFlag := flag.Bool("hints", false, "print improvement hints (default last 7 days; --days 30/90) and exit")
+	dashboardsFlag := flag.Bool("dashboards", false, "full-screen analytics dashboards: spend, heatmap, effort map, tables, hints")
+	webFlag := flag.Bool("web-dashboards", false, "serve the analytics dashboards on a random local port and open the browser")
+	noOpenFlag := flag.Bool("no-open", false, "with --web-dashboards: print the URL but don't open a browser")
 	flag.Parse()
 
 	// rootSet tracks whether --root was passed explicitly, as opposed to
@@ -67,10 +74,13 @@ func main() {
 	// source rooted there) — the pre-sources-feature contract that
 	// --root always wins. The report-family one-shots below don't
 	// consult sources at all; they keep using --root directly.
-	rootSet := false
+	rootSet, daysSet := false, false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "root" {
+		switch f.Name {
+		case "root":
 			rootSet = true
+		case "days":
+			daysSet = true
 		}
 	})
 	home, _ := os.UserHomeDir()
@@ -79,6 +89,40 @@ func main() {
 
 	if *once {
 		runOnce(resolveSources(*sourcesPath, *root, rootSet, home), table, pricingWarn)
+		return
+	}
+	if *hintsFlag {
+		// --days defaults to 90 for the report; hints default to the
+		// Mac Hints tab's 7.
+		period := 7
+		if daysSet {
+			period = *days
+		}
+		// The request scan covers 90 days; a longer window would be
+		// mislabelled.
+		if !slices.Contains(hints.Periods, period) {
+			fmt.Fprintf(os.Stderr, "--hints: --days must be one of %v\n", hints.Periods)
+			os.Exit(2)
+		}
+		runHints(resolveSources(*sourcesPath, *root, rootSet, home), table, period)
+		return
+	}
+	if *dashboardsFlag || *webFlag {
+		srcs, warn := tuiSources(*sourcesPath, *root, rootSet, home)
+		load := func(progress func(done, total int)) dashboard.Data {
+			d := loadDashboardData(srcs, table, true, progress)
+			for _, w := range []string{pricingWarn, warn} {
+				if w != "" {
+					d.Warnings = append(d.Warnings, w)
+				}
+			}
+			return d
+		}
+		if *webFlag {
+			runWebDashboards(load, !*noOpenFlag)
+		} else {
+			runDashboards(load)
+		}
 		return
 	}
 	if *limitsFlag {
